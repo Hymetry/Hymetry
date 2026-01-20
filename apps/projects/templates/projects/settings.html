@@ -1,0 +1,825 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preload" href="/static/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="{% static 'css/output.css' %}" />
+    <link rel="icon" href="{% static 'svg/favicon.svg' %}" sizes="any" type="image/svg+xml" />
+    <title>Settings - {{ project.name }}</title>
+    <script async src="https://edge.productpathpro.com/main.js" data-api-key="2530FA1B824FB36F"></script>
+  </head>
+
+  <body class="text-sm h-full bg-slate-50">
+    <nav class="fixed top-0 left-0 z-10 right-0 bg-white border-b border-gray-200 shadow-sm w-full h-12 pl-8 pr-2 flex items-center justify-between [view-transition-name:shell]">
+      <!-- Left Section: Logo and Menu Items -->
+      <div class="flex items-center h-full">
+        <!-- Logo -->
+        <a href="/"><img src="{% static 'svg/logo.svg' %}" /></a>
+        <!-- Menu Items -->
+        <div class="flex items-center h-full ml-[35px] space-x-2">
+          <!-- Dropdown Menu Component -->
+        <div class="relative inline-block text-left mr-6" id="project-dropdown-container">
+          <!-- Button to toggle the dropdown -->
+          <div>
+            <button type="button" class="inline-flex w-full justify-center text-sky-800 duration-150 hover:bg-slate-100 rounded-md p-2 pl-4 font-medium gap-1" data-dropdown-toggle="#project-popup">
+              {{ project.name }}
+              <svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor">
+                <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Dropdown menu, hidden by default -->
+          <div id="project-popup" data-dropdown-menu class="hidden absolute left-0 z-10 mt-2 w-48 origin-top-left rounded-md bg-white shadow-lg border border-slate-200 focus:outline-none duration-200" role="menu" tabindex="-1">
+            <div class="py-1" role="none">
+              {% for membership in memberships %}
+                {% if membership.project.id == selected_project.id %}
+                  <p class="rounded text-slate-50 block px-4 py-3 bg-slate-700" role="menuitem" tabindex="-1">{{ membership.project.name }}</p>
+                {% else %}
+                  <a href="{% url 'recordings' membership.project.id %}" class="block px-4 py-3 hover:bg-gray-100" data-project-id="{{ membership.project.id }}" role="menuitem" tabindex="-1">{{ membership.project.name }}</a>
+                {% endif %}
+              {% endfor %}
+              <a href="{% url 'projects:project_list' %}" class="block border-t border-gray-200 px-4 py-3 hover:bg-gray-100" role="menuitem" tabindex="-1">See all projects</a>
+            </div>
+          </div>
+        </div>
+          <a href="{% url 'project_detail' project_id=project.id %}" class="flex items-center px-4 py-2 text-sky-800 duration-150 hover:bg-slate-100 rounded-md font-medium">
+            User visits
+          </a>
+
+          <a href="{% url 'projects:project_settings' project_id=project.id %}" class="flex items-center h-full px-3 bg-gray-100 font-medium">
+            Settings
+          </a>
+        </div>
+      </div>
+
+      <!-- Right Section: Profile Menu -->
+      <div class="flex items-center h-full">
+        
+        <a href="{% url 'users:user_profile' %}" class="flex items-center text-sky-800 duration-150 hover:bg-slate-100 rounded-md py-2 px-4 font-medium gap-1">Profile</a>
+      </div>
+    </nav>
+
+    <div class="flex h-[calc(100vh-4rem)] mt-16">
+      <div class="container mx-auto p-4 sm:p-6 lg:p-8">
+        <!-- Main Flex Container -->
+        <div class="flex flex-row gap-8 lg:gap-12">
+          <!-- Left Column: Illustration (Hidden on screens smaller than lg) -->
+          <div class="hidden lg:block w-1/4 xl:w-1/5">
+            <img src="{% static 'svg/settings.svg' %}" />
+          </div>
+
+          <!-- Right Column: Content Cards -->
+          <div class="w-full lg:flex-1 max-w-200">
+            <header class="mb-8">
+              <h1 class="text-3xl font-bold text-slate-900">Project settings</h1>
+            </header>
+
+            <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+              <h2 class="text-lg font-semibold text-slate-600 uppercase">GENERAL</h2>
+
+              <div class="flex justify-between items-center mt-2">
+                <p>Name: {{ project.name }}</p>
+                {% if is_owner %}
+                  <button data-modal-trigger aria-controls="change-project-name" class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                    Change
+                  </button>
+                {% endif %}
+              </div>
+
+              <div class="flex justify-between items-center mt-4">
+                <p>Time zone (defines when days start and end. Shared across teammates): {{ project.timezone }}</p>
+                {% if is_owner %}
+                  <button data-modal-trigger aria-controls="change-project-timezone" class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                    Change
+                  </button>
+                {% endif %}
+              </div>
+            </section>
+            <!-- Card 2: Team -->
+            <section class="bg-white border border-slate-200 rounded-xl shadow-sm mb-6">
+              <div class="p-6">
+                <div class="flex justify-between items-center mb-6">
+                  <h2 class="text-lg font-semibold text-slate-600">TEAM</h2>
+                  {% if is_owner %}
+                    <button data-modal-trigger aria-controls="add-team-members" class="flex items-center gap-2 font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                      <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                        <path d="M450-450H220v-60h230v-230h60v230h230v60H510v230h-60v-230Z" />
+                      </svg>Add team members
+                    </button>
+                  {% endif %}
+                </div>
+
+                <!-- Team List Header -->
+                <div class="grid grid-cols-10 gap-4 font-medium text-slate-500 pb-2 border-b border-slate-200">
+                  <div class="col-span-3">Name</div>
+                  <div class="col-span-4">Email</div>
+                  <div class="col-span-1">Role</div>
+                  <div class="col-span-1">State</div>
+                  <div class="col-span-1"></div>
+                </div>
+
+                <!-- Team List -->
+                <div class="divide-y divide-slate-200">
+                  {% for member in team_members %}
+                    <!-- Team Member Row -->
+                    <div class="grid grid-cols-10 gap-4 py-3 items-center">
+                      <div class="col-span-3 {% if member.name %}font-medium{% endif %}">{{ member.name|default:'' }}</div>
+                      <div class="col-span-4 break-words">{{ member.email }}</div>
+                      <div class="col-span-1">{{ member.role }}</div>
+                      <div class="col-span-1">
+                        {% if member.status == 'active' %}
+                          <span class="bg-green-100 text-green-800 font-medium px-2 py-1 rounded-full">active</span>
+                        {% elif member.status == 'invited' %}
+                          <span class="bg-blue-100 text-blue-800 font-medium px-2 py-1 rounded-full">invited</span>
+                        {% elif member.status == 'expired' %}
+                          <span class="bg-red-100 text-red-800 font-medium px-2 py-1 rounded-full">expired</span>
+                        {% endif %}
+                      </div>
+                      <div class="col-span-1 relative">
+                        {% if not member.is_owner and is_owner %}
+                          <button class="flex items-center gap-2 font-medium text-slate-600 duration-150 hover:bg-slate-100 rounded px-2 py-1.5" data-dropdown-toggle="#member{{ forloop.counter }}-menu">
+                            <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                              <path d="M249.23-420q-24.75 0-42.37-17.63-17.63-17.62-17.63-42.37 0-24.75 17.63-42.37Q224.48-540 249.23-540q24.75 0 42.38 17.63 17.62 17.62 17.62 42.37 0 24.75-17.62 42.37Q273.98-420 249.23-420ZM480-420q-24.75 0-42.37-17.63Q420-455.25 420-480q0-24.75 17.63-42.37Q455.25-540 480-540q24.75 0 42.37 17.63Q540-504.75 540-480q0 24.75-17.63 42.37Q504.75-420 480-420Zm230.77 0q-24.75 0-42.38-17.63-17.62-17.62-17.62-42.37 0-24.75 17.62-42.37Q686.02-540 710.77-540q24.75 0 42.37 17.63 17.63 17.62 17.63 42.37 0 24.75-17.63 42.37Q735.52-420 710.77-420Z" />
+                            </svg>
+                          </button>
+                          <div id="member{{ forloop.counter }}-menu" data-dropdown-menu class="absolute z-10 mt-2 w-40 left-1/2 -translate-x-1/2 rounded-md bg-white shadow-lg duration-200" role="menu" tabindex="-1">
+                            <div class="py-2" role="none">
+                              {% if member.status == 'active' %}
+                                <button onclick="document.location.href=&quot;{% url 'projects:remove_active_user' project_id=project.id membership_id=member.membership_id %}&quot;" class="w-full text-left px-4 py-3 hover:bg-gray-100" role="menuitem" tabindex="-1">Remove</button>
+                              {% elif member.status == 'invited' %}
+                                <button onclick="document.location.href=&quot;{% url 'projects:remove_invitation' project_id=project.id token=member.invitation_token %}&quot;" class="w-full text-left px-4 py-3 hover:bg-gray-100" role="menuitem" tabindex="-1">Cancel and remove</button>
+                              {% elif member.status == 'expired' %}
+                                <button onclick="document.location.href=&quot;{% url 'projects:resend_invitation' project_id=project.id token=member.invitation_token %}&quot;" class="w-full text-left px-4 py-3 hover:bg-gray-100" role="menuitem" tabindex="-1">Resend invitation</button>
+                                <button onclick="document.location.href=&quot;{% url 'projects:remove_invitation' project_id=project.id token=member.invitation_token %}&quot;" class="w-full text-left px-4 py-3 hover:bg-gray-100" role="menuitem" tabindex="-1">Remove</button>
+                              {% endif %}
+                            </div>
+                          </div>
+                        {% endif %}
+                      </div>
+                    </div>
+                  {% endfor %}
+                </div>
+                <div class="p-4 border-l-4 border-sky-400 bg-slate-50 mt-4">
+                  <p class="text-slate-700 flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                      <path d="M450-290h60v-230h-60v230Zm30-298.46q13.73 0 23.02-9.29t9.29-23.02q0-13.73-9.29-23.02-9.29-9.28-23.02-9.28t-23.02 9.28q-9.29 9.29-9.29 23.02t9.29 23.02q9.29 9.29 23.02 9.29Zm.07 488.46q-78.84 0-148.21-29.92t-120.68-81.21q-51.31-51.29-81.25-120.63Q100-401.1 100-479.93q0-78.84 29.92-148.21t81.21-120.68q51.29-51.31 120.63-81.25Q401.1-860 479.93-860q78.84 0 148.21 29.92t120.68 81.21q51.31 51.29 81.25 120.63Q860-558.9 860-480.07q0 78.84-29.92 148.21t-81.21 120.68q-51.29 51.31-120.63 81.25Q558.9-100 480.07-100Zm-.07-60q134 0 227-93t93-227q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93Zm0-320Z" />
+                    </svg>Team members are free, so feel free to add as many people as you need.
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <!-- Card 3: Script Setup -->
+            {% if tracking_script %}
+              <section class="bg-white rounded-xl p-6 mb-6
+                {% if has_fresh_data %}
+
+                   border border-slate-200 shadow-sm
+
+                {% else %}
+
+                   border-2 border-yellow-400 shadow-lg shadow-yellow-500/20
+
+                {% endif %}">
+                <h2 class="text-lg font-semibold text-slate-600 mb-4">SCRIPT SETUP</h2>
+                <p class="mb-4">Paste the code below on every page of your website somewhere after the starting &lt;head&gt; tag and before the closing &lt;/head&gt; tag.</p>
+                <div>
+                  <!-- prettier-ignore -->
+                  <pre id="script-to-copy" class="rounded bg-slate-50 border border-slate-100 p-4 text-xs overflow-x-auto whitespace-pre-wrap"><code>{{ tracking_script }}</code></pre>
+
+                  <div class="flex justify-end mt-4">
+                    <button id="copyBtn" class="flex items-center gap-2 font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5 transition-colors" aria-pressed="false">
+                      <!-- Icon wrapper lets us swap the SVG easily -->
+                      <span id="copyBtnIcon" class="flex">
+                        <!-- Plus icon -->
+                        <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                          <path d="M362.31-260Q332-260 311-281q-21-21-21-51.31v-455.38Q290-818 311-839q21-21 51.31-21h335.38Q728-860 749-839q21 21 21 51.31v455.38Q770-302 749-281q-21 21-51.31 21H362.31Zm0-60h335.38q4.62 0 8.46-3.85 3.85-3.84 3.85-8.46v-455.38q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H362.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46v455.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85Zm-140 200Q192-120 171-141q-21-21-21-51.31v-515.38h60v515.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85h395.38v60H222.31ZM350-320v-480 480Z" />
+                        </svg>
+                      </span>
+                      <span id="copyClipboardLabel">Copy to clipboard</span>
+                    </button>
+                  </div>
+
+                  <div class="w-full">
+                    <details class="mt-8 group w-full rounded-lg border border-slate-200">
+                      <!-- Hide the native marker gutter so width doesn't shift -->
+                      <summary class="flex cursor-pointer items-center justify-between gap-x-3 px-6 py-3 text-sky-800 list-none [&::-webkit-details-marker]:hidden">
+                        <span>Privacy settings for recordings</span>
+                        <svg class="h-5 w-5 text-gray-500 transition-transform duration-200 group-open:rotate-180" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </summary>
+
+                      <!-- Match the horizontal padding with the summary (px-6) -->
+                      <div class="px-6 pb-6 pt-0">
+                        <section class="pt-6">
+                          <!-- your existing inner content unchanged -->
+                          <h2 class="text-xl font-semibold text-slate-900">Recording privacy</h2>
+                          <p class="mt-3">
+                            We take privacy seriously. By default, ProductPathPro detects and masks common sensitive patterns (like emails, passwords, phone numbers, and credit-card-like numbers) on our servers as soon as event data arrives from the client—before it’s written to persistent storage. For example, if a user types
+                            <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em] text-slate-800">email@example.com</code>, we store
+                            <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em] text-slate-800">email@*******.com</code>.
+                          </p>
+
+                          <h3 class="mt-6 text-lg font-medium text-slate-900">Control what’s captured</h3>
+                          <p class="mt-2">You can easily decide what we record by adding these CSS classes to your markup:</p>
+
+                          <div class="mt-4 overflow-hidden rounded-lg border border-slate-200">
+                            <table class="min-w-full border-collapse text-left text-sm text-slate-700">
+                              <thead class="bg-slate-50">
+                                <tr>
+                                  <th scope="col" class="w-1/4 px-4 py-2 font-medium text-slate-900">Class</th>
+                                  <th scope="col" class="px-4 py-2 font-medium text-slate-900">Effect</th>
+                                </tr>
+                              </thead>
+                              <tbody class="divide-y divide-slate-200">
+                                <tr>
+                                  <td class="px-4 py-2 align-top">
+                                    <code class="whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-sm text-slate-800">.rr-block</code>
+                                  </td>
+                                  <td class="px-4 py-2">The element and its children are not recorded. During replay, a placeholder with the same dimensions is shown.</td>
+                                </tr>
+                                <tr>
+                                  <td class="px-4 py-2 align-top">
+                                    <code class="whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-sm text-slate-800">.rr-ignore</code>
+                                  </td>
+                                  <td class="px-4 py-2">Input events inside this element are not recorded (typed characters, changes, selections).</td>
+                                </tr>
+                                <tr>
+                                  <td class="px-4 py-2 align-top">
+                                    <code class="whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-sm text-slate-800">.rr-mask</code>
+                                  </td>
+                                  <td class="px-4 py-2">All text content of this element and its descendants is replaced with masking characters in the recording and replay.</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+
+                          <h3 class="mt-6 text-lg font-medium text-slate-900">Examples</h3>
+                          <!-- prettier-ignore -->
+                          <pre class="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-slate-50 p-4 text-xs leading-relaxed text-slate-800"><code>&lt;!-- Block an entire widget --&gt;
+&lt;div class="rr-block"&gt; … &lt;/div&gt;
+
+&lt;!-- Ignore keystrokes in a field --&gt;
+&lt;input class="rr-ignore" type="text" placeholder="Type here" /&gt;
+
+&lt;!-- Mask text content --&gt;
+&lt;div class="rr-mask"&gt;
+  &lt;span&gt;Order #847392&lt;/span&gt;
+&lt;/div&gt;</code></pre>
+
+                          
+
+                          <h3 class="mt-6 text-lg font-medium text-slate-900">Good practices</h3>
+                          <ul class="mt-3 list-disc space-y-1 pl-5">
+                            <li>
+                              Use <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em]">.rr-block</code> for auth widgets, payment iframes, third-party chats/CRMs, or any component you don’t control.
+                            </li>
+                            <li>
+                              Prefer <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em]">.rr-ignore</code> on free-text inputs where the UI context is useful but keystrokes are not.
+                            </li>
+                            <li>
+                              Use <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em]">.rr-mask</code> to hide labels, IDs, or snippets that might occasionally contain sensitive data.
+                            </li>
+                            <li>
+                              Avoid placing PII in HTML attributes (e.g., <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em]">aria-label</code>, <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em]">data-*</code>). If unavoidable, block the element with <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em]">.rr-block</code>.
+                            </li>
+                          </ul>
+                        </section>
+                      </div>
+                    </details>
+                  </div>
+                </div>
+              </section>
+            {% endif %}
+
+            <!-- Card 4: Pricing -->
+            <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+              <h2 class="text-lg font-semibold text-slate-600 mb-4">BILLING</h2>
+              <p class="mb-4">
+                Everything is
+                <span class="font-semibold text-slate-800 bg-sky-50 p-2 rounded">FREE until Feb 1, 2026</span>
+                while we polish our billing system. Enjoy!
+              </p>
+              <p class="mb-4">
+                After that, we'll introduce a credit system. Our goal is to ensure no client is limited in any way — you'll always have access to all features to the extent you need. You'll only pay for the resources you use. <a href="https://www.productpathpro.com/pricing" class="text-sky-800 underline" target="_blank">Learn more ↗</a>.
+              </p>
+            </section>
+
+            <!-- Card 5: Leave Project (for non-owners) -->
+            {% if not is_owner %}
+              <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+                <h2 class="text-lg font-semibold text-slate-600 mb-2">Leave project</h2>
+                <p class="text-slate-600 leading-relaxed mb-4">If you leave, you'll need the project owner to re-invite you to regain access.</p>
+                {% for member in team_members %}
+                  {% if member.email == request.user.email %}
+                    {% with my_membership_id=member.membership_id %}
+                      <button data-modal-trigger aria-controls="leave-project" class="font-medium text-red-600 hover:text-red-800 bg-red-50 hover:bg-red-100 border border-red-300 rounded-md px-4 py-2 transition-colors">Leave project {{ project.name }}</button>
+                      <form method="post" action="{% url 'projects:remove_active_user' project_id=project.id membership_id=my_membership_id %}" id="leave-project-form" style="display: none;">
+                        {% csrf_token %}
+                      </form>
+                    {% endwith %}
+                  {% endif %}
+                {% endfor %}
+              </section>
+            {% endif %}
+
+            <!-- Card 6: Danger Zone -->
+            {% if is_owner %}
+              <section class="bg-white border border-red-300 rounded-xl shadow-sm p-6 mt-24 mb-6">
+                <h2 class="text-lg font-semibold text-slate-600 mb-2">DANGER ZONE</h2>
+                <p class="text-slate-600 leading-relaxed mb-4">Be cautious here, these changes are not reversible.</p>
+
+                <button data-modal-trigger aria-controls="delete-project" class="font-medium text-red-600 hover:text-red-800 bg-red-50 hover:bg-red-100 border border-red-300 rounded-md px-4 py-2 transition-colors">Delete project {{ project.name }}</button>
+              </section>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modals -->
+    {% if is_owner %}
+      <div id="change-project-name" data-modal-target class="hidden">
+        <div class="flex items-start justify-center fixed inset-0 z-50">
+          <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+
+          <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+            <div class="bg-white px-6 py-4">
+              <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                  <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                </svg>
+              </button>
+              <div class="flex items-start">
+                <div class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
+                  <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                    <path d="M200-200h50.46l409.46-409.46-50.46-50.46L200-250.46V-200Zm-60 60v-135.38l527.62-527.39q9.07-8.24 20.03-12.73 10.97-4.5 23-4.5t23.3 4.27q11.28 4.27 19.97 13.58l48.85 49.46q9.31 8.69 13.27 20 3.96 11.31 3.96 22.62 0 12.07-4.12 23.03-4.12 10.97-13.11 20.04L275.38-140H140Zm620.38-570.15-50.23-50.23 50.23 50.23Zm-126.13 75.9-24.79-25.67 50.46 50.46-25.67-24.79Z" />
+                  </svg>
+                </div>
+                <div class="w-full mt-2 ml-4">
+                  <h3 class="text-base font-semibold leading-6">Change project name</h3>
+                  <form id="change-project-name-form" action="{% url 'projects:update_project_name' project_id=project.id %}" method="POST">
+                    {% csrf_token %}
+                    <div class="mt-6">
+                      <p class="mb-2">Enter a new name for your project</p>
+                      <input type="text" name="name" placeholder="New project name" value="{{ project.name }}" class="appearance-none border border-slate-300 rounded w-full py-3 px-3 text-gray-700 leading-tight" data-modal-input-focus autofocus required />
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+
+            <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+              <button type="submit" form="change-project-name-form" class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">Save changes</button>
+              <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="change-project-timezone" data-modal-target class="hidden">
+        <div class="flex items-start justify-center fixed inset-0 z-50">
+          <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+
+          <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+            <div class="bg-white px-6 py-4">
+              <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                  <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                </svg>
+              </button>
+              <div class="flex items-start">
+                <div class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
+                  <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                    <path d="m612-292 56-56-148-148v-184h-80v216l172 172ZM480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-400Zm0 320q133 0 226.5-93.5T800-480q0-133-93.5-226.5T480-800q-133 0-226.5 93.5T160-480q0 133 93.5 226.5T480-160Z" />
+                  </svg>
+                </div>
+                <div class="w-full mt-2 ml-4">
+                  <h3 class="text-base font-semibold leading-6">Change project timezone</h3>
+                  <form id="change-project-timezone-form" action="{% url 'projects:update_project_timezone' project_id=project.id %}" method="POST">
+                    {% csrf_token %}
+                    <div class="mt-6">
+                      <p class="mb-2">Select timezone for your project</p>
+                      <div class="relative">
+                        <select name="timezone" id="timezone-select" class="border border-slate-300 rounded w-full py-3 px-3 text-gray-700 leading-tight" data-modal-input-focus autofocus required>
+                          {% for tz in all_timezones %}
+                            <option value="{{ tz }}" {% if project.timezone == tz %}selected{% endif %}>{{ tz }}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+
+            <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+              <button type="submit" form="change-project-timezone-form" class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">Save changes</button>
+              <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="add-team-members" data-modal-target class="hidden">
+        <div class="flex items-start justify-center fixed inset-0 z-50">
+          <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+
+          <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+            <form action="{% url 'projects:invite_multiple_users' project_id=project.id %}" method="POST" id="invite-form">
+              {% csrf_token %}
+              <div class="bg-white px-6 py-4">
+                <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                    <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                  </svg>
+                </button>
+                <div class="flex items-start">
+                  <div class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-green-600 bg-green-100">
+                    <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                      <path d="M172.31-180Q142-180 121-201q-21-21-21-51.31v-455.38Q100-738 121-759q21-21 51.31-21h615.38Q818-780 839-759q21 21 21 51.31v455.38Q860-222 839-201q-21 21-51.31 21H172.31ZM480-457.69 160-662.31v410q0 5.39 3.46 8.85t8.85 3.46h615.38q5.39 0 8.85-3.46t3.46-8.85v-410L480-457.69Zm0-62.31 313.85-200h-627.7L480-520ZM160-662.31V-720v467.69q0 5.39 3.46 8.85t8.85 3.46H160v-422.31Z" />
+                    </svg>
+                  </div>
+                  <div class="w-full mt-2 ml-4">
+                    <h3 class="text-base font-semibold">Add team members</h3>
+                    <div class="mt-6">
+                      <p class="mb-2">Enter team members, one email per row (max 10).</p>
+                      <textarea rows="6" name="emails" id="emails-textarea" placeholder="E.g.
+mail1@domain.com
+mail2@domain.com" class="block w-full appearance-none border border-slate-300 rounded py-3 px-3 text-gray-700 leading-tight" data-modal-input-focus autofocus required></textarea>
+                      <div id="email-error" class="mt-2 text-red-600 text-sm hidden">Please enter valid email addresses (one per line, max 10).</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+                <button type="submit" id="send-invitations-btn" class="flex items-center gap-2 bg-green-600 font-medium text-white duration-150 hover:bg-green-700 rounded pl-4 pr-6">
+                  <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                    <path d="M140-190v-580l688.46 290L140-190Zm60-90 474-200-474-200v147.69L416.92-480 200-427.69V-280Zm0 0v-400 400Z" />
+                  </svg>Send invitations
+                </button>
+                <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div id="delete-project" data-modal-target class="hidden">
+        <div class="flex items-start justify-center fixed inset-0 z-50">
+          <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+
+          <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+            <div class="bg-white px-6 py-4">
+              <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                  <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                </svg>
+              </button>
+              <div class="flex items-start">
+                <div class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
+                  <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                    <path d="M292.31-140q-29.92 0-51.12-21.19Q220-182.39 220-212.31V-720h-40v-60h180v-35.38h240V-780h180v60h-40v507.69Q740-182 719-161q-21 21-51.31 21H292.31ZM680-720H280v507.69q0 5.39 3.46 8.85t8.85 3.46h375.38q4.62 0 8.46-3.85 3.85-3.84 3.85-8.46V-720ZM376.16-280h59.99v-360h-59.99v360Zm147.69 0h59.99v-360h-59.99v360ZM280-720v520-520Z" />
+                  </svg>
+                </div>
+                <div class="w-full mt-2 ml-4">
+                  <h3 class="text-base font-semibold leading-6">Confirm project deletion</h3>
+                  <div class="mt-6">
+                    <p class="font-bold mb-2">This action is irreversible.</p>
+                    <p class="mb-2">To confirm, type "{{ project.name }}" in the box below:</p>
+                    <input type="text" id="delete-confirmation-input" placeholder="Type project name to delete" class="appearance-none border border-slate-300 rounded w-full py-3 px-3 text-gray-700 leading-tight" />
+                    <div id="delete-error-message" class="mt-2 text-red-600 text-sm hidden">Project name does not match. Please type the exact project name to confirm deletion.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+              <form method="post" action="{% url 'projects:project_delete' pk=project.id %}" id="delete-project-form" style="display: none;">
+                {% csrf_token %}
+              </form>
+              <button type="button" id="delete-project-btn" class="flex items-center gap-2 bg-red-600 font-medium text-white duration-150 hover:bg-red-700 rounded px-6 py-3">Delete project</button>
+              <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    {% endif %}
+
+    <!-- Leave project modal (available for non-owners) -->
+    <div id="leave-project" data-modal-target class="hidden">
+      <div class="flex items-start justify-center fixed inset-0 z-50">
+        <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+
+        <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+          <div class="bg-white px-6 py-4">
+            <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+              <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+              </svg>
+            </button>
+            <div class="flex items-start">
+              <div class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-red-500 bg-red-100">
+                <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                  <path d="M480-120q-33 0-56.5-23.5T400-200q0-33 23.5-56.5T480-280q33 0 56.5 23.5T560-200q0 33-23.5 56.5T480-120Zm-80-160v-440h160v440H400Z" />
+                </svg>
+              </div>
+              <div class="w-full mt-2 ml-4">
+                <h3 class="text-base font-semibold leading-6">Leave project</h3>
+                <div class="mt-6">
+                  <p class="mb-2">Are you sure you want to leave "{{ project.name }}"?</p>
+                  <p class="text-slate-600">You'll need the project owner to re-invite you to regain access.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+            <button type="button" id="leave-project-btn" class="flex items-center gap-2 bg-red-600 font-medium text-white duration-150 hover:bg-red-700 rounded px-6 py-3">Leave project</button>
+            <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const btn = document.getElementById('copyBtn')
+      const icon = document.getElementById('copyBtnIcon')
+      const label = document.getElementById('copyClipboardLabel')
+      const plusIcon = `
+                                                                                                                            <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor"><path d="M362.31-260Q332-260 311-281q-21-21-21-51.31v-455.38Q290-818 311-839q21-21 51.31-21h335.38Q728-860 749-839q21 21 21 51.31v455.38Q770-302 749-281q-21 21-51.31 21H362.31Zm0-60h335.38q4.62 0 8.46-3.85 3.85-3.84 3.85-8.46v-455.38q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H362.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46v455.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85Zm-140 200Q192-120 171-141q-21-21-21-51.31v-515.38h60v515.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85h395.38v60H222.31ZM350-320v-480 480Z" />
+                                                                                                                                                                    </svg>`
+      const checkIcon = `
+                                                                                                                            <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor"><path d="M382-253.85 168.62-467.23 211.38-510 382-339.38 748.62-706l42.76 42.77L382-253.85Z"/></svg>`
+      
+      if (btn) {
+        btn.addEventListener('click', async () => {
+          try {
+            // Get the script content from the pre element
+            const scriptElement = document.getElementById('script-to-copy')
+            const scriptContent = scriptElement ? scriptElement.textContent : ''
+      
+            // Copy to clipboard using modern API
+            await navigator.clipboard.writeText(scriptContent)
+      
+            // Update button appearance
+            btn.classList.remove('hover:bg-slate-100')
+            btn.classList.add('bg-green-600')
+            btn.classList.add('text-white')
+            label.textContent = 'Copied to clipboard'
+            icon.innerHTML = checkIcon
+            btn.setAttribute('disabled', 'disabled')
+      
+            // Reset after 2 seconds
+            setTimeout(() => {
+              btn.classList.remove('bg-green-600')
+              btn.classList.remove('text-white')
+              btn.classList.add('hover:bg-slate-100')
+              label.textContent = 'Copy to clipboard'
+              icon.innerHTML = plusIcon
+              btn.removeAttribute('disabled')
+            }, 2000)
+          } catch (err) {
+            // Fallback for older browsers
+            console.error('Failed to copy: ', err)
+      
+            // Try the old method
+            const scriptElement = document.getElementById('script-to-copy')
+            if (scriptElement) {
+              const range = document.createRange()
+              range.selectNodeContents(scriptElement)
+              const selection = window.getSelection()
+              selection.removeAllRanges()
+              selection.addRange(range)
+      
+              try {
+                document.execCommand('copy')
+                selection.removeAllRanges()
+      
+                // Update button appearance
+                btn.classList.remove('hover:bg-slate-100')
+                btn.classList.add('bg-green-600')
+                btn.classList.add('text-white')
+                label.textContent = 'Copied to clipboard'
+                icon.innerHTML = checkIcon
+                btn.setAttribute('disabled', 'disabled')
+      
+                // Reset after 2 seconds
+                setTimeout(() => {
+                  btn.classList.remove('bg-green-600')
+                  btn.classList.remove('text-white')
+                  btn.classList.add('hover:bg-slate-100')
+                  label.textContent = 'Copy to clipboard'
+                  icon.innerHTML = plusIcon
+                  btn.removeAttribute('disabled')
+                }, 2000)
+              } catch (err) {
+                console.error('Failed to copy: ', err)
+              }
+            }
+          }
+        })
+      }
+      
+      // Delete project confirmation
+      const deleteConfirmationInput = document.getElementById('delete-confirmation-input')
+      const deleteProjectBtn = document.getElementById('delete-project-btn')
+      const deleteErrorMessage = document.getElementById('delete-error-message')
+      const deleteProjectForm = document.getElementById('delete-project-form')
+      
+      if (deleteConfirmationInput && deleteProjectBtn) {
+        deleteConfirmationInput.addEventListener('input', function () {
+          const projectName = '{{ project.name }}'
+          const inputValue = this.value.trim()
+      
+          if (inputValue === projectName) {
+            deleteProjectBtn.disabled = false
+            deleteErrorMessage.classList.add('hidden')
+          } else {
+            deleteProjectBtn.disabled = true
+            if (inputValue) {
+              deleteErrorMessage.classList.remove('hidden')
+            } else {
+              deleteErrorMessage.classList.add('hidden')
+            }
+          }
+        })
+      
+        deleteProjectBtn.addEventListener('click', function () {
+          const projectName = '{{ project.name }}'
+          const inputValue = deleteConfirmationInput.value.trim()
+      
+          if (inputValue === projectName) {
+            deleteProjectForm.submit()
+          }
+        })
+      }
+      
+      // Email validation for invite form
+      const inviteForm = document.getElementById('invite-form')
+      const emailsTextarea = document.getElementById('emails-textarea')
+      const emailError = document.getElementById('email-error')
+      const sendInvitationsBtn = document.getElementById('send-invitations-btn')
+      
+      if (inviteForm && emailsTextarea) {
+        inviteForm.addEventListener('submit', function (e) {
+          e.preventDefault()
+      
+          // Clear any existing errors when starting
+          emailError.classList.add('hidden')
+      
+          const emailsText = emailsTextarea.value.trim()
+          if (!emailsText) {
+            emailError.textContent = 'Please enter at least one email address.'
+            emailError.classList.remove('hidden')
+            emailError.classList.remove('text-yellow-600')
+            emailError.classList.add('text-red-600')
+            return false
+          }
+      
+          // Disable button to prevent double submission
+          sendInvitationsBtn.disabled = true
+          sendInvitationsBtn.textContent = 'Sending...'
+      
+          // Validate emails via AJAX
+          fetch("{% url 'projects:validate_emails' project_id=project.id %}", {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+            },
+            body: JSON.stringify({
+              emails: emailsText
+            })
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              if (data.valid) {
+                // Clear any previous errors
+                emailError.classList.add('hidden')
+      
+                // Show warnings if any
+                if (data.warnings && data.warnings.length > 0) {
+                  emailError.textContent = data.warnings.join(' ')
+                  emailError.classList.remove('hidden')
+                  emailError.classList.remove('text-red-600')
+                  emailError.classList.add('text-yellow-600')
+                }
+      
+                // Check for Celery error
+                if (data.celery_error) {
+                  emailError.textContent = data.celery_error
+                  emailError.classList.remove('hidden')
+                  emailError.classList.remove('text-yellow-600')
+                  emailError.classList.add('text-red-600')
+                  sendInvitationsBtn.disabled = false
+                  sendInvitationsBtn.textContent = 'Send invitations'
+                  return
+                }
+      
+                // Submit the form
+                inviteForm.submit()
+              } else {
+                // Show error and re-enable button
+                const errorMessage = data.celery_error || data.error || 'An error occurred during validation.'
+                emailError.textContent = errorMessage
+                emailError.classList.remove('hidden')
+                emailError.classList.remove('text-yellow-600')
+                emailError.classList.add('text-red-600')
+                sendInvitationsBtn.disabled = false
+                sendInvitationsBtn.textContent = 'Send invitations'
+              }
+            })
+            .catch((error) => {
+              console.error('Validation error:', error)
+              emailError.textContent = 'An error occurred during validation.'
+              emailError.classList.remove('hidden')
+              emailError.classList.remove('text-yellow-600')
+              emailError.classList.add('text-red-600')
+              sendInvitationsBtn.disabled = false
+              sendInvitationsBtn.textContent = 'Send invitations'
+            })
+        })
+      }
+      
+      // Leave project confirmation
+      const leaveProjectBtn = document.getElementById('leave-project-btn')
+      const leaveProjectForm = document.getElementById('leave-project-form')
+      
+      if (leaveProjectBtn && leaveProjectForm) {
+        leaveProjectBtn.addEventListener('click', function () {
+          leaveProjectForm.submit()
+        })
+      }
+      
+      // Timezone search functionality
+      const timezoneSelect = document.getElementById('timezone-select')
+      
+      // Project timezone change form
+      const changeProjectTimezoneForm = document.getElementById('change-project-timezone-form')
+      if (changeProjectTimezoneForm) {
+        changeProjectTimezoneForm.addEventListener('submit', function (e) {
+          e.preventDefault()
+          
+          const formData = new FormData(changeProjectTimezoneForm)
+          
+          // Submit form normally (not via AJAX since we want to reload the page)
+          changeProjectTimezoneForm.submit()
+        })
+      }
+
+      // Project name change form
+      const changeProjectNameForm = document.getElementById('change-project-name-form')
+      const projectNameInput = changeProjectNameForm ? changeProjectNameForm.querySelector('input[name="name"]') : null
+      const projectNameDisplay = document.querySelector('[data-dropdown-toggle="#project-popup"]')
+      
+      if (changeProjectNameForm && projectNameInput) {
+        changeProjectNameForm.addEventListener('submit', function (e) {
+          e.preventDefault()
+      
+          const newName = projectNameInput.value.trim()
+          if (!newName) {
+            return false
+          }
+      
+          // Submit form via AJAX
+          fetch(changeProjectNameForm.action, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+            },
+            body: new URLSearchParams(new FormData(changeProjectNameForm))
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              if (data.success) {
+                // Close the modal
+                const modal = document.getElementById('change-project-name')
+                if (modal) {
+                  const closeEvent = new Event('click')
+                  modal.querySelector('[data-modal-close]').dispatchEvent(closeEvent)
+                }
+      
+                // Reload the settings page to show updated name
+                window.location.reload()
+              } else {
+                console.error('Error updating project name:', data.error)
+              }
+            })
+            .catch((error) => {
+              console.error('Error updating project name:', error)
+            })
+        })
+      }
+    </script>
+
+    <script src="{% static 'js/modals.js' %}"></script>
+    <script src="{% static 'js/dropdowns.js' %}"></script>
+  </body>
+</html>

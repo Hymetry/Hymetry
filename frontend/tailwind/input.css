@@ -1,0 +1,161 @@
+@font-face {
+  font-family: 'Inter';
+  src: url('/static/fonts/InterVariable.woff2') format('woff2-variations'),
+    url('static/fonts/InterVariable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+
+@theme {
+
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell,
+    'Open Sans', 'Helvetica Neue', sans-serif;
+  --color-c-blue: #4269D0;
+  --color-c-orange: #EFB118;
+  --color-c-red: #FF725C;
+  --color-c-teal: #6CC5B0;
+  --color-c-green: #3CA951;
+  --color-c-rose: #FF8AB7;
+  --color-c-purple: #A463F2;
+  --color-c-light-blue: #97BBF5;
+  --color-c-brown: #9C6B4E;
+
+}
+
+@import "tailwindcss";
+
+@source inline("bg-c-blue/90 bg-c-orange/90 bg-c-red/90 bg-c-teal/90 bg-c-green/90 bg-c-rose/90 bg-c-purple/90 bg-c-light-blue/90 bg-c-brown/90");
+@source inline("bg-c-blue bg-c-orange bg-c-red bg-c-teal bg-c-green bg-c-rose bg-c-purple bg-c-light-blue bg-c-brown");
+@source inline("text-blue-700 text-yellow-700 text-red-700 text-teal-700 text-green-700 text-pink-700 text-violet-700 text-sky-700 text-amber-700 text-slate-600");
+
+
+@import "tailwindcss";
+@source "../../templates";
+@source "../../templates/account";
+@source "../../apps/tracker/templates/tracker";
+@source "../../apps/users/templates/users";
+@source "../../apps/projects/templates/projects";
+
+/* 4 – Apply it once, everywhere */
+@layer base {
+  html {
+    min-width: 1024px;
+    @apply text-gray-900;
+  }
+
+  button {
+    @apply cursor-pointer;
+  }
+
+  @view-transition {
+    navigation: auto;
+  }
+
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+  }
+}
+
+  /* Bubble chart */
+
+  .chart-container {
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+    width: fit-content;
+    max-width: calc(100vw - 395px);
+    /* Account for sidebar and padding */
+  }
+
+  .chart-container .bubble-box:not(:first-child) {
+    margin-left: -8px;
+  }
+
+
+  .bubble-box {
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    flex: 0 0 auto;
+  }
+
+  .circle {
+    width: var(--size);
+    height: var(--size);
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* End of bubble chart */
+
+  /* Page labels and connectors (moved from HTML) */
+  #page-labels-container .page-label {
+    position: fixed;
+    font-size: 0.875rem;
+    /* 14px */
+    padding: 4px 8px;
+    border-radius: 6px;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+  }
+
+  #page-labels-container .page-label.visible {
+    opacity: 1;
+  }
+
+  #label-connectors path {
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+    stroke-linecap: round;
+  }
+
+  #label-connectors path.visible {
+    opacity: 0.6;
+  }
+
+  /* End of page labels */
+
+
+  @layer components {
+    .day-bar-blue {
+      @apply w-full bg-blue-400 group-hover:bg-blue-500 group-hover:outline group-hover:outline-teal-500 duration-200;
+    }
+  }
+
+  /* Firefox */
+  .chart-container.custom-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+  }
+
+  /* Chrome / Edge / Safari */
+  .chart-container.custom-scroll::-webkit-scrollbar {
+    height: 8px;
+    /* match pb-[8px] */
+  }
+
+  .chart-container.custom-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .chart-container.custom-scroll::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    /* always visible */
+    border-radius: 4px;
+  }
+
+  .scrollable-x {
+    cursor: grab;
+  }
+
+  .scrollable-x:active {
+    cursor: grabbing;
+  }

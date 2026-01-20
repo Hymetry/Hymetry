@@ -1,0 +1,90 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Sign In</title>
+        <link rel="stylesheet" href="{% static 'css/output.css' %}" />
+        <link rel="icon" href="{% static 'svg/favicon.svg' %}" sizes="any" type="image/svg+xml">
+    </head>
+
+    <body class="text-sm h-full bg-slate-50">
+        <nav class="bg-white border-b border-gray-200 shadow-sm w-full h-12 pl-8 pr-2 flex items-center justify-between">
+            <div class="flex items-center h-full">
+                <img src="{% static 'svg/logo.svg' %}">
+            </div>
+        </nav>
+
+        <div class="flex items-start justify-center min-h-screen pt-20">
+            <div class="grid grid-cols-1 md:grid-cols-2 items-center gap-6 sm:gap-12 md:gap-16 lg:gap-20 xl:gap-24 2xl:gap-40 max-w-5xl m-6">
+                <div class="flex flex-col justify-center p-4 sm:p-8 bg-white shadow-2xl rounded-2xl">
+                    <span class="mb-6 text-4xl font-bold">Sign in</span>
+                    <form method="post" action="" id="signin-form">
+                        {% csrf_token %}
+                        <!-- Email Input -->
+                        <div class="py-2">
+                            <input
+                                autofocus
+                                type="email"
+                                id="id_login"
+                                name="login"
+                                placeholder="Enter your email"
+                                autocomplete="email"
+                                class="w-full p-3 border border-gray-300 rounded-lg placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                                value="{{ form.login.value|default:'' }}"
+                                required />
+                        </div>
+                        <div class="py-2">
+                            <input
+                                type="password"
+                                id="id_password"
+                                name="password"
+                                placeholder="Enter your password"
+                                minlength="8"
+                                autocomplete="current-password"
+                                class="w-full p-3 border border-gray-300 rounded-lg placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                                required />
+                        </div>
+                        {% if form.errors %}
+                        <div class="text-red-600 text-sm my-2">
+                            {% for field in form %}
+                                {% for error in field.errors %}{{ error }}<br>{% endfor %}
+                            {% endfor %}
+                            {% for error in form.non_field_errors %}{{ error }}<br>{% endfor %}
+                        </div>
+                        {% endif %}
+                        <button 
+                            type="submit"
+                            id="signin-button"
+                            class="w-full px-8 p-4 mt-2 font-semibold text-white bg-gradient-to-br from-cyan-500 to-blue-500 rounded-lg shadow-lg shadow-cyan-500/40 transform transition-all duration-300 hover:scale-105 hover:shadow-2xl hover:shadow-cyan-500/60 disabled:text-slate-500 disabled:shadow-none disabled:bg-none disabled:bg-slate-200">
+                            Sign in
+                        </button>
+                    </form>
+                    <div class="text-center text-gray-500 mt-8">
+                        New here?
+                        <a href="{% url 'sign_up' %}" class="font-medium text-blue-600 hover:underline">Join us!—it's free!</a>
+                    </div>
+                    <div class="text-center mt-4">
+                        <a href="{% url 'password_reset_request' %}" class="font-medium text-blue-600 hover:underline">Reset password</a>
+                    </div>
+                </div>
+                <div class="relative hidden md:flex items-center justify-center">
+                    <img src="{% static 'svg/sign-in.svg' %}" width="400" height="400" />
+                </div>
+            </div>
+        </div>
+
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                const form = document.getElementById('signin-form');
+                const button = document.getElementById('signin-button');
+                
+                form.addEventListener('submit', function() {
+                    button.disabled = true;
+                    button.textContent = 'Signing in...';
+                });
+            });
+        </script>
+    </body>
+</html> 

@@ -1,0 +1,140 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Project: {{ project.name }}</h2>
+<p>Owner: {{ project.owner.email }}</p>
+
+{% if tracking_script %}
+<div class="mt-4">
+  <h3>Tracking Script</h3>
+  <p>Copy and paste this minimized script into your website to start tracking user sessions. Add it to your HTML before the closing <code>&lt;/body&gt;</code> tag:</p>
+  <div class="form-group">
+    <textarea id="ta_script" class="form-control" rows="12" readonly style="font-family: monospace; font-size: 11px; background-color: #f8f9fa;">{{ tracking_script }}</textarea>
+  </div>
+  <div class="mt-2">
+    <button class="btn btn-secondary btn-sm" onclick="copyToClipboard(document.getElementById('ta_script'))">Copy to Clipboard</button>
+    <small class="text-muted ms-2">This is a minimized version optimized for production use.</small>
+  </div>
+</div>
+
+<script>
+function copyToClipboard(textarea) {
+  textarea.select();
+  textarea.setSelectionRange(0, 99999); // For mobile devices
+  document.execCommand('copy');
+  
+  // Change button text temporarily
+  const button = event.target;
+  const originalText = button.textContent;
+  button.textContent = 'Copied!';
+  button.classList.remove('btn-secondary');
+  button.classList.add('btn-success');
+  
+  setTimeout(() => {
+    button.textContent = originalText;
+    button.classList.remove('btn-success');
+    button.classList.add('btn-secondary');
+  }, 2000);
+}
+</script>
+{% endif %}
+
+{% if invitation_table %}
+<h3>Project's Users</h3>
+<table border="1" class="table">
+  <tr>
+    <th>User</th>
+    <th>Invited By</th>
+    {% if is_owner %}
+    <th>Invited At</th>
+    {% endif %}
+    <th>Status</th>
+    <th>Action</th>
+  </tr>
+  {% for row in invitation_table %}
+  <tr {% if row.display_status == 'Failed' or row.display_status == 'Expired' %}class="table-warning"{% endif %}>
+    <td>{% if row.email == user.email %}me{% else %}{{ row.email }}{% endif %}</td>
+    <td>{% if row.invited_by.email == user.email %}me{% else %}{{ row.invited_by_display }}{% endif %}</td>
+    {% if is_owner %}
+    <td>{{ row.created_at }}</td>
+    {% endif %}
+    <td>
+      {% if row.display_status == 'Failed' %}
+        <span class="badge bg-danger">{{ row.display_status }}</span>
+      {% elif row.display_status == 'Expired' %}
+        <span class="badge bg-warning text-dark">{{ row.display_status }}</span>
+      {% elif row.display_status == 'Invited' %}
+        <span class="badge bg-info">{{ row.display_status }}</span>
+      {% else %}
+        <span class="badge bg-success">{{ row.display_status }}</span>
+      {% endif %}
+    </td>
+    <td>
+      {% if is_owner and row.display_status == 'Failed' %}
+      <form method="post" action="{% url 'projects:resend_invitation' project.pk row.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-warning">Reinvite</button>
+      </form>
+      <form method="post" action="{% url 'projects:remove_invitation' project.pk row.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Cancel this invitation?');">Cancel</button>
+      </form>
+      {% elif not is_owner and row.display_status == 'Failed' and row.invited_by.email == user.email %}
+      <form method="post" action="{% url 'projects:resend_invitation' project.pk row.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-warning">Reinvite</button>
+      </form>
+      <form method="post" action="{% url 'projects:remove_invitation' project.pk row.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Cancel this invitation?');">Cancel</button>
+      </form>
+      {% elif is_owner and row.display_status == 'Expired' %}
+      <form method="post" action="{% url 'projects:resend_invitation' project.pk row.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-warning">Reinvite</button>
+      </form>
+      <form method="post" action="{% url 'projects:remove_invitation' project.pk row.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Cancel this invitation?');">Cancel</button>
+      </form>
+      {% elif not is_owner and row.display_status == 'Expired' and row.invited_by.email == user.email %}
+      <form method="post" action="{% url 'projects:resend_invitation' project.pk row.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-warning">Reinvite</button>
+      </form>
+      <form method="post" action="{% url 'projects:remove_invitation' project.pk row.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Cancel this invitation?');">Cancel</button>
+      </form>
+      {% elif is_owner and row.status == 'Invited' %}
+      <form method="post" action="{% url 'projects:remove_invitation' project.pk row.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Cancel this invitation?');">Cancel</button>
+      </form>
+      {% elif not is_owner and row.status == 'Invited' and row.invited_by.email == user.email %}
+      <form method="post" action="{% url 'projects:remove_invitation' project.pk row.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Cancel this invitation?');">Cancel</button>
+      </form>
+      {% elif is_owner and row.status == 'Active' and row.membership_id %}
+      <form method="post" action="{% url 'projects:remove_active_user' project.pk row.membership_id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove this user from the project?');">Remove</button>
+      </form>
+      {% elif not is_owner and row.status == 'Active' and row.email == user.email and row.membership_id %}
+      <form method="post" action="{% url 'projects:remove_active_user' project.pk row.membership_id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Are you sure you want to leave this project?');">Leave</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<div class="mt-3">
+  <a href="{% url 'projects:project_delete' project.pk %}" class="btn btn-danger">Delete Project</a>
+  <a href="{% url 'projects:invite_user' project.pk %}" class="btn btn-primary">Invite User</a>
+  <a href="{% url 'projects:project_list' %}" class="btn btn-secondary">Back to Projects</a>
+</div>
+{% endblock %} 

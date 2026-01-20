@@ -1,0 +1,1230 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Session Recording - {{ session.session_id }}{% endblock %}
+
+{% block extra_js %}
+  <link rel="stylesheet" href="{% static '/css/tracker/lib-player-styles.css' %}" />
+  <link rel="stylesheet" href="{% static '/css/output.css' %}" />
+  <script src="{% static '/js/tracker/lib-player.js' %}"></script>
+  <script src="{% static '/js/labella.min.js' %}"></script>
+  <script src="{% static '/js/dragscroll.js' %}"></script>
+
+        <style>
+            #timeline {
+                /* default: no overlap */
+                --overlap: 0px;
+            }
+
+            /* no extra margin on the very first bubble */
+            #timeline > .bubble-box:first-child {
+                margin-left: 0;
+            }
+
+            /* every *next* bubble shifts left by –overlap */
+            #timeline > .bubble-box + .bubble-box {
+                margin-left: calc(var(--overlap) * -1);
+            }
+
+            /* Blue ring only while animating; no ring before/after */
+            @keyframes tab-glow-once {
+              0%   { box-shadow: none; }
+              45%  { box-shadow: 0 0 0 4px rgba(34,211,238,0.40); } /* ~0.4 intensity */
+              100% { box-shadow: none; }
+            }
+            .animate-tab-glow { animation: tab-glow-once 1000ms ease-in-out; }
+            @media (prefers-reduced-motion: reduce) {
+              .animate-tab-glow { animation: none; }
+            }
+        </style>
+  
+{% endblock %}
+
+{% block nav %}
+  {% include "tracker/recordings_nav.html" %}
+{% endblock %}
+
+{% block content %}
+  <div class="flex h-screen pt-16">
+    <button id="backBtn" class="flex-shrink-0 w-16 rounded-r-md text-sky-800 duration-200 hover:bg-slate-100 p-4 mb-2 flex flex-col items-center justify-center font-bold tracking-wider text-lg space-y-2 cursor-pointer">
+      <svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 -960 960 960" width="24" fill="currentColor"><path d="M398.08-253.85 171.92-480l226.16-226.15 42.15 43.38L287.46-510h500.62v60H287.46l152.77 152.77-42.15 43.38Z"/></svg>
+      <span class="text-xs">BACK</span>
+    </button>
+
+    <div class="flex-1 flex flex-col">
+      <header class="px-1 pt-2 pb-4">
+        <!-- Test Toast Button -->
+        <div class="flex justify-end mb-2 hidden" id="currentTabIndicatorParent">
+          <div id="currentTabIndicator" class="inline-flex items-center px-3 py-1.5 mr-2 font-medium text-gray-600 bg-gray-50 border border-gray-200 rounded-md">
+            Current tab:&nbsp;<span id="currentTabId" class="font-bold">-</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Tab Switch Toast Container -->
+      <div id="tabSwitchToast" class="fixed top-5 right-5 z-50 bg-blue-600 text-white px-4 py-2 rounded-md shadow-lg transform translate-x-full transition-transform duration-300 ease-out opacity-0">
+        <div class="flex items-center space-x-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
+          </svg>
+          <span id="tabSwitchMessage">Switched to Tab</span>
+        </div>
+      </div>
+
+      <main id="mainContainer" class="flex-1 pl-2 pr-4 pt-0 pb-2 overflow-hidden flex flex-col">
+        <!-- Centered Player -->
+        <div class="flex-1 flex items-center justify-center mb-4" id="player_parent">
+          <div id="player" class="cursor-pointer flex items-center justify-center w-full h-full relative mx-auto block rr-block">
+            <!-- Loading spinner -->
+            <div id="loadingSpinner" class="flex flex-col items-center justify-center">
+              <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+              <div class="text-gray-600 text-lg font-medium">Loading recording data...</div>
+              <div class="text-gray-400 text-sm mt-2">This may take a few moments</div>
+            </div>
+            <!-- Player will be inserted here by rrweb -->
+          </div>
+        </div>
+
+        <!-- Centered Custom Control Panel -->
+        <div id="controlPanelWrapper" class="flex justify-center mb-8 flex-shrink-0 hidden">
+          <div class="rounded-xl bg-white px-4 shadow-lg z-10">
+            <div class="flex w-fit items-center gap-4">
+              <button id="playBtn" class="flex-shrink-0 w-12 h-12 rounded-full bg-blue-600 text-white flex items-center justify-center hover:bg-blue-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 cursor-pointer">
+                <svg id="playIcon" xmlns="http://www.w3.org/2000/svg" height="32" viewBox="0 -960 960 960" width="32" fill="currentColor"><path d="M340-236.16v-487.68L723.07-480 340-236.16Z"/></svg>
+                <svg id="pauseIcon" class="w-6 h-6 hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5"/></svg>
+              </button>
+
+                             <div id="timelineContainer" class="border-y-8 border-white hover:bg-blue-50 transition-colors duration-150 h-20 flex items-center relative cursor-pointer">
+                 <span id="currentPositionLine" class="absolute inset-y-1 w-px bg-red-600 z-20 pointer-events-none transform-gpu will-change-[left]"></span>
+                 <div id="timeline" class="relative z-10 flex flex-1">
+                  <!-- Timeline bubbles -->
+                  {% if session_bubbles_data %}{% for bubble in session_bubbles_data %}{% if not bubble.is_gap %}
+                    <div class="bubble-box" data-title="{{ bubble.breakdown }}" data-minute="{{ forloop.counter }}" data-dot="{{ bubble.color.2 }}"><span class="circle {{ bubble.color.2 }}" style="--size: {{ bubble.size }}px"></span></div>
+                  {% else %}
+                    <div class="bubble-box invisible"></div>
+                  {% endif %}{% endfor %}{% endif %}
+                </div>
+                <input id="progressSlider" type="range" min="0" max="100" value="0" class="range-slider appearance-none absolute left-0 right-0 top-1/2 -translate-y-1/2 h-1 w-full rounded cursor-pointer opacity-0 pointer-events-none" />
+              </div>
+
+                             <span id="timeDisplay" class="whitespace-nowrap text-slate-600 text-sm font-mono tracking-tight">00:00 / 00:00</span>
+              
+              <!-- Skip Inactivity Checkbox
+              <div class="flex items-center gap-2">
+                <input type="checkbox" checked id="skipInactivity" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2">
+                <label for="skipInactivity" class="text-sm text-gray-700">Skip Inactivity</label>
+              </div>-->
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+
+
+  <script>
+    document.addEventListener('DOMContentLoaded', async () => {
+      // Global variables that need to be accessible throughout the script
+      let player = null;
+      let events = [];
+      let human_tab_dict = {};
+      let tab_switches = [];
+      let initial_tab_id = 'unknown';
+      let totalDuration = 0;
+      let currentTime = 0;
+      let isPlaying = false;
+      let inactivityRanges = [];
+      const INACTIVITY_THRESHOLD_MS = 3000; // treat gaps >= 3s as inactivity
+
+      // Current tab badge highlight
+      const badge = document.getElementById('current-tab');
+      const labelBold = document.querySelector('#current-tab-label b');
+
+      // Call this whenever the active tab changes
+      function highlightTabLabelBorder() {
+        // Restart the one-off glow
+        const badge = document.getElementById('currentTabIndicator');
+        const labelBold = document.getElementById('currentTabId');
+        badge.classList.remove('animate-tab-glow');
+        void badge.offsetWidth;   // force reflow to reset animation
+        badge.classList.add('animate-tab-glow');
+      }
+
+      // Helper functions
+      const $ = id => document.getElementById(id);
+      
+      function setPlaying(flag) {
+        isPlaying = flag;
+        $('playIcon').classList.toggle('hidden', flag);
+        $('pauseIcon').classList.toggle('hidden', !flag);
+      }
+      
+      // Back button functionality - should work immediately
+      function safeGoBack() {
+        if (history.length > 1 && document.referrer.startsWith(window.location.origin)) {
+          history.back();
+        } else {
+          window.location.href = "{% url 'recordings' project_id=project_id %}";
+        }
+      }
+      
+      function updateUI() {
+        // Update progress slider
+        const pct = totalDuration ? (currentTime / totalDuration) * 100 : 0;
+        $('progressSlider').value = pct;
+        $('currentPositionLine').style.left = pct + '%';
+        
+        // Update time display
+        const fmt = ms => {
+          const s = Math.floor(ms / 1000), m = Math.floor(s / 60);
+          return m.toString().padStart(2, '0') + ':' + (s % 60).toString().padStart(2, '0');
+        };
+        $('timeDisplay').textContent = `${fmt(currentTime)} / ${fmt(totalDuration)}`;
+      }
+
+      // Build inactivity ranges based on gaps between consecutive events
+      function computeInactivityRanges() {
+        inactivityRanges = [];
+        if (!events || events.length === 0) {
+          return;
+        }
+        for (let i = 1; i < events.length; i++) {
+          const prevTs = events[i - 1]?.timestamp ?? 0;
+          const currTs = events[i]?.timestamp ?? prevTs;
+          const gap = currTs - prevTs;
+          if (gap >= INACTIVITY_THRESHOLD_MS) {
+            inactivityRanges.push({ start: prevTs, end: currTs });
+          }
+        }
+      }
+      
+      // Set up back button immediately - should work during loading
+      const backBtn = document.getElementById('backBtn');
+      if (backBtn) {
+        backBtn.addEventListener('click', safeGoBack);
+      }
+      
+      // Load consolidated data via Ajax
+      let consolidatedData = null;
+      
+      try {
+        const response = await fetch("{% url 'get_consolidated_data' project_id=project_id session_id=session_id %}");
+        const result = await response.json();
+        
+        if (!response.ok) {
+          throw new Error(result.error || 'Failed to load recording data');
+        }
+        
+        consolidatedData = result.data;
+        events = consolidatedData.events || [];
+        human_tab_dict = consolidatedData.human_tab_dict || {};
+        tab_switches = consolidatedData.tab_switches || [];
+        initial_tab_id = consolidatedData.initial_tab_id || 'unknown';
+        
+        // Hide loading spinner and show control panel
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        if (loadingSpinner) {
+          loadingSpinner.style.display = 'none';
+        }
+        
+        // Show control panel and tab indicator now that data is loaded
+        const controlPanel = document.getElementById('controlPanelWrapper');
+        if (controlPanel) {
+          controlPanel.classList.remove('hidden');
+        }
+        
+        const currentTabIndicatorParent = document.getElementById('currentTabIndicatorParent');
+        if (currentTabIndicatorParent) {
+          currentTabIndicatorParent.classList.remove('hidden');
+        }
+        
+      } catch (error) {
+        console.error('Failed to load consolidated data:', error);
+        
+        // Show error message
+        const loadingSpinner = document.getElementById('loadingSpinner');
+        if (loadingSpinner) {
+          loadingSpinner.innerHTML = `
+            <div class="flex flex-col items-center justify-center text-red-600">
+              <svg class="w-12 h-12 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+              </svg>
+              <div class="text-lg font-medium mb-2">Failed to load recording data</div>
+              <div class="text-sm text-gray-500">${error.message}</div>
+              <button onclick="window.location.reload()" class="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+                Retry
+              </button>
+            </div>
+          `;
+        }
+        return; // Stop execution if data loading failed
+      }
+      
+      // Initialize the player and all related functionality after data is loaded
+      initializePlayer();
+      
+      function initializePlayer() {
+      // Page labels functionality
+      let pageLabelsContainer = null; // holds the page labels
+      let activeTimelineForLabels = null;
+
+      const COLOR_CACHE = {}; // Cache for computed background colors
+
+      const BG_TEXT_COLOR = {
+          "bg-c-blue": "#ffffff",
+          "bg-c-orange": "#713f12",
+          "bg-c-red": "#ffffff",
+          "bg-c-teal": "#ffffff",
+          "bg-c-green": "#ffffff",
+          "bg-c-rose": "#ffffff",
+          "bg-c-purple": "#ffffff",
+          "bg-c-light-blue": "#1e3a8a",
+          "bg-c-brown": "#ffffff",
+          "bg-gray-200": "#000000"
+      };
+
+      // find first Tailwind bg-* class on an element, strip opacity suffix ("/90")
+      function getBaseBgClass(el, fallbackClass) {
+          if (!el) return fallbackClass || null;
+          const cls = Array.from(el.classList || []).find((c) => c.startsWith("bg-")) || fallbackClass || null;
+          return cls ? cls.replace(/\/\d+$/, "") : null;
+      }
+
+      /**
+       * [OPTIMIZED] Reads the actual CSS color for a Tailwind bg-* class.
+       * Results are cached to prevent re-calculating the same color, which significantly
+       * improves performance on repeated hovers.
+       */
+      function cssColorFromBgClass(bgClass) {
+          if (COLOR_CACHE[bgClass]) {
+              return COLOR_CACHE[bgClass];
+          }
+
+          const tmp = document.createElement("div");
+          tmp.className = bgClass;
+          tmp.style.position = "absolute";
+          tmp.style.left = "-9999px";
+          tmp.style.visibility = 'hidden'; // Better than off-screen positioning
+          document.body.appendChild(tmp);
+          const color = getComputedStyle(tmp).backgroundColor;
+          tmp.remove();
+
+          COLOR_CACHE[bgClass] = color; // Save to cache
+          return color;
+      }
+
+      function applyChipTheme(el, bgClass) {
+          if (!bgClass || !el) return;
+
+          const bgColor = cssColorFromBgClass(bgClass);
+          el.style.backgroundColor = bgColor;
+          el.style.color = BG_TEXT_COLOR[bgClass] || "#ffffff";
+
+          // Text shadow for contrast
+          el.style.textShadow =
+              "0 0 1px rgba(0,0,0,0.4), 0 0 4px rgba(0,0,0,0.2)";
+
+          // Box shadow so tooltip stands out from background
+          el.style.boxShadow =
+              "0 4px 12px rgba(0,0,0,0.25), 0 2px 6px rgba(0,0,0,0.2)";
+      }
+
+      function showPageLabels(timelineContainer) {
+          hidePageLabels(); // clear overlay
+
+          if (!timelineContainer) return;
+
+          const bubbles = Array.from(timelineContainer.querySelectorAll(".bubble-box:not(.invisible)[data-title]"));
+          if (!bubbles.length) return;
+
+          // Ensure overlay + SVG for connectors
+          if (!pageLabelsContainer) {
+              pageLabelsContainer = document.createElement("div");
+              pageLabelsContainer.id = "page-labels-container";
+              pageLabelsContainer.innerHTML = `<svg id="label-connectors" style="position:fixed;top:0;left:0;width:100%;height:100%;
+      pointer-events:none;z-index:9998;"></svg>`;
+              document.body.appendChild(pageLabelsContainer);
+          }
+          const svgConnectors = document.getElementById("label-connectors");
+          svgConnectors.innerHTML = "";
+
+          // --- 1) Build runs and group by page title (one label per title) ---
+          const groups = new Map(); // title -> { title, anchors:[...], el, idealX, xPacked, levelY, bgClass }
+          let lastTitle = null;
+
+          bubbles.forEach((bubble) => {
+              const title = bubble.dataset.title;
+              if (!title) return;
+
+              // anchor only at the start of each consecutive run
+              if (title !== lastTitle) {
+                  const rect = bubble.getBoundingClientRect();
+                  const circle = bubble.querySelector(".circle");
+                  const size = parseFloat(getComputedStyle(circle).getPropertyValue("--size")) || 28;
+                  const r = size / 2;
+
+                  if (!groups.has(title)) {
+                      const baseBgClass = getBaseBgClass(circle) || "bg-gray-200"; // strip "/90"
+                      groups.set(title, {
+                          title,
+                          anchors: [],
+                          el: null,
+                          idealX: 0,
+                          xPacked: 0,
+                          levelY: null,
+                          bgClass: baseBgClass
+                      });
+                  }
+                  groups.get(title).anchors.push({
+                      bubbleEl: bubble,
+                      x: rect.left + rect.width / 2, // anchor X
+                      cy: rect.top + rect.height / 2,
+                      r
+                  });
+              }
+              lastTitle = title;
+          });
+
+          const labelsData = Array.from(groups.values());
+          if (!labelsData.length) return;
+
+          // --- 2) Ideal X = median of run anchors ---
+          labelsData.forEach((g) => {
+              const xs = g.anchors.map((a) => a.x).sort((a, b) => a - b);
+              g.idealX =
+                  xs.length % 2 ? xs[(xs.length - 1) / 2] : (xs[xs.length / 2 - 1] + xs[xs.length / 2]) / 2;
+          });
+
+          // --- 3) Create DOM nodes & theme them (solid background + readable text, no border) ---
+          labelsData.forEach((g) => {
+              const el = document.createElement("div");
+              el.className = "page-label";
+              el.textContent = g.title;
+              el.style.maxWidth = "280px";
+              el.style.whiteSpace = "nowrap";
+              el.style.overflow = "hidden";
+              el.style.textOverflow = "ellipsis";
+              pageLabelsContainer.appendChild(el);
+              g.el = el;
+
+              // Apply theme now (uses solid color, no border)
+              applyChipTheme(g.el, g.bgClass);
+          });
+
+          // --- 4) Geometry + helpers ---
+          labelsData.sort((a, b) => a.idealX - b.idealX);
+          const chartRect = timelineContainer.getBoundingClientRect();
+          const timelineRect = timelineContainer.getBoundingClientRect();
+          const LANES_TOP = [timelineRect.top - 35, timelineRect.top - 70]; // near, far
+          const LANES_BOT = [timelineRect.bottom - 5, timelineRect.bottom - 10]; // near, far
+          const spacing = 8;
+
+          const runLabella = (items, usePackedAsIdeal = false) => {
+              if (!items.length) return [];
+              const force = new labella.Force({
+                  minPos: chartRect.left,
+                  maxPos: chartRect.right,
+                  nodeSpacing: spacing
+              });
+              const nodes = items.map(
+                  (lbl) => new labella.Node(usePackedAsIdeal ? lbl.xPacked : lbl.idealX, lbl.el.offsetWidth, lbl)
+              );
+              force.nodes(nodes).compute();
+              return nodes;
+          };
+
+          // --- 5) Global pass for packed X ---
+          const allNodes = runLabella(labelsData);
+          allNodes.forEach((n) => (n.data.xPacked = n.currentPos));
+
+          // --- 6) Weave into 2 lanes; repack lanes; promote to 4 if dense ---
+          const ordered = allNodes
+              .slice()
+              .sort((a, b) => a.currentPos - b.currentPos)
+              .map((n) => n.data);
+          const topNear = [],
+              botNear = [];
+          ordered.forEach((d, i) => (i % 2 === 0 ? topNear : botNear).push(d));
+
+          let lanes = [
+              { nodes: runLabella(topNear, true), y: LANES_TOP[0] },
+              { nodes: runLabella(botNear, true), y: LANES_BOT[0] }
+          ];
+
+          const tooTight = (nodes) => {
+              if (!nodes.length) return false;
+              const totalW = nodes.reduce((s, n) => s + n.width, 0) + spacing * (nodes.length - 1);
+              const avail = chartRect.right - chartRect.left;
+              return totalW > avail * 0.95;
+          };
+          if (tooTight(lanes[0].nodes) || tooTight(lanes[1].nodes)) {
+              const splitWeave = (nodes) => {
+                  const list = nodes
+                      .slice()
+                      .sort((a, b) => a.currentPos - b.currentPos)
+                      .map((n) => n.data);
+                  const a = [],
+                      b = [];
+                  list.forEach((d, i) => (i % 2 === 0 ? a : b).push(d));
+                  return [runLabella(a, true), runLabella(b, true)];
+              };
+              const [t0, t1] = splitWeave(lanes[0].nodes);
+              const [b0, b1] = splitWeave(lanes[1].nodes);
+              lanes = [
+                  { nodes: t0, y: LANES_TOP[0] },
+                  { nodes: t1, y: LANES_TOP[1] },
+                  { nodes: b0, y: LANES_BOT[0] },
+                  { nodes: b1, y: LANES_BOT[1] }
+              ];
+          }
+
+          // --- 7) Commit label positions ---
+          lanes.forEach((l) => {
+              l.nodes.forEach((n) => {
+                  const g = n.data;
+                  g.levelY = l.y;
+                  const left = n.currentPos - n.width / 2;
+                  g.el.style.left = `${left}px`;
+                  g.el.style.top = `${l.y}px`;
+              });
+          });
+
+          // --- 8) Connect all runs to the single label (solid stroke color) ---
+          labelsData.forEach((g) => {
+              if (!g.el || g.levelY == null) return;
+
+              const labelRect = g.el.getBoundingClientRect();
+              const strokeColor = cssColorFromBgClass(g.bgClass); // 100% opacity color
+
+              g.anchors.forEach((a) => {
+                  const isAbove = g.levelY < timelineRect.top;
+                  const startX = a.x;
+                  const startY = isAbove ? a.cy - a.r : a.cy + a.r;
+                  const endX = labelRect.left + labelRect.width / 2;
+                  const endY = isAbove ? labelRect.bottom : labelRect.top;
+
+                  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                  const d = `M ${startX} ${startY} Q ${startX} ${endY} ${endX} ${endY}`;
+                  path.setAttribute("d", d);
+                  path.setAttribute("stroke", strokeColor);
+                  path.setAttribute("stroke-width", "2");
+                  path.setAttribute("fill", "none");
+                  svgConnectors.appendChild(path);
+                  g.connector = path;
+              });
+          });
+
+          // --- 9) Fade in ---
+          requestAnimationFrame(() => {
+              labelsData.forEach((g) => {
+                  if (!g.el || g.levelY == null) return;
+                  g.el.classList.add("visible");
+              });
+              svgConnectors.querySelectorAll("path").forEach((p) => p.classList.add("visible"));
+          });
+      }
+
+      function hidePageLabels() {
+          if (pageLabelsContainer) {
+              // Remove all label divs and SVG paths
+              pageLabelsContainer.querySelectorAll(".page-label").forEach((el) => el.remove());
+              const svg = document.getElementById("label-connectors");
+              if (svg) svg.innerHTML = "";
+          }
+      }
+      //console.log('tab_switches', tab_switches)
+      // Toast notification functions
+      function showTabSwitchToast(message) {
+        const toast = document.getElementById('tabSwitchToast');
+        const messageSpan = document.getElementById('tabSwitchMessage');
+        
+        if (toast && messageSpan) {
+          messageSpan.textContent = message;
+          
+          // Show toast
+          toast.classList.remove('translate-x-full', 'opacity-0');
+          toast.classList.add('translate-x-0', 'opacity-100');
+          
+          // Hide toast after 3 seconds
+          setTimeout(() => {
+            toast.classList.remove('translate-x-0', 'opacity-100');
+            toast.classList.add('translate-x-full', 'opacity-0');
+          }, 3000);
+        }
+      }
+
+      const playerContainer = document.getElementById('player');
+      const playerParentContainer = document.getElementById('player_parent');
+
+      // Determine recording meta (native width/height) from rrweb Meta event if possible
+      const DEFAULT_ASPECT = 16 / 9;
+      function getRecordingMeta() {
+        try {
+          const metaEvent = (events || []).find(ev => ev && ev.type === 4 && ev.data && ev.data.width && ev.data.height);
+          if (metaEvent && metaEvent.data.width && metaEvent.data.height) {
+            const width = Math.floor(metaEvent.data.width);
+            const height = Math.floor(metaEvent.data.height);
+            return { width, height, aspect: width / height };
+          }
+        } catch (_) {}
+        return { width: null, height: null, aspect: DEFAULT_ASPECT };
+      }
+
+      const { width: NATURAL_WIDTH, height: NATURAL_HEIGHT, aspect: RECORDING_ASPECT } = getRecordingMeta();
+
+      function computeContainSize(rect, aspect) {
+        const containerWidth = Math.max(0, Math.floor(rect.width || 0));
+        const containerHeight = Math.max(0, Math.floor(rect.height || 0));
+        if (!containerWidth || !containerHeight) {
+          const widthFallback = containerWidth || 0;
+          return {
+            width: widthFallback,
+            height: Math.floor(widthFallback / aspect)
+          };
+        }
+        const containerAspect = containerWidth / containerHeight;
+        if (containerAspect > aspect) {
+          const height = containerHeight;
+          const width = Math.floor(height * aspect);
+          return { width, height };
+        } else {
+          const width = containerWidth;
+          const height = Math.floor(width / aspect);
+          return { width, height };
+        }
+      }
+
+      function computeMaxDisplaySize(rect, naturalSize, aspect) {
+        const rectWidth = Math.max(0, Math.floor(rect.width || 0));
+        const rectHeight = Math.max(0, Math.floor(rect.height || 0));
+        let limitWidth = rectWidth;
+        let limitHeight = rectHeight;
+
+        if (naturalSize && naturalSize.width && naturalSize.height) {
+          limitWidth = Math.min(limitWidth, naturalSize.width);
+          limitHeight = Math.min(limitHeight, naturalSize.height);
+        }
+
+        return computeContainSize({ width: limitWidth, height: limitHeight }, aspect);
+      }
+
+      function setPlayerSize() {
+        const containerRect = playerParentContainer.getBoundingClientRect();
+        const { width, height } = computeMaxDisplaySize(
+          containerRect,
+          { width: NATURAL_WIDTH, height: NATURAL_HEIGHT },
+          RECORDING_ASPECT
+        );
+
+        // Size the target container in pixels, center via flex parent
+        playerContainer.style.width = width + 'px';
+        playerContainer.style.height = height + 'px';
+
+        // Ensure rrweb elements fill the target container
+        const rrRoot = playerContainer.querySelector('.rr-player');
+        if (rrRoot) {
+          rrRoot.style.width = '100%';
+          rrRoot.style.height = '100%';
+        }
+        const rrFrame = playerContainer.querySelector('.rr-player__frame');
+        if (rrFrame) {
+          rrFrame.style.width = '100%';
+          rrFrame.style.height = '100%';
+        }
+      }
+
+      function layoutPlayerArea() {
+        const mainEl = document.getElementById('mainContainer');
+        const panelEl = document.getElementById('controlPanelWrapper');
+        if (!mainEl || !panelEl) return;
+
+        const mainHeight = mainEl.clientHeight;
+        const panelHeight = panelEl.offsetHeight || 0;
+
+        const csMain = getComputedStyle(mainEl);
+        const csPlayerParent = getComputedStyle(playerParentContainer);
+        const csPanel = getComputedStyle(panelEl);
+
+        const paddings = (parseFloat(csMain.paddingTop) || 0) + (parseFloat(csMain.paddingBottom) || 0);
+        const marginsBetween = (parseFloat(csPlayerParent.marginBottom) || 0) + (parseFloat(csPanel.marginTop) || 0);
+        const panelMargins = (parseFloat(csPanel.marginBottom) || 0);
+
+        const available = Math.max(0, mainHeight - panelHeight - paddings - marginsBetween - panelMargins);
+        playerParentContainer.style.height = available + 'px';
+      }
+
+      function layoutAndSize() {
+        layoutPlayerArea();
+        setPlayerSize();
+      }
+
+      // Observe player loading to stop page loading progress
+      const observer = new MutationObserver((mutations, obs) => {
+        // Wait for rrwebPlayer to render some DOM content
+        const hasSnapshot = playerContainer.querySelector('iframe, .rr-player, .rrweb-sandbox');
+
+        if (hasSnapshot) {
+          window.stop();
+          obs.disconnect();
+        }
+      });
+      observer.observe(playerContainer, { childList: true, subtree: true });
+      
+      // Compute initial size for the player
+      layoutPlayerArea();
+      const initialRect = playerParentContainer.getBoundingClientRect();
+      const initialSize = computeMaxDisplaySize(
+        initialRect,
+        { width: NATURAL_WIDTH, height: NATURAL_HEIGHT },
+        RECORDING_ASPECT
+      );
+
+      // Initialize player after data is loaded
+      if (!events || events.length === 0) {
+        console.error('No events available to initialize player');
+        return;
+      }
+
+      // Initialize total duration and UI BEFORE setting up event listeners
+      if (events.length > 0) {
+        const lastEvent = events[events.length - 1];
+        totalDuration = lastEvent.timestamp || 0;
+        computeInactivityRanges();
+      }
+
+      player = new rrwebPlayer({
+        target: playerContainer,
+        props: {
+          events: events,
+          width: initialSize.width,
+          height: initialSize.height,
+          mouseTail: true,
+          iframe: {
+            sandbox: 'allow-same-origin allow-scripts allow-forms allow-popups'
+          },
+          // Disable default controls
+          showController: false,
+          autoPlay: false
+        },
+      });
+
+      // set and resize player size when the container changes its size
+      layoutAndSize();
+      
+      // Update UI after player is created
+      updateUI();
+
+      // Respond to window resize with rAF debounce
+      let resizeRaf = null;
+      function hasHorizontalScroll() {
+          return document.documentElement.scrollWidth > document.documentElement.clientWidth;
+      }
+      window.addEventListener('resize', () => {
+        if (hasHorizontalScroll()) {
+              const doc = document.documentElement;
+              window.scrollTo({
+                left: (doc.scrollWidth - doc.clientWidth) / 2,
+                behavior: "smooth" // optional
+              });
+        }
+        if (resizeRaf) cancelAnimationFrame(resizeRaf);
+        resizeRaf = requestAnimationFrame(() => {
+          layoutAndSize();
+        });
+      });
+
+      // Also observe parent container size changes
+      if (window.ResizeObserver) {
+        const ro = new ResizeObserver(() => layoutAndSize());
+        ro.observe(playerParentContainer);
+        const mainEl = document.getElementById('mainContainer');
+        if (mainEl) new ResizeObserver(() => layoutAndSize()).observe(mainEl);
+        const panelEl = document.getElementById('controlPanelWrapper');
+        if (panelEl) new ResizeObserver(() => layoutAndSize()).observe(panelEl);
+      }
+
+      // Custom control variables (already declared at top level)
+
+      function findGapContaining(timeMs) {
+        if (!inactivityRanges || inactivityRanges.length === 0) {
+          return null;
+        }
+        for (const range of inactivityRanges) {
+          if (timeMs >= range.start && timeMs < range.end) {
+            return range;
+          }
+        }
+        return null;
+      }
+
+      function handleSeek(newTimeMs, options = { respectSkip: true }) {
+        console.log('handleSeek called:', { newTimeMs, totalDuration, playerExists: !!player });
+        
+        const skipEnabled = document.getElementById('skipInactivity')?.checked;
+        let target = Math.max(0, Math.min(newTimeMs, totalDuration));
+
+        if (options.respectSkip && skipEnabled) {
+          const gap = findGapContaining(target);
+          if (gap) {
+            target = Math.min(gap.end, totalDuration);
+          }
+        }
+
+        currentTime = target;
+        console.log('Seeking to:', target);
+        
+        try {
+          if (player && typeof player.goto === 'function') {
+          player.goto(target);
+            console.log('Player.goto called successfully');
+          } else {
+            console.error('Player not available or goto method missing:', player);
+          }
+        } catch (e) {
+          console.warn('goto failed:', e);
+        }
+        updateUI();
+        updateCurrentTabForTime(target);
+      }
+      
+      // Play/Pause functionality
+      $('playBtn').addEventListener('click', () => {
+        if (isPlaying) {
+          player.pause();
+          setPlaying(false);
+        } else {
+          player.play();
+          setPlaying(true);
+        }
+      });
+      
+      // Player click functionality - pause/resume when clicking on the player
+      $('player').addEventListener('click', () => {
+        if (isPlaying) {
+          player.pause();
+          setPlaying(false);
+        } else {
+          player.play();
+          setPlaying(true);
+        }
+      });
+      
+      // Timeline click functionality - try multiple approaches
+      const timelineContainer = $('timelineContainer');
+      
+      // Approach 1: Direct click event
+      timelineContainer.addEventListener('click', (e) => {
+        const tl = $('timeline');
+        const { left, width } = tl.getBoundingClientRect();
+        const newTime = ((e.clientX - left) / width) * totalDuration;
+        handleSeek(newTime, { respectSkip: true });
+      });
+      
+      
+      // Approach 3: Event delegation on the parent
+      document.addEventListener('click', (e) => {
+        if (e.target.closest('#timelineContainer')) {
+          const tl = $('timeline');
+          const { left, width } = tl.getBoundingClientRect();
+          const newTime = ((e.clientX - left) / width) * totalDuration;
+          handleSeek(newTime, { respectSkip: true });
+        }
+      });
+      
+      // Approach 4: Direct click on timeline div
+      $('timeline').addEventListener('click', (e) => {
+        e.stopPropagation();
+        
+        const tl = $('timeline');
+        const { left, width } = tl.getBoundingClientRect();
+        const newTime = ((e.clientX - left) / width) * totalDuration;
+        handleSeek(newTime, { respectSkip: true });
+      });
+         
+      // Progress slider functionality
+      $('progressSlider').addEventListener('input', (e) => {
+        const percentage = e.target.value / 100;
+        const newTime = percentage * totalDuration;
+        currentTime = newTime;
+        updateUI();
+      });
+      
+      $('progressSlider').addEventListener('change', (e) => {
+        const percentage = e.target.value / 100;
+        const newTime = percentage * totalDuration;
+        handleSeek(newTime, { respectSkip: true });
+      });
+      
+      // Keyboard support
+      document.addEventListener('keydown', (e) => {
+        if (['INPUT', 'TEXTAREA'].includes(e.target.tagName) || e.target.isContentEditable) return;
+        
+        const KEY_STEP = 5000; // 5 seconds per arrow press
+        
+        if (e.key === ' ') {
+          e.preventDefault();
+          $('playBtn').click();
+        } else if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          const newTime = Math.max(0, currentTime - KEY_STEP);
+          handleSeek(newTime, { respectSkip: true });
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          const newTime = Math.min(totalDuration, currentTime + KEY_STEP);
+          handleSeek(newTime, { respectSkip: true });
+        }
+      });
+      
+      // Listen for player events
+      player.addEventListener('ui-update-current-time', (e) => {
+        const time = e.payload;
+        currentTime = time;
+        updateUI();
+        
+        // Update current tab based on the actual player position
+        updateCurrentTabForTime(time);
+      });
+      
+      // Add dashed vertical markers for tab switches
+        function addTransitionLines() {
+          const cont = $('timelineContainer');
+          if (!cont || !tab_switches || tab_switches.length === 0) {
+            return;
+          }
+          
+          const base = 0; // Start from 0 for consolidated timeline
+          const dur = totalDuration;
+          
+                     tab_switches.forEach((switchEvent, index) => {
+             const perc = (switchEvent.timestamp / dur) * 100;
+             const line = document.createElement('div');
+             line.className = 'absolute inset-y-1 w-px border-l border-dotted border-gray-500 opacity-50 z-15 pointer-events-none';
+             line.style.left = perc + '%';
+             line.style.transform = 'translateX(-50%)';
+             cont.appendChild(line);
+           });
+        }
+        
+        // Call addTransitionLines after totalDuration is set
+        setTimeout(() => {
+          addTransitionLines();
+        }, 100);
+      
+      // Current tab tracking
+      let currentTabId = initial_tab_id || 'unknown';
+      const currentTabElement = document.getElementById('currentTabId');
+
+      function updateCurrentTab(tabId) {
+        currentTabId = tabId;
+        if (currentTabElement) {
+          currentTabElement.textContent = human_tab_dict[tabId];
+          highlightTabLabelBorder();
+        } else {
+          console.warn('Current tab element not found!');
+        }
+      }
+      
+      // Initialize with the initial tab ID from backend
+      updateCurrentTab(currentTabId);
+      
+      // Photo shooting effect for tab switches
+      function showTabSwitchEffect() {
+        // Find the rr-player frame element
+        const rrPlayerFrame = document.querySelector('.rr-player__frame');
+        if (!rrPlayerFrame) {
+          return;
+        }
+        
+        // Create black flash overlay
+        const flash = document.createElement('div');
+        flash.className = 'absolute inset-0 bg-black z-50 pointer-events-none opacity-0 transition-opacity duration-300 ease-in-out';
+        rrPlayerFrame.style.position = 'relative';
+        rrPlayerFrame.appendChild(flash);
+        
+        // Flash effect
+        setTimeout(() => {
+          flash.style.opacity = '1';
+          setTimeout(() => {
+            // Fade out flash
+            flash.style.opacity = '0';
+            setTimeout(() => {
+              if (flash.parentNode) {
+                flash.parentNode.removeChild(flash);
+              }
+            }, 300);
+          }, 150); // Half of flash duration
+        }, 10);
+      }
+      
+      // Function to update current tab based on timeline position
+      function updateCurrentTabForTime(currentTimeMs) {
+        if (!tab_switches || tab_switches.length === 0) {
+          return;
+        }
+        
+        // Find the most recent tab switch that occurred before or at the current time
+        let currentTab = initial_tab_id;
+        
+        for (const switchEvent of tab_switches) {
+          if (switchEvent.timestamp <= currentTimeMs) {
+            currentTab = switchEvent.to_tab;
+          } else {
+            break; // Stop when we find a switch that hasn't happened yet
+          }
+        }
+
+        // Only update and show effect if tab actually changed
+        if (currentTab !== currentTabId) {
+          updateCurrentTab(currentTab);
+          showTabSwitchEffect(); // Apply photo effect for timeline navigation
+        }
+      }
+      
+      // Simple tab switch tracking - show toasts for each switch
+      if (tab_switches && tab_switches.length > 0 && 1==0 ) {
+        
+        // Show toasts for each tab switch with a delay
+        tab_switches.forEach((switchEvent, index) => {
+          const delay = (switchEvent.timestamp / 1000) * 1000; // Convert to milliseconds
+          
+          setTimeout(() => {
+            const tabName = switchEvent.to_tab || 'Unknown Tab';
+            showTabSwitchToast(`Switched to Tab: ${tabName}`);
+            showTabSwitchEffect(); // Apply photo effect for tab switches
+          }, delay);
+        });
+      } else {
+      }
+      
+      // Back button functionality (moved to top level for immediate availability)
+      
+             // Skip Inactivity Checkbox
+       const skipInactivityCheckbox = document.getElementById('skipInactivity');
+       if (skipInactivityCheckbox) {
+         skipInactivityCheckbox.addEventListener('change', (e) => {
+           const isChecked = e.target.checked;
+           
+           // Use default rrweb player's toggleSkipInactive method
+           try {
+             player.toggleSkipInactive();
+           } catch (error) {
+           }
+
+           // If enabling skip and currently inside an inactive gap, jump out
+           if (isChecked) {
+             const gap = findGapContaining(currentTime);
+             if (gap) {
+               handleSeek(currentTime, { respectSkip: true });
+             }
+           }
+         });
+       }
+       
+       // Add hover event listeners for page labels
+      const timelineContainerForLabels = document.getElementById('timelineContainer');
+      
+      document.addEventListener(
+          "pointerenter",
+          (e) => {
+              if (!(e.target instanceof Element)) return;
+
+              // show page labels only when entering the timeline from OUTSIDE the timeline
+              if (e.target.closest("#timelineContainer")) {
+                  const from = e.relatedTarget; // element we came from
+                  if (from instanceof Element && timelineContainerForLabels.contains(from)) return; // moved within the same timeline → ignore
+                  if (activeTimelineForLabels === timelineContainerForLabels) return; // already active → ignore
+                  activeTimelineForLabels = timelineContainerForLabels;
+                  showPageLabels(timelineContainerForLabels);
+              }
+          },
+          true
+      );
+
+      document.addEventListener(
+          "pointerleave",
+          (e) => {
+              if (!(e.target instanceof Element)) return;
+
+              // when we leave the timeline entirely, clear labels + state
+              if (e.target.closest("#timelineContainer") && (!e.relatedTarget || !timelineContainerForLabels.contains(e.relatedTarget))) {
+                  hidePageLabels();
+                  if (activeTimelineForLabels === timelineContainerForLabels) activeTimelineForLabels = null;
+              }
+          },
+          true
+      );
+      
+      // Scroll synchronization functionality
+      const SCROLL_RESHOW_DELAY = 150; // how long we wait after the last real scroll
+
+      function bindTooltipScrollSync(container) {
+          let scrollTimer = null;   // debounce after real scrolls
+          let gestureTimer = null;  // failsafe when no scroll event fires
+          let duringGesture = false;
+          let didScroll = false;
+
+          const hideNow = () => {
+              if (activeTimelineForLabels === timelineContainerForLabels) hidePageLabels();
+          };
+
+          const restore = () => {
+              clearTimeout(scrollTimer);
+              clearTimeout(gestureTimer);
+              if (activeTimelineForLabels === timelineContainerForLabels) showPageLabels(timelineContainerForLabels);
+          };
+
+          // Called when a scroll gesture *begins* (pointer down, wheel, touchstart)
+          const onStart = () => {
+              duringGesture = true;
+              didScroll = false;
+              hideNow();
+
+              // Failsafe: if no 'scroll' event follows (edge/bounce), put labels back
+              clearTimeout(gestureTimer);
+              gestureTimer = setTimeout(() => {
+                  if (duringGesture && !didScroll) restore();
+              }, 120);
+          };
+
+          // Called whenever the element actually scrolls
+          const onScroll = () => {
+              if (activeTimelineForLabels !== timelineContainerForLabels) return;
+              didScroll = true;
+              hideNow();
+              clearTimeout(scrollTimer);
+              scrollTimer = setTimeout(restore, SCROLL_RESHOW_DELAY);
+          };
+
+          // Called when the gesture definitely ends
+          const onEnd = () => {
+              if (!duringGesture) return;
+              duringGesture = false;
+              if (!didScroll) {
+                  // We hid on start but never scrolled → restore immediately
+                  restore();
+              }
+          };
+
+          // Pointer drag-to-scroll
+          container.addEventListener("pointerdown", onStart, { passive: true });
+          container.addEventListener("pointerup", onEnd, { passive: true });
+          container.addEventListener("pointercancel", onEnd, { passive: true });
+          container.addEventListener("mouseleave", onEnd, { passive: true });
+
+          // Touch
+          container.addEventListener("touchstart", onStart, { passive: true });
+          container.addEventListener("touchend", onEnd, { passive: true });
+          container.addEventListener("touchcancel", onEnd, { passive: true });
+          container.addEventListener("touchmove", onScroll, { passive: true });
+
+          // Mouse wheel / trackpad: treat as a start; also handle "edge flick"
+          container.addEventListener(
+              "wheel",
+              (e) => {
+                  onStart();
+
+                  // If we're at an edge and wheel is pushing further out, no scroll will fire.
+                  const atLeft = container.scrollLeft <= 0;
+                  const atRight =
+                      Math.ceil(container.scrollLeft + container.clientWidth) >= container.scrollWidth;
+
+                  if ((atLeft && e.deltaX < 0) || (atRight && e.deltaX > 0)) {
+                      clearTimeout(gestureTimer);
+                      gestureTimer = setTimeout(restore, 120);
+                  }
+              },
+              { passive: true }
+          );
+
+          // Real scroll event (works for all inputs if scrolling actually happened)
+          container.addEventListener("scroll", onScroll, { passive: true });
+      }
+
+      // Bind scroll sync for the timeline container and add dragscroll functionality
+      if (timelineContainerForLabels) {
+          bindTooltipScrollSync(timelineContainerForLabels);
+          
+          // Add dragscroll functionality to the timeline container
+          timelineContainerForLabels.classList.add('dragscroll');
+          
+          // Check if timeline is scrollable and add visual indicator
+          if (timelineContainerForLabels.scrollWidth > timelineContainerForLabels.clientWidth) {
+              timelineContainerForLabels.classList.add('scrollable-x');
+          } else {
+              timelineContainerForLabels.classList.remove('scrollable-x');
+          }
+      }
+      
+      // Auto-start the recording when page becomes active
+       let hasAutoStarted = false;
+
+       function startAutoPlay() {
+         if (!hasAutoStarted && !isPlaying && !document.hidden) {
+           hasAutoStarted = true;
+           player.play();
+           setPlaying(true);
+         }
+       }
+
+       // Start when page becomes visible
+       document.addEventListener('visibilitychange', () => {
+         if (document.hidden && isPlaying) {
+           player.pause();
+           setPlaying(false);
+         } else if (!document.hidden && !hasAutoStarted) {
+           // Small delay to ensure everything is loaded
+           setTimeout(startAutoPlay, 500);
+         }
+       });
+
+       // Pause when window loses focus
+       window.addEventListener('blur', () => {
+         if (isPlaying) {
+           player.pause();
+           setPlaying(false);
+         }
+       });
+
+               // Start auto-play if page is already visible after initial load
+        if (!document.hidden) {
+          setTimeout(startAutoPlay, 1000);
+        }
+      } // End of initializePlayer function
+      
+    }); // End of DOMContentLoaded event listener
+    </script>
+
+    <script type="module">
+        const timeline = document.getElementById("timeline");
+        const ticks = document.querySelectorAll("#timelineContainer .tick");
+
+                 const C = 28,
+             M = 40,
+             F = 270; // design constants (increased from 190 to account for back button w-16 = 64px + extra space)
+
+        function updateOverlap() {
+            const S = window.innerWidth;
+            const N = timeline.children.length;
+            if (N < 2) return;
+
+            // 1 . overlap per gap  ----------------------------------------------------
+            const m = Math.max(0, (C * N + 2 * M + F - S) / (N - 1));
+            timeline.style.setProperty("--overlap", `${m.toFixed(2)}px`);
+
+            // 2 . pixel distance between bubble centres ------------------------------
+            const gap = C - m; // how far we advance for each bubble
+
+            // 3 . reposition every guide-line ----------------------------------------
+            ticks.forEach((tick) => {
+                const i = Number(tick.dataset.index); // which bubble to align to
+                const left = i * gap + C / 2; // C/2 centres on the circle
+                tick.style.left = `${left}px`;
+            });
+        }
+
+        updateOverlap();
+        window.addEventListener("resize", updateOverlap);
+        new ResizeObserver(updateOverlap).observe(timeline);
+    </script>
+{% endblock %} 

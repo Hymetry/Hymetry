@@ -1,0 +1,57 @@
+.chart-container {
+    display: grid;
+    /* Create as many 17px columns as will fit.
+       The overlap (28px box - 17px column = 11px) is built-in. */
+    grid-template-columns: repeat(auto-fill, 23px);
+    /* Define the space between the wrapped rows */
+    row-gap: 0px;
+    max-width: 900px;
+    margin: auto;
+    padding: 20px;
+    background-color: #ffffff;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+}
+
+/* The fixed-size container for each bubble */
+.bubble-box {
+    /* The box is now 28px, which will overlap its 17px grid column */
+    width: 28px;
+    height: 28px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* This rule is no longer needed with CSS Grid */
+/* .bubble-box + .bubble-box {
+    margin-left: -11px;
+} 
+*/
+
+/* The circle element itself */
+.circle {
+    width: var(--size);
+    height: var(--size);
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+
+/* 5. Color Palette */
+.c-gray { background-color: #B2BEC3; opacity: 0.9 }
+.c-blue { background-color: #4285F4; opacity: 0.9 }
+.c-green { background-color: #34A853; opacity: 0.9 }
+.c-teal { background-color: #7ED6DF; opacity: 0.9 }
+.c-brown { background-color: #9C6B4E; opacity: 0.9 }
+.c-purple { background-color: #A142F4; opacity: 0.9 }
+.c-lilac { background-color: #97BBF5; opacity: 0.9 }
+.c-yellow { background-color: #EFB118; opacity: 0.9 }
+.c-pink { background-color: #F76E9A; opacity: 0.9 }
+.c-salmon { background-color: #FF725C; opacity: 0.9 }
+.c-dark-green { background-color: #2e7d32; opacity: 0.9 }
+.c-light-green { background-color: #6CC5B0; opacity: 0.9 }
+.c-light-gray { background-color: #BDBDBD !important; opacity: 0.9 }
+.c-red { background-color: #EA4335; opacity: 0.9 }
+.c-orange { background-color: #E17055; opacity: 0.9 }
+.c-dark-gray { background-color: #636E72; opacity: 0.9 }

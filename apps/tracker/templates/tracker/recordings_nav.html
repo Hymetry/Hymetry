@@ -1,0 +1,95 @@
+{% load tracker_extras %}
+{% load static %}
+<nav
+            class="fixed top-0 left-0 z-10 right-0 bg-white border-b border-gray-200 w-full h-12 pl-[30px] pr-2 flex items-center justify-between [view-transition-name:shell]">
+            <!-- Left Section: Logo and Menu Items -->
+            <div class="flex items-center h-full">
+                <!-- Logo -->
+                <a href="/"><img src="{% static 'svg/logo.svg' %}" /></a>
+                <!-- Menu Items -->
+                <div class="flex items-center h-full ml-[35px] space-x-2">
+                    <!-- Dropdown Menu Component -->
+                <div class="relative inline-block text-left mr-6" id="project-dropdown-container">
+                    <!-- Button to toggle the dropdown -->
+                    <div>
+                        <button
+                            type="button"
+                            class="inline-flex w-full justify-center text-sky-800 duration-150 hover:bg-slate-100 rounded-md p-2 pl-4 font-medium gap-1 cursor-pointer"
+                            data-dropdown-toggle="#project-popup">
+                            {% if selected_project %}
+                               {{ selected_project.name }}
+                            {% else %}
+                              Select project
+                            {% endif %}
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                height="20px"
+                                viewBox="0 -960 960 960"
+                                width="20px"
+                                fill="currentColor">
+                                <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
+                            </svg>
+                        </button>
+                    </div>
+
+                    <!-- Dropdown menu, hidden by default -->
+                    <div
+                        id="project-popup"
+                        data-dropdown-menu
+                        class="hidden absolute left-0 z-10 mt-2 w-48 origin-top-left rounded-md bg-white shadow-lg border border-slate-200 focus:outline-none duration-200"
+                        role="menu"
+                        tabindex="-1">
+                        <div class="py-1" role="none">
+                            {% for membership in user_projects %}
+                                {% if membership.project.id == selected_project.id %}
+                            <p
+                                class="rounded text-slate-50 block px-4 py-3 bg-slate-700"
+                                role="menuitem"
+                                tabindex="-1">
+                                {{ membership.project.name }}
+                            </p>
+                                {% else %}
+                            <a
+                                href="{% url 'recordings' membership.project.id %}"
+                                class="block px-4 py-3 hover:bg-gray-100"
+                                data-project-id="{{ membership.project.id }}"
+                                role="menuitem"
+                                tabindex="-1"
+                                >{{ membership.project.name }}</a>
+                                {% endif %}
+                            {% endfor %}
+                            <a
+                                href="{% url 'projects:project_list' %}"
+                                class="block border-t border-gray-200 px-4 py-3 hover:bg-gray-100"
+                                role="menuitem"
+                                tabindex="-1"
+                                >See all projects</a
+                            >
+                        </div>
+                    </div>
+                </div>
+                    <a href="{% url 'recordings' project_id=selected_project.id %}" class="flex items-center h-full px-3 bg-gray-100 font-medium">
+                        User visits
+                    </a>
+
+                    <!-- Settings (Not Selected) -->
+                    {% if selected_project %}
+                    <a
+                        href="{% url 'projects:project_settings' project_id=selected_project.id %}"
+                        class="flex items-center px-4 py-2 text-sky-800 duration-150 hover:bg-slate-100 rounded-md font-medium">
+                        Settings
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Right Section: Profile Menu -->
+            <div class="flex items-center h-full">
+
+                <a
+                    href="{% url 'users:user_profile' %}"
+                    class="flex items-center text-sky-800 duration-150 hover:bg-slate-100 rounded-md py-2 px-4 font-medium gap-1">
+                    <span>Profile</span>
+                </a>
+            </div>
+        </nav>

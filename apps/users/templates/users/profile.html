@@ -1,0 +1,376 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Profile{% endblock %}
+
+{% block nav %}
+<nav
+    class="fixed top-0 left-0 z-10 right-0 bg-white border-b border-gray-200 shadow-sm w-full h-12 pl-8 pr-2 flex items-center justify-between [view-transition-name:shell]">
+    <!-- Left Section: Logo and Menu Items -->
+    <div class="flex items-center h-full">
+        <!-- Logo -->
+        <a href="/"><img src="{% static 'svg/logo.svg' %}" /></a>
+        <div class="flex items-center h-full ml-[35px] space-x-2">
+        <!-- Dropdown Menu Component -->
+        <div class="relative inline-block text-left" id="project-dropdown-container">
+            <!-- Button to toggle the dropdown -->
+            <div>
+                <button
+                    type="button"
+                    class="inline-flex w-full justify-center bg-gradient-to-r from-teal-200 to-lime-200 text-sky-800 duration-150 hover:bg-slate-100 rounded-md p-2 pl-4 font-medium gap-1"
+                    data-dropdown-toggle="#project-popup">
+                    Select project
+                    <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        height="20px"
+                        viewBox="0 -960 960 960"
+                        width="20px"
+                        fill="currentColor">
+                        <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Dropdown menu, hidden by default -->
+            <div
+                id="project-popup"
+                data-dropdown-menu
+                class="absolute left-0 z-10 mt-2 w-48 origin-top-left rounded-md bg-white shadow-lg border border-slate-200 focus:outline-none duration-200 hidden"
+                role="menu"
+                tabindex="-1">
+                <div class="py-1" role="none">
+                    {% for membership in user_projects %}
+                        <a
+                            href="{% url 'recordings' membership.project.id %}"
+                            class="block px-4 py-3 hover:bg-gray-100"
+                            data-project-id="{{ membership.project.id }}"
+                            role="menuitem"
+                            tabindex="-1"
+                            >{{ membership.project.name }}</a>
+                    {% endfor %}
+                    <a
+                        href="{% url 'projects:project_list' %}"
+                        class="block border-t border-gray-200 px-4 py-3 hover:bg-gray-100"
+                        role="menuitem"
+                        tabindex="-1"
+                        >See all projects</a
+                    >
+                </div>
+            </div>
+        </div>
+</div>
+
+
+    </div>
+
+    <!-- Right Section: Profile Menu -->
+    <div class="flex items-center h-full">
+        
+
+        <a href="#" class="flex items-center h-full ml-6 px-3 bg-gray-100 font-medium"> Profile </a>
+    </div>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="flex h-[calc(100vh-4rem)] mt-16">
+    <div class="container mx-auto p-4 sm:p-6 lg:p-8">
+        <!-- Main Flex Container -->
+        <div class="flex flex-row gap-8 lg:gap-12">
+            <!-- Left Column: Illustration (Hidden on screens smaller than lg) -->
+            <div class="hidden lg:block w-1/4 xl:w-1/5">
+                <img src="{% static 'svg/profile.svg' %}" />
+            </div>
+
+            <!-- Right Column: Content Cards -->
+            <div class="w-full lg:flex-1 max-w-200">
+                <header class="mb-8">
+                    <h1 class="text-3xl font-bold text-slate-900">Profile</h1>
+                </header>
+
+                <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+                    <h2 class="text-lg font-semibold text-slate-600 uppercase">Name</h2>
+
+                    <div class="flex justify-between items-center mt-2">
+                        <p>
+                            {% if user.first_name or user.last_name %}
+                                {{ user.get_full_name }}
+                            {% else %}
+                                Set your name so your teammates can recognize you
+                            {% endif %}
+                        </p>
+                        <button
+                            data-modal-trigger
+                            aria-controls="change-user-name"
+                            class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                            {% if user.first_name or user.last_name %}Change name{% else %}Set my name{% endif %}
+                        </button>
+                    </div>
+                </section>
+
+                <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-12">
+                    <h2 class="text-lg font-semibold text-slate-600 uppercase">Credentials</h2>
+                    <div class="mt-4"><p>Email: {{ user.email }}</p></div>
+                    <div class="flex justify-between items-center mt-2">
+                        <p>Password: *******</p>
+                        <button
+                            data-modal-trigger
+                            aria-controls="change-password"
+                            class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                            Change password
+                        </button>
+                    </div>
+                </section>
+
+                <div class="flex justify-end">
+                    <a href="{% url 'sign_out' %}"
+                        class="flex items-center gap-2 font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                        <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            height="24px"
+                            viewBox="0 -960 960 960"
+                            width="24px"
+                            fill="currentColor">
+                            <path
+                                d="M212.31-140Q182-140 161-161q-21-21-21-51.31v-535.38Q140-778 161-799q21-21 51.31-21h268.07v60H212.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46v535.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85h268.07v60H212.31Zm436.92-169.23-41.54-43.39L705.08-450H363.85v-60h341.23l-97.39-97.38 41.54-43.39L820-480 649.23-309.23Z" />
+                        </svg>
+                        Sign out
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Name Change Modal -->
+<div id="change-user-name" data-modal-target class="{% if show_name_modal %}block{% else %}hidden{% endif %}">
+    <div class="flex items-start justify-center fixed inset-0 z-50">
+        <div
+            data-modal-close
+            data-modal-overlay
+            tabindex="-1"
+            data-class-in="opacity-50"
+            data-class-out="opacity-0"
+            class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+
+        <div
+            data-modal-wrapper
+            data-class-in="opacity-100 translate-y-0"
+            data-class-out="opacity-0 translate-y-5"
+            class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+            <form method="post" action="{% url 'users:user_profile' %}">
+                {% csrf_token %}
+                <input type="hidden" name="change_name" value="1">
+                <div class="bg-white px-6 py-4">
+                    <button
+                        type="button"
+                        data-modal-close
+                        class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                        <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            height="24px"
+                            viewBox="0 -960 960 960"
+                            width="24px"
+                            fill="currentColor">
+                            <path
+                                d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                        </svg>
+                    </button>
+                    <div class="flex items-start">
+                        <div
+                            class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                height="24px"
+                                viewBox="0 -960 960 960"
+                                width="24px"
+                                fill="currentColor">
+                                <path
+                                    d="M563.08-450.77h181.53v-60H563.08v60Zm0-115.38h181.53v-60H563.08v60Zm-347.69 232.3h292.3v-14.3q0-40-39.58-62.85-39.57-22.85-106.57-22.85T254.96-411q-39.57 22.85-39.57 62.85v14.3Zm146.15-152.3q29.15 0 49.57-20.43 20.43-20.42 20.43-49.57 0-29.16-20.43-49.58-20.42-20.42-49.57-20.42t-49.58 20.42q-20.42 20.42-20.42 49.58 0 29.15 20.42 49.57 20.43 20.43 49.58 20.43ZM172.31-180Q142-180 121-201q-21-21-21-51.31v-455.38Q100-738 121-759q21-21 51.31-21h615.38Q818-780 839-759q21 21 21 51.31v455.38Q860-222 839-201q-21 21-51.31 21H172.31Zm0-60h615.38q4.62 0 8.46-3.85 3.85-3.84 3.85-8.46v-455.38q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H172.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46v455.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85ZM160-240v-480 480Z" />
+                            </svg>
+                        </div>
+                        <div class="w-full mt-2 ml-4">
+                            <h3 class="text-base font-semibold leading-6">Your name</h3>
+                            <div class="mt-6">
+                                <input
+                                    type="text"
+                                    name="first_name"
+                                    value="{{ user.first_name }}"
+                                    placeholder="Enter your name"
+                                    autocomplete="name" required
+                                    class="appearance-none border border-slate-300 rounded w-full py-3 px-3 text-gray-700 leading-tight"
+                                    data-modal-input-focus
+                                    autofocus />
+                                {% if name_form.first_name.errors %}
+                                    <div class="text-red-600 text-sm mt-1">{{ name_form.first_name.errors.0 }}</div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+                    <button
+                        type="submit"
+                        class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">
+                        Save changes
+                    </button>
+                    <button
+                        type="button"
+                        data-modal-close
+                        class="flex items-center gap-2 bg-sla font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">
+                        Cancel
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Password Change Modal -->
+<div id="change-password" data-modal-target class="{% if show_password_modal %}block{% else %}hidden{% endif %}">
+    <div class="flex items-start justify-center fixed inset-0 z-50">
+        <div
+            data-modal-close
+            data-modal-overlay
+            tabindex="-1"
+            data-class-in="opacity-50"
+            data-class-out="opacity-0"
+            class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+
+        <div
+            data-modal-wrapper
+            data-class-in="opacity-100 translate-y-0"
+            data-class-out="opacity-0 translate-y-5"
+            class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+            <form method="post" action="{% url 'users:user_profile' %}">
+                {% csrf_token %}
+                <input type="hidden" name="change_password" value="1">
+                <div class="bg-white px-6 py-4">
+                    <button
+                        type="button"
+                        data-modal-close
+                        class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                        <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            height="24px"
+                            viewBox="0 -960 960 960"
+                            width="24px"
+                            fill="currentColor">
+                            <path
+                                d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                        </svg>
+                    </button>
+                    <div class="flex items-start">
+                        <div
+                            class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                height="24px"
+                                viewBox="0 -960 960 960"
+                                width="24px"
+                                fill="currentColor">
+                                <path
+                                    d="M480-100.77q-129.77-35.39-214.88-152.77Q180-370.92 180-516v-230.15l300-112.31 300 112.31V-516q0 145.08-85.12 262.46Q609.77-136.16 480-100.77Zm0-63.23q97-30 162-118.5T718-480H480v-314.62L240-705v206.62q0 7.38 2 18.38h238v316Z" />
+                            </svg>
+                        </div>
+                        <div class="w-full mt-2 ml-4">
+                            <h3 class="text-base font-semibold leading-6">Change password</h3>
+                            <div class="mt-6">
+                                <p class="mb-2">Enter your old password</p>
+                                <input
+                                    type="password"
+                                    name="old_password"
+                                    autocomplete="current-password" required
+                                    class="appearance-none border border-slate-300 rounded w-full py-3 px-3 text-gray-700 leading-tight"
+                                    data-modal-input-focus
+                                    autofocus />
+                                {% if password_form.old_password.errors %}
+                                    <div class="text-red-600 text-sm mt-1">{{ password_form.old_password.errors.0 }}</div>
+                                {% endif %}
+                                <div id="old-password-ajax-error" class="text-red-600 text-sm mt-1"></div>
+                            </div>
+                            <div class="mt-6">
+                                <p class="mb-2">Enter your new password</p>
+                                <input
+                                    type="password"
+                                    name="new_password1"
+                                    autocomplete="new-password"
+                                    class="appearance-none border border-slate-300 rounded w-full py-3 px-3 text-gray-700 leading-tight" />
+                                {% if password_form.new_password1.errors %}
+                                    <div class="text-red-600 text-sm mt-1">{{ password_form.new_password1.errors.0 }}</div>
+                                {% endif %}
+                                <div id="new-password-ajax-error" class="text-red-600 text-sm mt-1"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+                    <button
+                        type="button"
+                        id="save-password-btn"
+                        class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">
+                        Save changes
+                    </button>
+                    <button
+                        type="button"
+                        data-modal-close
+                        class="flex items-center gap-2 bg-sla font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">
+                        Cancel
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+// AJAX validation for old password
+
+document.addEventListener('DOMContentLoaded', function() {
+    const saveBtn = document.getElementById('save-password-btn');
+    if (saveBtn) {
+        saveBtn.addEventListener('click', function(e) {
+            const form = saveBtn.closest('form');
+            const oldPasswordInput = form.querySelector('input[name="old_password"]');
+            const newPasswordInput = form.querySelector('input[name="new_password1"]');
+            const oldErrorDiv = document.getElementById('old-password-ajax-error');
+            const newErrorDiv = document.getElementById('new-password-ajax-error');
+            oldErrorDiv.textContent = '';
+            newErrorDiv.textContent = '';
+
+            // Basic client-side validation for new password (length, not empty)
+            if (!newPasswordInput.value || newPasswordInput.value.length < 8) {
+                newErrorDiv.textContent = 'New password must be at least 8 characters.';
+                newPasswordInput.focus();
+                return;
+            }
+
+            // AJAX call to validate old password
+            fetch("{% url 'users:account_validate_old_password' %}", {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': form.querySelector('[name=csrfmiddlewaretoken]').value
+                },
+                body: JSON.stringify({ old_password: oldPasswordInput.value })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.valid) {
+                    // Submit the form if old password is valid
+                    form.submit();
+                } else {
+                    oldErrorDiv.textContent = data.error || 'Old password is incorrect.';
+                    oldPasswordInput.focus();
+                }
+            })
+            .catch(() => {
+                oldErrorDiv.textContent = 'Error validating password. Please try again.';
+            });
+        });
+    }
+});
+</script>
+{% endblock %}

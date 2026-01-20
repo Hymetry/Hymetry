@@ -1,0 +1,869 @@
+{% extends 'base.html' %}
+{% load static %}
+{% load tracker_extras %}
+
+{% block title %}
+  User visits
+{% endblock %}
+
+{% block nav %}
+  {% include 'tracker/recordings_nav.html' %}
+{% endblock %}
+
+{% block body_classes %}
+  class="text-sm h-full bg-white"
+{% endblock %}
+
+{% block content %}
+  <div class="mt-12 mx-auto pl-8 pr-2 pt-8 pb-4 flex justify-between items-center">
+    <div>
+      <h1 class="text-2xl font-medium tracking-tight text-gray-500">
+        User visits · 
+        <span>
+          {% if selected_date_day_delta == 0 %}
+            Today ({{ selected_date|date:'M j' }})
+          {% elif selected_date_day_delta == 1 %}
+            Yesterday ({{ selected_date|date:'M j' }})
+          {% else %}
+            {{ selected_date_day_delta }} days ago · {{ selected_date|date:'D' }} ({{ selected_date|date:'M j' }})
+          {% endif %}
+        </span>
+      </h1>
+    </div>
+    <div class="flex items-center space-x-2">
+      <span class="text-gray-500">{{ total_sessions_for_day }} sessions</span>
+      <a href="#" onclick="window.location.reload();" class="p-1 text-sky-800 duration-150 hover:bg-slate-100 rounded-md">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12.0386 19.5C9.94474 19.5 8.17132 18.7736 6.71832 17.3207C5.26516 15.8679 4.53857 14.0948 4.53857 12.0015C4.53857 9.90817 5.26516 8.13458 6.71832 6.68075C8.17132 5.22692 9.94474 4.5 12.0386 4.5C13.2077 4.5 14.3142 4.75992 15.3578 5.27975C16.4013 5.79975 17.2692 6.53342 17.9616 7.48075V4.5H19.4616V10.6152H13.3463V9.1155H17.2963C16.7693 8.15 16.0385 7.38942 15.1038 6.83375C14.1693 6.27792 13.1476 6 12.0386 6C10.3719 6 8.95524 6.58333 7.78857 7.75C6.62191 8.91667 6.03857 10.3333 6.03857 12C6.03857 13.6667 6.62191 15.0833 7.78857 16.25C8.95524 17.4167 10.3719 18 12.0386 18C13.3219 18 14.4802 17.6333 15.5136 16.9C16.5469 16.1667 17.2719 15.2 17.6886 14H19.2693C18.8155 15.632 17.9216 16.9567 16.5876 17.974C15.2536 18.9913 13.7372 19.5 12.0386 19.5Z" fill="currentColor" />
+        </svg>
+      </a>
+    </div>
+  </div>
+
+  <div class="flex items-start">
+    <div class="fixed top-52 bottom-0 left-0 w-56 bg-gray-50 -z-10 {% if not overall_legend_pages %}hidden{% endif %}"></div>
+
+    <aside class="sticky top-12 min-h-32 self-start bg-gray-50 px-8 pt-3 min-w-56 {% if not overall_legend_pages %}hidden{% endif %}">
+      <section class="select-none space-y-3">
+        {% for legend_item in overall_legend_pages %}
+          <div>
+            <h3 class="font-medium leading-tight {{ legend_item.color.0 }} truncate">{{ legend_item.page_title }}</h3>
+            <div style="width: {{ legend_item.percentage_width }}%" class="mt-1 h-4 rounded-full {{ legend_item.color.3 }}"></div>
+          </div>
+        {% endfor %}
+      </section>
+    </aside>
+
+    <div class="flex-1 min-w-0 flex flex-col -mt-4 pr-2 pl-4 bg-white min-h-[calc(100vh-theme(spacing.32))]">
+      {% if total_sessions_for_day %}
+        <div class="flex items-start mb-2">
+          <div class="flex-shrink-0 w-32 ml-4">&nbsp;</div>
+
+          <div id="timeline-ruler" class="flex-1 pl-2 py-2 overflow-hidden">
+            <div class="relative h-4">
+              {% for i in 'x'|ljust:120 %}
+                {% with minute=forloop.counter %}
+                  {% if minute|divisibleby:5 %}
+                    <div class="absolute top-0 text-xs text-gray-400" style="left: calc(({{ minute }} - 1) * 20px + 14px);">
+                      <span class="absolute -translate-x-1/2 whitespace-nowrap">
+                        {% if minute < 60 %}
+                          {{ minute }} min
+                        {% else %}
+                          {% if minute == 60 %}
+                            1h
+                          {% elif minute == 120 %}
+                            2h
+                          {% else %}
+                            1h {{ minute|add:'-60' }}m
+                          {% endif %}
+                        {% endif %}
+                      </span>
+                      <div class="absolute top-5 -translate-x-1/2 bg-slate-400" style="width: 1px; height: 6px;"></div>
+                    </div>
+                  {% else %}
+                    <div class="absolute top-5 -translate-x-1/2 bg-slate-200" style="left: calc(({{ minute }} - 1) * 20px + 14px); width: 1px; height: 4px;"></div>
+                  {% endif %}
+                {% endwith %}
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      {% endif %}
+
+      <ul class="list-none p-0 m-0 flex-1">
+        {% for session_item in session_data %}
+          {% if session_item.bubbles %}
+            <li class="relative{% if forloop.first %} max-w-full{% endif %}">
+              <!-- The entire row is a clickable link -->
+              <a href="{% url 'recording' selected_project.id session_item.session.session_id %}" class="flex items-start outline outline-transparent transition-colors duration-150 hover:outline-1 hover:outline-slate-200 hover:bg-slate-50">
+                <!-- User Email -->
+                <p class="flex-shrink-0 w-32 py-2 ml-4 mt-0.5 font-medium text-slate-800">{{ session_item.session.start_time|format_in_project_timezone:project_timezone }}</p>
+                <!-- Circles -->
+                <div class="chart-container pl-2 py-2 dragscroll overflow-x-auto custom-scroll">
+                  {% for bubble in session_item.bubbles %}
+                    {% if not bubble.is_gap %}
+                      <div class="bubble-box" data-title="{{ bubble.breakdown }}" data-minute="{{ forloop.counter }}" data-dot="{{ bubble.color.2 }}">
+                        <span class="circle {{ bubble.color.2 }}" style="--size: {{ bubble.size }}px"></span>
+                      </div>
+                    {% else %}
+                      <div class="bubble-box invisible"></div>
+                    {% endif %}
+                  {% endfor %}
+                </div>
+              </a>
+              <!-- Separator -->
+              {% if not forloop.last %}
+                <div class="ml-4 h-px bg-slate-200"></div>
+              {% endif %}
+            </li>
+          {% endif %}
+        {% empty %}
+          <li class="relative p-8 text-center">
+            <div class="text-gray-500">
+              <p class="text-lg font-medium">
+                No sessions found for{% if selected_date_day_delta == 0 %}
+                  today ({{ selected_date|date:'M j' }})
+                {% elif selected_date_day_delta == 1 %}
+                  yesterday ({{ selected_date|date:'M j' }})
+                {% else %}
+                  {{ selected_date_day_delta }} days ago · {{ selected_date|date:'D' }} ({{ selected_date|date:'M j' }})
+                {% endif %}
+              </p>
+              <img src="{% static 'svg/no-sessions.svg' %}" alt="No sessions" class="mx-auto mt-4" />
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+
+      <!-- pagination bar -->
+      <div id="pagination-bar" class="mt-auto">
+        {# New combined Older/Newer navigation (pages + day jumps) #}
+        <nav class="flex items-start gap-2 py-2 pr-2" aria-label="Recordings navigation">
+          {# LEFT: Older (go back in time) #}
+          {% if page < total_pages %}
+            {# Paging within the same day: go to older page (page + 1) #}
+            <a href="?page={{ page|add:'1' }}{% if selected_date %}
+                
+                
+                
+                &date={{ selected_date|date:'Y-m-d' }}
+              {% endif %}"
+              class="flex flex-1 min-w-0 items-start justify-start rounded-lg px-4 py-2 text-left hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-teal-400">
+              <div class="min-w-0">
+                <div class="flex items-center gap-2 font-medium text-sky-800">
+                  <span>←</span><span>Older</span>
+                </div>
+                <div class="mt-0.5 truncate text-xs text-slate-500">Page {{ page|add:'1' }}</div>
+              </div>
+            </a>
+          {% elif previous_date_with_sessions %}
+            {# Day jump: go to older day #}
+            <a href="?date={{ previous_date_with_sessions|date:'Y-m-d' }}" class="flex flex-1 min-w-0 items-start justify-start rounded-lg px-6 py-2 text-left hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-teal-400">
+              <div class="min-w-0">
+                <div class="flex items-center gap-2 font-medium text-sky-800">
+                  <span class="text-slate-500">←</span><span>Older</span>
+                </div>
+                <div class="mt-0.5 truncate text-xs text-slate-500">
+                  {% if previous_date_label %}
+                    {{ previous_date_label }}
+                  {% else %}
+                    {{ previous_date_with_sessions|date:'M j' }}
+                  {% endif %}
+                </div>
+              </div>
+            </a>
+          {% else %}
+            {# Nothing older available #}
+            <span class="flex flex-1 min-w-0 items-start justify-start rounded-lg px-4 py-2 text-left" aria-disabled="true">
+              <div class="min-w-0 text-gray-400">
+                <div class="flex items-center gap-2 font-medium">
+                  <span>←</span><span>Older</span>
+                </div>
+                <div class="mt-0.5 truncate text-xs text-gray-400">Already oldest</div>
+              </div>
+            </span>
+          {% endif %}
+
+          {# CENTER: page indicator (hide when no pagination) #}
+          {% if total_pages|default:1 > 1 %}
+            <div class="flex-none px-3 py-2 text-sm font-medium text-slate-500">Page {{ page }} of {{ total_pages }}</div>
+          {% endif %}
+
+          {# RIGHT: Newer (go forward in time) #}
+          {% if page > 1 %}
+            {# Paging within the same day: go to newer page (page - 1) #}
+            <a href="?page={{ page|add:'-1' }}{% if selected_date %}
+                
+                
+                
+                &date={{ selected_date|date:'Y-m-d' }}
+              {% endif %}"
+              class="flex flex-1 min-w-0 items-start justify-end rounded-lg px-4 py-2 text-right hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-teal-400">
+              <div class="min-w-0">
+                <div class="flex items-center justify-end gap-2 font-medium text-sky-800">
+                  <span>Newer</span><span class="text-slate-500">→</span>
+                </div>
+                <div class="mt-0.5 truncate text-xs text-slate-500">Page {{ page|add:'-1' }}</div>
+              </div>
+            </a>
+          {% elif next_date_with_sessions %}
+            {# Day jump: go to newer day #}
+            <a href="?date={{ next_date_with_sessions|date:'Y-m-d' }}" class="flex flex-1 min-w-0 items-start justify-end rounded-lg px-4 py-2 text-right hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-teal-400">
+              <div class="min-w-0">
+                <div class="flex items-center justify-end gap-2 font-medium text-sky-800">
+                  <span>Newer</span><span class="text-slate-500">→</span>
+                </div>
+                <div class="mt-0.5 truncate text-xs text-slate-500">
+                  {% if next_date_label %}
+                    {{ next_date_label }}
+                  {% else %}
+                    {{ next_date_with_sessions|date:'M j' }}
+                  {% endif %}
+                </div>
+              </div>
+            </a>
+          {% else %}
+            {% if selected_date_day_delta != 0 %}
+              {# Already newest #}
+              <span class="flex flex-1 min-w-0 items-start justify-end rounded-lg px-4 py-2 text-right" aria-disabled="true">
+                <div class="min-w-0 text-gray-400">
+                  <div class="flex items-center justify-end gap-2 font-medium">
+                    <span>Newer</span><span>→</span>
+                  </div>
+                  <div class="mt-0.5 truncate text-xs text-gray-400">Already at newest</div>
+                </div>
+              </span>
+            {% else %}
+              <div class="flex flex-1 min-w-0" aria-hidden="true"></div>
+            {% endif %}
+          {% endif %}
+        </nav>
+
+        {# day navigator block #}
+        <div class="bg-slate-50 min-h-16 rounded flex items-center justify-center px-4 py-2">
+          <div class="flex items-end h-8 p-0 m-0">
+            {% for day in day_navigator %}
+              <a href="?date={{ day.date|date:'Y-m-d' }}" class="w-4 mr-0.5 h-full flex items-end group" data-date="{{ day.date|date:'M j' }}">
+                <div class="{% if day.is_selected %}
+                    bg-teal-300 border-2 border-teal-400
+                  {% else %}
+                    day-bar-blue
+                  {% endif %} w-full origin-bottom transition-transform duration-150 ease-out group-hover:scale-125 group-hover:z-10"
+                  style="height: {% if day.count == 0 %}
+                    2px
+                  {% else %}
+                    {{ day.bar_height }}px
+                  {% endif %}"></div>
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="ui-tooltip" role="tooltip" class="pointer-events-none fixed z-50 w-fit rounded-md border border-slate-200 bg-slate-50 p-3 shadow-md opacity-0 transition-opacity"></div>
+
+  <!-- 2. ONE copy of the markup, stored in a template -->
+  <template id="bubble-tooltip-template">
+    <div class="flex items-center gap-1.5">
+      <div data-field="dot" class="h-4 w-4 rounded-full"></div>
+      <div class="text-gray-900" data-field="title"></div>
+    </div>
+    <hr class="my-1.5 border-slate-200" />
+    <div class="flex gap-2 text-sm text-gray-900">
+      <div class="flex flex-col gap-0.5 text-right">
+        <div>clicks</div>
+        <div>mouse movements</div>
+        <div>key strokes</div>
+      </div>
+      <div class="flex flex-col gap-2.5 py-1">
+        <!-- widths will be set in JS -->
+        <div class="h-3 bg-blue-400 rounded-sm" data-field="bar-clicks" style="width: 0px"></div>
+        <div class="h-3 bg-blue-400 rounded-sm" data-field="bar-moves" style="width: 0px"></div>
+        <div class="h-3 bg-blue-400 rounded-sm" data-field="bar-keys" style="width: 0px"></div>
+      </div>
+    </div>
+  </template>
+
+  <template id="bar-tooltip-template">
+    <div class="text-xs font-medium text-gray-900" data-field="date"></div>
+  </template>
+
+  <script src="{% static '/js/labella.min.js' %}"></script>
+  <script src="{% static '/js/dragscroll.js' %}"></script>
+
+  <script type="module">
+    import { computePosition, autoUpdate, offset, flip, shift } from 'https://cdn.jsdelivr.net/npm/@floating-ui/dom@1.7.2/+esm'
+    
+    const barTemplate = document.getElementById('bar-tooltip-template').content
+    const BAR_SELECTOR = '[data-date]'
+    
+    const tooltip = document.getElementById('ui-tooltip')
+    const template = document.getElementById('bubble-tooltip-template').content
+    let cleanup = null // holds the autoUpdate disposer
+    
+    let pageLabelsContainer = null // holds the page labels
+    let activeRowForLabels = null
+    
+    const COLOR_CACHE = {} // Cache for computed background colors
+    
+    const BG_TEXT_COLOR = {
+      'bg-c-blue': '#ffffff',
+      'bg-c-orange': '#713f12',
+      'bg-c-red': '#ffffff',
+      'bg-c-teal': '#ffffff',
+      'bg-c-green': '#ffffff',
+      'bg-c-rose': '#ffffff',
+      'bg-c-purple': '#ffffff',
+      'bg-c-light-blue': '#1e3a8a',
+      'bg-c-brown': '#ffffff',
+      'bg-gray-200': '#000000'
+    }
+    
+    document.addEventListener(
+      'pointerenter',
+      (e) => {
+        if (!(e.target instanceof Element)) return
+    
+        const bar = e.target.closest(BAR_SELECTOR)
+        if (bar) {
+          showBarTooltip(bar)
+          return
+        }
+        // show page labels only when entering the row from OUTSIDE the row
+        const row = e.target.closest('li')
+        if (row && row.querySelector('.chart-container')) {
+          const from = e.relatedTarget // element we came from
+          if (from instanceof Element && row.contains(from)) return // moved within the same row → ignore
+          if (activeRowForLabels === row) return // already active → ignore
+          activeRowForLabels = row
+          showPageLabels(row)
+        }
+      },
+      true
+    )
+    
+    document.addEventListener(
+      'pointerleave',
+      (e) => {
+        if (!(e.target instanceof Element)) return
+    
+        const leftBubble = e.target.closest('.bubble-box')
+        const leftBar = e.target.closest(BAR_SELECTOR)
+    
+        // hide when the pointer leaves the element entirely
+        if ((leftBubble && (!e.relatedTarget || !leftBubble.contains(e.relatedTarget))) || (leftBar && (!e.relatedTarget || !leftBar.contains(e.relatedTarget)))) {
+          hideTooltip()
+        }
+      },
+      true
+    )
+    
+    document.addEventListener(
+      'pointerleave',
+      (e) => {
+        if (!(e.target instanceof Element)) return
+    
+        // when we leave a row entirely, clear labels + state
+        const leftRow = e.target.closest('li')
+        if (leftRow && (!e.relatedTarget || !leftRow.contains(e.relatedTarget))) {
+          hidePageLabels()
+          if (activeRowForLabels === leftRow) activeRowForLabels = null
+        }
+      },
+      true
+    )
+    
+    // find first Tailwind bg-* class on an element, strip opacity suffix ("/90")
+    function getBaseBgClass(el, fallbackClass) {
+      if (!el) return fallbackClass || null
+      const cls = Array.from(el.classList || []).find((c) => c.startsWith('bg-')) || fallbackClass || null
+      return cls ? cls.replace(/\/\d+$/, '') : null
+    }
+    
+    /**
+     * [OPTIMIZED] Reads the actual CSS color for a Tailwind bg-* class.
+     * Results are cached to prevent re-calculating the same color, which significantly
+     * improves performance on repeated hovers.
+     */
+    function cssColorFromBgClass(bgClass) {
+      if (COLOR_CACHE[bgClass]) {
+        return COLOR_CACHE[bgClass]
+      }
+    
+      const tmp = document.createElement('div')
+      tmp.className = bgClass
+      tmp.style.position = 'absolute'
+      tmp.style.left = '-9999px'
+      tmp.style.visibility = 'hidden' // Better than off-screen positioning
+      document.body.appendChild(tmp)
+      const color = getComputedStyle(tmp).backgroundColor
+      tmp.remove()
+    
+      COLOR_CACHE[bgClass] = color // Save to cache
+      return color
+    }
+    
+    function applyChipTheme(el, bgClass) {
+      if (!bgClass || !el) return
+    
+      const bgColor = cssColorFromBgClass(bgClass)
+      el.style.backgroundColor = bgColor
+      el.style.color = BG_TEXT_COLOR[bgClass] || '#ffffff'
+    
+      // Text shadow for contrast
+      el.style.textShadow = '0 0 1px rgba(0,0,0,0.4), 0 0 4px rgba(0,0,0,0.2)'
+    
+      // Box shadow so tooltip stands out from background
+      el.style.boxShadow = '0 4px 12px rgba(0,0,0,0.25), 0 2px 6px rgba(0,0,0,0.2)'
+    }
+    
+    // --- REVISED LABEL FUNCTIONS ---
+    function showPageLabels(row) {
+      hidePageLabels() // clear overlay
+    
+      const chartContainer = row.querySelector('.chart-container')
+      if (!chartContainer) return
+    
+      const bubbles = Array.from(chartContainer.querySelectorAll('.bubble-box:not(.invisible)[data-title]'))
+      if (!bubbles.length) return
+    
+      // Ensure overlay + SVG for connectors
+      if (!pageLabelsContainer) {
+        pageLabelsContainer = document.createElement('div')
+        pageLabelsContainer.id = 'page-labels-container'
+        pageLabelsContainer.innerHTML = `<svg id="label-connectors" style="position:fixed;top:0;left:0;width:100%;height:100%;
+                        pointer-events:none;z-index:9998;"></svg>`
+        document.body.appendChild(pageLabelsContainer)
+      }
+      const svgConnectors = document.getElementById('label-connectors')
+      svgConnectors.innerHTML = ''
+    
+      // --- 1) Build runs and group by page title (one label per title) ---
+      const groups = new Map() // title -> { title, anchors:[...], el, idealX, xPacked, levelY, bgClass }
+      let lastTitle = null
+    
+      bubbles.forEach((bubble) => {
+        const title = bubble.dataset.title
+        if (!title) return
+    
+        // anchor only at the start of each consecutive run
+        if (title !== lastTitle) {
+          const rect = bubble.getBoundingClientRect()
+          const circle = bubble.querySelector('.circle')
+          const size = parseFloat(getComputedStyle(circle).getPropertyValue('--size')) || 28
+          const r = size / 2
+    
+          if (!groups.has(title)) {
+            const baseBgClass = getBaseBgClass(circle) || 'bg-gray-200' // strip "/90"
+            groups.set(title, {
+              title,
+              anchors: [],
+              el: null,
+              idealX: 0,
+              xPacked: 0,
+              levelY: null,
+              bgClass: baseBgClass
+            })
+          }
+          groups.get(title).anchors.push({
+            bubbleEl: bubble,
+            x: rect.left + rect.width / 2, // anchor X
+            cy: rect.top + rect.height / 2,
+            r
+          })
+        }
+        lastTitle = title
+      })
+    
+      const labelsData = Array.from(groups.values())
+      if (!labelsData.length) return
+    
+      // --- 2) Ideal X = median of run anchors ---
+      labelsData.forEach((g) => {
+        const xs = g.anchors.map((a) => a.x).sort((a, b) => a - b)
+        g.idealX = xs.length % 2 ? xs[(xs.length - 1) / 2] : (xs[xs.length / 2 - 1] + xs[xs.length / 2]) / 2
+      })
+    
+      // --- 3) Create DOM nodes & theme them (solid background + readable text, no border) ---
+      labelsData.forEach((g) => {
+        const el = document.createElement('div')
+        el.className = 'page-label'
+        el.textContent = g.title
+        el.style.maxWidth = '280px'
+        el.style.whiteSpace = 'nowrap'
+        el.style.overflow = 'hidden'
+        el.style.textOverflow = 'ellipsis'
+        pageLabelsContainer.appendChild(el)
+        g.el = el
+    
+        // Apply theme now (uses solid color, no border)
+        applyChipTheme(g.el, g.bgClass)
+      })
+    
+      // --- 4) Geometry + helpers ---
+      labelsData.sort((a, b) => a.idealX - b.idealX)
+      const chartRect = chartContainer.getBoundingClientRect()
+      const rowRect = row.getBoundingClientRect()
+      const LANES_TOP = [rowRect.top - 35, rowRect.top - 70] // near, far
+      const LANES_BOT = [rowRect.bottom + 8, rowRect.bottom + 43] // near, far
+      const spacing = 8
+    
+      const runLabella = (items, usePackedAsIdeal = false) => {
+        if (!items.length) return []
+        const force = new labella.Force({
+          minPos: chartRect.left,
+          maxPos: chartRect.right,
+          nodeSpacing: spacing
+        })
+        const nodes = items.map((lbl) => new labella.Node(usePackedAsIdeal ? lbl.xPacked : lbl.idealX, lbl.el.offsetWidth, lbl))
+        force.nodes(nodes).compute()
+        return nodes
+      }
+    
+      // --- 5) Global pass for packed X ---
+      const allNodes = runLabella(labelsData)
+      allNodes.forEach((n) => (n.data.xPacked = n.currentPos))
+    
+      // --- 6) Weave into 2 lanes; repack lanes; promote to 4 if dense ---
+      const ordered = allNodes
+        .slice()
+        .sort((a, b) => a.currentPos - b.currentPos)
+        .map((n) => n.data)
+      const topNear = [],
+        botNear = []
+      ordered.forEach((d, i) => (i % 2 === 0 ? topNear : botNear).push(d))
+    
+      let lanes = [
+        { nodes: runLabella(topNear, true), y: LANES_TOP[0] },
+        { nodes: runLabella(botNear, true), y: LANES_BOT[0] }
+      ]
+    
+      const tooTight = (nodes) => {
+        if (!nodes.length) return false
+        const totalW = nodes.reduce((s, n) => s + n.width, 0) + spacing * (nodes.length - 1)
+        const avail = chartRect.right - chartRect.left
+        return totalW > avail * 0.95
+      }
+      if (tooTight(lanes[0].nodes) || tooTight(lanes[1].nodes)) {
+        const splitWeave = (nodes) => {
+          const list = nodes
+            .slice()
+            .sort((a, b) => a.currentPos - b.currentPos)
+            .map((n) => n.data)
+          const a = [],
+            b = []
+          list.forEach((d, i) => (i % 2 === 0 ? a : b).push(d))
+          return [runLabella(a, true), runLabella(b, true)]
+        }
+        const [t0, t1] = splitWeave(lanes[0].nodes)
+        const [b0, b1] = splitWeave(lanes[1].nodes)
+        lanes = [
+          { nodes: t0, y: LANES_TOP[0] },
+          { nodes: t1, y: LANES_TOP[1] },
+          { nodes: b0, y: LANES_BOT[0] },
+          { nodes: b1, y: LANES_BOT[1] }
+        ]
+      }
+    
+      // --- 7) Commit label positions ---
+      lanes.forEach((l) => {
+        l.nodes.forEach((n) => {
+          const g = n.data
+          g.levelY = l.y
+          const left = n.currentPos - n.width / 2
+          g.el.style.left = `${left}px`
+          g.el.style.top = `${l.y}px`
+        })
+      })
+    
+      // --- 8) Connect all runs to the single label (solid stroke color) ---
+      labelsData.forEach((g) => {
+        if (!g.el || g.levelY == null) return
+    
+        const labelRect = g.el.getBoundingClientRect()
+        const strokeColor = cssColorFromBgClass(g.bgClass) // 100% opacity color
+    
+        g.anchors.forEach((a) => {
+          const isAbove = g.levelY < rowRect.top
+          const startX = a.x
+          const startY = isAbove ? a.cy - a.r : a.cy + a.r
+          const endX = labelRect.left + labelRect.width / 2
+          const endY = isAbove ? labelRect.bottom : labelRect.top
+    
+          const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+          const d = `M ${startX} ${startY} Q ${startX} ${endY} ${endX} ${endY}`
+          path.setAttribute('d', d)
+          path.setAttribute('stroke', strokeColor)
+          path.setAttribute('stroke-width', '2')
+          path.setAttribute('fill', 'none')
+          svgConnectors.appendChild(path)
+          g.connector = path
+        })
+      })
+    
+      // --- 9) Fade in ---
+      requestAnimationFrame(() => {
+        labelsData.forEach((g) => {
+          if (!g.el || g.levelY == null) return
+          g.el.classList.add('visible')
+        })
+        svgConnectors.querySelectorAll('path').forEach((p) => p.classList.add('visible'))
+      })
+    }
+    
+    function hidePageLabels() {
+      if (pageLabelsContainer) {
+        // Remove all label divs and SVG paths
+        pageLabelsContainer.querySelectorAll('.page-label').forEach((el) => el.remove())
+        const svg = document.getElementById('label-connectors')
+        if (svg) svg.innerHTML = ''
+      }
+    }
+    
+    // Keep or adjust this if you already defined it
+    const SCROLL_RESHOW_DELAY = 150 // how long we wait after the last real scroll
+    
+    function bindTooltipScrollSync(container) {
+      const row = container.closest('li')
+      let scrollTimer = null // debounce after real scrolls
+      let gestureTimer = null // failsafe when no scroll event fires
+      let duringGesture = false
+      let didScroll = false
+    
+      const hideNow = () => {
+        if (activeRowForLabels === row) hidePageLabels()
+      }
+    
+      const restore = () => {
+        clearTimeout(scrollTimer)
+        clearTimeout(gestureTimer)
+        if (activeRowForLabels === row) showPageLabels(row)
+      }
+    
+      // Called when a scroll gesture *begins* (pointer down, wheel, touchstart)
+      const onStart = () => {
+        duringGesture = true
+        didScroll = false
+        hideNow()
+    
+        // Failsafe: if no 'scroll' event follows (edge/bounce), put labels back
+        clearTimeout(gestureTimer)
+        gestureTimer = setTimeout(() => {
+          if (duringGesture && !didScroll) restore()
+        }, 120)
+      }
+    
+      // Called whenever the element actually scrolls
+      const onScroll = () => {
+        if (activeRowForLabels !== row) return
+        didScroll = true
+        hideNow()
+        clearTimeout(scrollTimer)
+        scrollTimer = setTimeout(restore, SCROLL_RESHOW_DELAY)
+      }
+    
+      // Called when the gesture definitely ends
+      const onEnd = () => {
+        if (!duringGesture) return
+        duringGesture = false
+        if (!didScroll) {
+          // We hid on start but never scrolled → restore immediately
+          restore()
+        }
+      }
+    
+      // Pointer drag-to-scroll
+      container.addEventListener('pointerdown', onStart, { passive: true })
+      container.addEventListener('pointerup', onEnd, { passive: true })
+      container.addEventListener('pointercancel', onEnd, { passive: true })
+      container.addEventListener('mouseleave', onEnd, { passive: true })
+    
+      // Touch
+      container.addEventListener('touchstart', onStart, { passive: true })
+      container.addEventListener('touchend', onEnd, { passive: true })
+      container.addEventListener('touchcancel', onEnd, { passive: true })
+      container.addEventListener('touchmove', onScroll, { passive: true })
+    
+      // Mouse wheel / trackpad: treat as a start; also handle “edge flick”
+      container.addEventListener(
+        'wheel',
+        (e) => {
+          onStart()
+    
+          // If we’re at an edge and wheel is pushing further out, no scroll will fire.
+          const atLeft = container.scrollLeft <= 0
+          const atRight = Math.ceil(container.scrollLeft + container.clientWidth) >= container.scrollWidth
+    
+          if ((atLeft && e.deltaX < 0) || (atRight && e.deltaX > 0)) {
+            clearTimeout(gestureTimer)
+            gestureTimer = setTimeout(restore, 120)
+          }
+        },
+        { passive: true }
+      )
+    
+      // Real scroll event (works for all inputs if scrolling actually happened)
+      container.addEventListener('scroll', onScroll, { passive: true })
+    }
+    
+    // Rebind for all rows (run this once after DOM is ready)
+    document.querySelectorAll('.chart-container').forEach(bindTooltipScrollSync)
+    
+    document.querySelectorAll('.chart-container').forEach((el) => {
+      if (el.scrollWidth > el.clientWidth) {
+        el.classList.add('scrollable-x')
+      } else {
+        el.classList.remove('scrollable-x')
+      }
+    })
+    
+    // Click vs Drag Detection
+    let isDragging = false
+    let dragStartX = 0
+    let dragStartY = 0
+    const DRAG_THRESHOLD = 5 // pixels - minimum movement to consider it a drag
+    
+    // Add click prevention for dragscroll containers
+    document.querySelectorAll('.dragscroll').forEach((container) => {
+      const parentLink = container.closest('a')
+      if (!parentLink) return
+    
+      // Track mouse down to detect start of potential drag
+      container.addEventListener(
+        'mousedown',
+        (e) => {
+          isDragging = false
+          dragStartX = e.clientX
+          dragStartY = e.clientY
+        },
+        true
+      )
+    
+      // Track mouse move to detect if we're dragging
+      container.addEventListener(
+        'mousemove',
+        (e) => {
+          if (e.buttons === 1) {
+            // Left mouse button is pressed
+            const deltaX = Math.abs(e.clientX - dragStartX)
+            const deltaY = Math.abs(e.clientY - dragStartY)
+    
+            if (deltaX > DRAG_THRESHOLD || deltaY > DRAG_THRESHOLD) {
+              isDragging = true
+            }
+          }
+        },
+        true
+      )
+    
+      // Prevent click on parent link if we were dragging
+      parentLink.addEventListener(
+        'click',
+        (e) => {
+          if (isDragging) {
+            e.preventDefault()
+            e.stopPropagation()
+            isDragging = false // Reset for next interaction
+            return false
+          }
+        },
+        true
+      )
+    
+      // Reset drag state on mouse up
+      container.addEventListener(
+        'mouseup',
+        () => {
+          // Small delay to ensure click event can be properly prevented if needed
+          setTimeout(() => {
+            isDragging = false
+          }, 10)
+        },
+        true
+      )
+    
+      // Also handle touch events for mobile
+      let touchStartX = 0
+      let touchStartY = 0
+      let isTouchDragging = false
+    
+      container.addEventListener(
+        'touchstart',
+        (e) => {
+          isTouchDragging = false
+          if (e.touches.length > 0) {
+            touchStartX = e.touches[0].clientX
+            touchStartY = e.touches[0].clientY
+          }
+        },
+        true
+      )
+    
+      container.addEventListener(
+        'touchmove',
+        (e) => {
+          if (e.touches.length > 0) {
+            const deltaX = Math.abs(e.touches[0].clientX - touchStartX)
+            const deltaY = Math.abs(e.touches[0].clientY - touchStartY)
+    
+            if (deltaX > DRAG_THRESHOLD || deltaY > DRAG_THRESHOLD) {
+              isTouchDragging = true
+            }
+          }
+        },
+        true
+      )
+    
+      // Prevent click on parent link if we were touch dragging
+      parentLink.addEventListener(
+        'touchend',
+        (e) => {
+          if (isTouchDragging) {
+            e.preventDefault()
+            e.stopPropagation()
+            // Don't reset immediately, let any potential click event be prevented
+            setTimeout(() => {
+              isTouchDragging = false
+            }, 50)
+            return false
+          }
+        },
+        true
+      )
+    })
+    
+    function showBarTooltip(referenceEl) {
+      /* build the tooltip */
+      const clone = barTemplate.cloneNode(true)
+      clone.querySelector('[data-field="date"]').textContent = referenceEl.dataset.date ?? ''
+    
+      tooltip.replaceChildren(clone)
+      tooltip.classList.replace('opacity-0', 'opacity-100')
+    
+      /* position & keep updated (top-center feels right above a bar) */
+      if (cleanup) cleanup()
+      cleanup = autoUpdate(referenceEl, tooltip, () => {
+        computePosition(referenceEl, tooltip, {
+          placement: 'top',
+          strategy: 'fixed',
+          middleware: [
+            offset(8), // 8 px gap
+            flip({ padding: 8 }), // flip if near edge
+            shift({ padding: 8 })
+          ]
+        }).then(({ x, y }) => {
+          Object.assign(tooltip.style, { left: `${x}px`, top: `${y}px` })
+        })
+      })
+    }
+    
+    function hideTooltip() {
+      tooltip.classList.replace('opacity-100', 'opacity-0')
+      if (cleanup) {
+        cleanup()
+        cleanup = null
+      }
+    }
+  </script>
+{% endblock %}

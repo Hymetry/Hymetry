@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block nav %}
+  <!-- Override navigation - show only logo -->
+  <nav class="fixed top-0 left-0 z-10 right-0 bg-white border-b border-gray-200 shadow-sm w-full h-12 pl-8 pr-2 flex items-center justify-between">
+    <!-- Left Section: Logo only -->
+    <div class="flex items-center h-full">
+      <!-- Logo -->
+      <img src="{% static 'svg/logo.svg' %}" />
+    </div>
+  </nav>
+{% endblock %}
+
+{% block content %}
+  <div class="flex justify-center h-[calc(100vh-4rem)] mt-16">
+    <div class="flex flex-col w-full p-4 sm:p-6 lg:p-8">
+      <div class="flex flex-col items-center">
+        <div class="w-3xl flex flex-col gap-8">
+          <div class="flex gap-16">
+            <!-- Illustration -->
+            <img src="{% static 'svg/welcome.svg' %}" />
+
+            <!-- Welcome Text Content -->
+            <div class="text-left">
+              <h1 class="text-3xl font-semibold tracking-tight text-gray-900">Join your team!</h1>
+              <p class="mt-8 mb-4">
+                You've been invited to a ProductPathPro project <span class="font-semibold">{{ project.name }}</span>.
+              </p>
+              <p class="mb-4">Join to unlock:</p>
+              <ul class="space-y-3 text-left">
+                <li class="flex items-start gap-3">
+                  <span class="text-xl">🔑</span>
+                  <span><strong>Instant access to insights</strong> – watch real sessions and heatmaps for this project</span>
+                </li>
+                <li class="flex items-start gap-3">
+                  <span class="text-xl">🤝</span>
+                  <span><strong>Seamless collaboration</strong> – share findings and comment with the rest of the team</span>
+                </li>
+                <li class="flex items-start gap-3">
+                  <span class="text-xl">🚀</span>
+                  <span><strong>Faster product wins</strong> – turn every user journey into clear, data-backed improvements</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- Button on new row -->
+          <div class="mt-4 mb-4">
+            <!-- User is authenticated (auto-logged in) - show join button -->
+            <form method="post" action="{% url 'projects:accept_invitation_action' token=invitation.token %}">
+              {% csrf_token %}
+              <button type="submit" class="flex items-center justify-center w-full px-8 py-4 text-base font-semibold text-green-900 bg-gradient-to-r from-green-400 to-teal-400 rounded-lg shadow-lg shadow-green-500/40 transform transition-all duration-300 hover:shadow-2xl hover:shadow-green-500/60 hover:scale-105 mb-4">Join team</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
