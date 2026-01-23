@@ -5,7 +5,7 @@ app.productpathpro.com {
 
     @trackingscript path /main.js /lib.min.js
     handle @trackingscript {
-        root * /opt/productpathpro/frontend/tracker_script
+        root * /opt/productpathpro/static/js
         file_server
         header {
             Access-Control-Allow-Origin *
