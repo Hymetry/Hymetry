@@ -87,8 +87,6 @@ yarn-error.log*
 /playground/192.168.0.49.pem
 /frontend/tailwind/package-lock.json
 static/css/output.css
-static/js/main.js
 package-lock.json
 package.json
-static/css/output.css
-static/css/output.css
+

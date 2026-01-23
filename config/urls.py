@@ -1,11 +1,8 @@
-import os
-
 from allauth.account.views import LogoutView
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
-from django.http import FileResponse, Http404
 from django.urls import path, include, re_path
 
 from apps.projects.views import project_list
@@ -16,18 +13,6 @@ from apps.users.views import (
     password_reset_set_new, password_reset_success
 )
 from config.views import github_push_event_handler
-
-
-def serve_playground_html(filename):
-    def view(request):
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        file_path = os.path.join(base_dir, 'playground', 'public', filename)
-        if os.path.exists(file_path):
-            return FileResponse(open(file_path, 'rb'), content_type='text/html')
-        raise Http404()
-
-    return view
-
 
 urlpatterns = [
     path('', project_list, name='index'),  # Homepage
@@ -47,10 +32,8 @@ urlpatterns = [
     path('projects/<int:project_id>/recordings/', recordings, name='recordings'),
     path('projects/<int:project_id>/', recordings, name='project_detail'),
     path('projects/<int:project_id>/recordings/<uuid:session_id>/', recording, name='recording'),
-    path('projects/<int:project_id>/recordings/<uuid:session_id>/data/', get_consolidated_data, name='get_consolidated_data'),
-
-    # custom users (account) urls
-    # Note: AutoLoginConfirmEmailView is used above for email confirmation with auto-login
+    path('projects/<int:project_id>/recordings/<uuid:session_id>/data/', get_consolidated_data,
+         name='get_consolidated_data'),
 
     path('sign-up/', CustomSignupView.as_view(), name='sign_up'),
     path('sign-up/email-sent/', custom_email_verification_sent, name='sign_up_email_sent'),
@@ -64,12 +47,6 @@ urlpatterns = [
     path('password/reset/success/', password_reset_success, name='password_reset_success'),
     path('webhook-kpXoLsYbH6cZpEPyQ', github_push_event_handler, name='github_push_event_handler'),
 
-]
-
-urlpatterns += [
-    path('contact/', serve_playground_html('index.html'), name='contact_dummy'),
-    path('projects-dummy/', serve_playground_html('projects.html'), name='projects_dummy'),
-    path('support/', serve_playground_html('support.html'), name='support_dummy'),
 ]
 
 # Serve static and media files in development
