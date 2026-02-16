@@ -1,1 +1,2 @@
-Public readme
+1. .env-file
+        <script async src="https://192.168.0.232/static/js/main.js" data-tracker-url="https://192.168.0.232" data-lib-url="https://192.168.0.232/static/js" data-api-key="AC197509412891B2"></script>

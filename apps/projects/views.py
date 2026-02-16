@@ -1,28 +1,28 @@
+import json
 from zoneinfo import ZoneInfo, available_timezones
 
-from allauth.account.signals import user_logged_in
 from django import forms
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
-from django.dispatch import receiver
 from django.http import JsonResponse
 from django.shortcuts import render, redirect, get_object_or_404
-from django.template.loader import render_to_string
-from django.urls import reverse
 from django.utils import timezone
-from django.utils.crypto import get_random_string
 
 from apps.tracker.models import Event
-from apps.users.forms import ProjectForm, InvitationForm
-from config.postmark import send_postmark_email
+from apps.users.forms import ProjectForm
 from .decorators import require_project_member, require_project_owner
-from .invitation_handler import InvitationHandler
-from .models import Project, ProjectMembership, Invitation
+from .models import Project, ProjectMembership, ChatGptKey, UserLeftLastProject
+
+User = get_user_model()
 from .utils import generate_tracking_script
 
+from django.contrib.auth.decorators import user_passes_test
 
-class InvitationForm(forms.Form):
-    email = forms.EmailField()
+def superadmin_required(view_func):
+    decorated_view_func = user_passes_test(
+        lambda u: u.is_active and u.is_superuser
+    )(view_func)
+    return decorated_view_func
 
 
 @login_required
@@ -33,6 +33,7 @@ def project_list(request):
 
 
 @login_required
+@superadmin_required
 def project_create(request):
     if request.method == 'POST':
         form = ProjectForm(request.POST)
@@ -60,131 +61,16 @@ def project_create(request):
 
 
 @login_required
+@superadmin_required
 def project_delete(request, pk):
     project = get_object_or_404(Project, pk=pk, owner=request.user)
     if request.method == 'POST':
         project.delete()
-        return redirect('projects:project_list')
-    return render(request, 'projects/project_confirm_delete.html', {'project': project})
+    return redirect('projects:project_list')
 
 
 @login_required
 @require_project_member
-def invite_user(request, project_id):
-    project = get_object_or_404(Project, pk=project_id)
-    # Allow any member to invite
-    if request.method == 'POST':
-        form = InvitationForm(request.POST)
-        if form.is_valid():
-            email = form.cleaned_data['email']
-            # Prevent inviting the owner
-            if email.lower() == project.owner.email.lower():
-                return render(request, 'projects/invite_user.html', {'form': form, 'project': project})
-            token = get_random_string(64)
-            # Check for existing pending invitation
-            invitation = Invitation.objects.filter(email=email, project=project, active=False).first()
-            if invitation:
-                invitation.token = token
-                invitation.invited_by = request.user
-                invitation.created_at = timezone.now()
-                invitation.save()
-            else:
-                Invitation.objects.create(
-                    email=email, project=project, invited_by=request.user, token=token
-                )
-            invite_url = request.build_absolute_uri(
-                reverse('projects:accept_invitation', args=[token])
-            )
-            send_postmark_email(
-                subject='You are invited!',
-                html_body=f'Join the project: {invite_url}',
-                to=[email]
-            )
-            return redirect('project_detail', project_id=project_id)
-    else:
-        form = InvitationForm()
-    return render(request, 'projects/invite_user.html', {'form': form, 'project': project})
-
-
-def accept_invitation(request, token):
-    """Handle invitation acceptance and redirect to accept page"""
-    invitation = get_object_or_404(Invitation, token=token)
-
-    # If invitation is already accepted, check if user is authenticated
-    if invitation.active:
-        # Check if user with this email exists and authenticate them
-        User = get_user_model()
-        try:
-            user = User.objects.get(email__iexact=invitation.email)
-            # Auto-authenticate the user
-            from django.contrib.auth import login
-            from django.contrib.auth.backends import ModelBackend
-            login(request, user, backend='django.contrib.auth.backends.ModelBackend')
-        except User.DoesNotExist:
-            # User doesn't exist, redirect to create account
-            return redirect('projects:invitation_create_account', token=invitation.token)
-        except User.MultipleObjectsReturned:
-            # Multiple users with same email - redirect to create account with error
-            return redirect('projects:invitation_create_account', token=invitation.token)
-
-        return redirect('projects:project_intro', project_id=invitation.project.pk)
-
-    if invitation.is_expired():
-        return redirect('projects:project_list')
-
-    # Store invitation token in session for the accept page
-    request.session['pending_invitation_token'] = invitation.token
-    # Redirect to the accept page
-    return redirect('projects:invitation_accept', token=invitation.token)
-
-
-def invitation_accept(request, token):
-    """Display the invitation accept page"""
-    invitation = get_object_or_404(Invitation, token=token)
-
-    # If invitation is already accepted, redirect to project settings
-    if invitation.active:
-        return redirect('projects:project_intro', project_id=invitation.project.pk)
-
-    if invitation.is_expired():
-        return redirect('projects:project_list')
-
-    # Check if user with this email exists and auto-login them
-    User = get_user_model()
-    try:
-        user = User.objects.get(email__iexact=invitation.email)
-        # Auto-authenticate the user
-        from django.contrib.auth import login
-        from django.contrib.auth.backends import ModelBackend
-        login(request, user, backend='django.contrib.auth.backends.ModelBackend')
-    except User.DoesNotExist:
-        # User doesn't exist - show create account page
-        context = {
-            'invitation': invitation,
-            'project': invitation.project,
-            'inviter_name': invitation.invited_by.get_full_name() or invitation.invited_by.username,
-        }
-        return render(request, 'projects/invitation_create_account.html', context)
-    except User.MultipleObjectsReturned:
-        # Multiple users with same email - show error page
-        context = {
-            'invitation': invitation,
-            'project': invitation.project,
-            'inviter_name': invitation.invited_by.get_full_name() or invitation.invited_by.username,
-            'error_message': 'Multiple accounts found with this email address. Please contact support for assistance.',
-        }
-        return render(request, 'projects/invitation_create_account.html', context)
-
-    # User exists and is now authenticated - show accept page
-    context = {
-        'invitation': invitation,
-        'project': invitation.project,
-        'inviter_name': invitation.invited_by.get_full_name() or invitation.invited_by.username,
-    }
-    return render(request, 'projects/invitation_accept.html', context)
-
-
-@login_required
 def remove_active_user(request, project_id, membership_id):
     project = get_object_or_404(Project, pk=project_id)
 
@@ -201,143 +87,27 @@ def remove_active_user(request, project_id, membership_id):
         return redirect('projects:project_settings', project_id=project_id)
 
     if request.user == membership.user and request.user != project.owner:
-        # User can only remove themselves
+        # User removes themselves - if this is their last project, save to UserLeftLastProject
+        user = membership.user
+        is_last_project = ProjectMembership.objects.filter(user=user).count() == 1
         membership.delete()
+        if is_last_project:
+            UserLeftLastProject.objects.update_or_create(user=user, defaults={'project': project})
         return redirect('projects:project_list')
     elif request.user == project.owner:
+        # Admin removes user - clear UserLeftLastProject, delete membership, delete user if no other projects
+        user_to_remove = membership.user
+        UserLeftLastProject.objects.filter(user=user_to_remove).delete()
         membership.delete()
+        if not ProjectMembership.objects.filter(user=user_to_remove).exists():
+            user_to_remove.delete()
         return redirect('projects:project_settings', project_id=project_id)
     else:
         return redirect('projects:project_settings', project_id=project_id)
 
 
 @login_required
-def remove_invitation(request, project_id, token):
-    project = get_object_or_404(Project, pk=project_id)
-    invitation = get_object_or_404(Invitation, token=token, project=project, active=False)
-    # Allow project owner or the inviter to cancel
-    if request.user != project.owner and request.user != invitation.invited_by:
-        return redirect('projects:project_settings', project_id=project_id)
-    invitation.delete()
-    return redirect('projects:project_settings', project_id=project_id)
-
-
-@login_required
-def resend_invitation(request, project_id, token):
-    """Resend an invitation to a user"""
-    project = get_object_or_404(Project, pk=project_id)
-    invitation = get_object_or_404(Invitation, token=token, project=project, active=False)
-
-    # Allow project owner or the inviter to resend
-    if request.user != project.owner and request.user != invitation.invited_by:
-        return redirect('projects:project_settings', project_id=project_id)
-
-    # Check if invitation is expired
-    if invitation.is_expired():
-        return redirect('projects:project_settings', project_id=project_id)
-
-    # Generate new token and update invitation
-    token = get_random_string(64)
-    invitation.token = token
-    invitation.created_at = timezone.now()
-    invitation.failed = False
-    invitation.save()
-
-    # Send new invitation email using templates
-    invite_url = request.build_absolute_uri(
-        reverse('projects:accept_invitation', args=[token])
-    )
-
-    # Prepare context for template
-    context = {
-        'project_name': project.name,
-        'inviter_name': invitation.invited_by.get_full_name() or invitation.invited_by.username,
-        'invite_url': invite_url,
-    }
-
-    # Render email templates
-    html_message = render_to_string('users/email/invitation_email.html', context)
-    txt_subject = render_to_string('users/email/invitation_email_subject.txt', context)
-    # Send email with both HTML and text versions
-    send_postmark_email(
-        subject=txt_subject,
-        to=[invitation.email],
-        html_body=html_message,
-    )
-    return redirect('projects:project_settings', project_id=project_id)
-
-
-@login_required
-def cancel_invitation(request, project_id, token):
-    """Cancel an invitation (mark as failed)"""
-    project = get_object_or_404(Project, pk=project_id)
-    invitation = get_object_or_404(Invitation, token=token, project=project, active=False)
-
-    # Only project owner can cancel invitations
-    if request.user != project.owner:
-        return redirect('projects:project_settings', project_id=project_id)
-
-    # Mark invitation as failed (cancelled)
-    invitation.failed = True
-    invitation.save()
-
-    return redirect('projects:project_settings', project_id=project_id)
-
-
-# After login, check for pending invitation in session and auto-accept
-@receiver(user_logged_in)
-def handle_pending_invitation(sender, request, user, **kwargs):
-    token = request.session.get('pending_invitation_token')
-    if token:
-        try:
-            invitation = Invitation.objects.get(token=token, active=False)
-            if invitation.is_expired():
-                del request.session['pending_invitation_token']
-                return
-            # Only accept if the logged-in user's email matches the invitation
-            if user.email.lower() == invitation.email.lower():
-                # Auto-verify the email address since they confirmed the invitation
-                from allauth.account.models import EmailAddress
-                email_address, created = EmailAddress.objects.get_or_create(
-                    user=user,
-                    email=user.email,
-                    defaults={'verified': True, 'primary': True}
-                )
-                if not created:
-                    # If email address already exists, mark it as verified
-                    email_address.verified = True
-                    email_address.primary = True
-                    email_address.save()
-
-                already_member = ProjectMembership.objects.filter(user=user, project=invitation.project).exists()
-                already_active = Invitation.objects.filter(project=invitation.project, email=invitation.email,
-                                                           active=True).exists()
-                if not already_member:
-                    ProjectMembership.objects.get_or_create(
-                        user=user, project=invitation.project, defaults={'is_owner': False}
-                    )
-                # Mark this invitation as accepted and clean up other pending invitations
-                invitation.active = True
-                invitation.save()
-                # Clean up other pending invitations for the same email
-                Invitation.objects.filter(
-                    project=invitation.project,
-                    email=invitation.email,
-                    active=False
-                ).exclude(id=invitation.id).delete()
-                del request.session['pending_invitation_token']
-                request._pending_invitation_redirect = True
-            else:
-                # Mark as failed if wrong user
-                invitation.failed = True
-                invitation.save()
-                del request.session['pending_invitation_token']
-        except Invitation.DoesNotExist:
-            pass
-
-
-@login_required
-@require_project_owner
+@require_project_member
 def update_project_name(request, project_id):
     """Handle project name updates"""
     project = get_object_or_404(Project, pk=project_id)
@@ -356,7 +126,7 @@ def update_project_name(request, project_id):
 
 
 @login_required
-@require_project_owner
+@require_project_member
 def update_project_timezone(request, project_id):
     """Handle project timezone change"""
     if request.method == 'POST':
@@ -386,10 +156,6 @@ def project_settings(request, project_id):
 
     # Get project members and invitations
     memberships = ProjectMembership.objects.filter(project=project).select_related('user')
-    invitations = Invitation.objects.filter(project=project)
-
-    # Create invitation handler for status checking
-    handler = InvitationHandler(project, request.user)
 
     # Prepare team data for the template
     team_members = []
@@ -408,23 +174,21 @@ def project_settings(request, project_id):
             'status': status,
             'membership_id': membership.id,
             'is_owner': membership.is_owner,
-            'can_remove': membership.user != project.owner,  # Can't remove owner
+            'can_remove': membership.user != project.owner,
+            'user_id': membership.user_id,
         })
 
-    # Add pending invitations
-    for invitation in invitations.filter(active=False):
-        status = handler.get_invitation_status(invitation)
-
+    # Add users who left this project by themselves (from UserLeftLastProject)
+    for record in UserLeftLastProject.objects.filter(project=project).select_related('user'):
         team_members.append({
-            'name': '',
-            'email': invitation.email,
+            'name': record.user.get_full_name() or record.user.username,
+            'email': record.user.email,
             'role': 'member',
-            'status': status,
-            'invitation_token': invitation.token,
+            'status': 'left_project',
+            'membership_id': None,
             'is_owner': False,
-            'can_remove': True,
-            'can_resend': handler.can_resend_invitation(invitation),
-            'can_cancel': handler.can_cancel_invitation(invitation),
+            'can_remove': project.owner == request.user,
+            'user_id': record.user_id,
         })
 
     # Generate tracking script if project has API key
@@ -439,6 +203,16 @@ def project_settings(request, project_id):
         timestamp__gte=seventy_two_hours_ago
     ).exists()
     user_memberships = ProjectMembership.objects.filter(user=request.user).select_related('project')
+
+    chatgpt_key_value = ''
+    chatgpt_key_is_valid = False
+    chatgpt_key_needs_check = False
+    chatgpt_key = ChatGptKey.objects.filter(project=project).first()
+    if chatgpt_key is not None and chatgpt_key.key:
+        chatgpt_key_value = chatgpt_key.key
+        chatgpt_key_needs_check = not chatgpt_key.is_checked
+        chatgpt_key_is_valid = chatgpt_key.check_result if chatgpt_key.is_checked else None
+
     context = {
         'project': project,
         'team_members': team_members,
@@ -446,7 +220,10 @@ def project_settings(request, project_id):
         'is_owner': project.owner == request.user,
         'has_fresh_data': has_fresh_data,
         'memberships': user_memberships,
-        'all_timezones': all_timezones
+        'all_timezones': all_timezones,
+        'chatgpt_key_value': chatgpt_key_value,
+        'chatgpt_key_needs_check': chatgpt_key_needs_check,
+        'chatgpt_key_is_valid': chatgpt_key_is_valid
     }
 
     return render(request, 'projects/settings.html', context)
@@ -454,229 +231,150 @@ def project_settings(request, project_id):
 
 @login_required
 @require_project_owner
-def invite_multiple_users(request, project_id):
-    """Handle bulk invitation of team members from settings page"""
-    project = get_object_or_404(Project, pk=project_id)
+def delete_left_user(request, project_id, user_id):
+    """
+    Delete a user account that appears as 'Inactive (left project)'.
 
-    if request.method == 'POST':
-        emails_text = request.POST.get('emails', '').strip()
-
-        if not emails_text:
-            return redirect('projects:project_settings', project_id=project_id)
-
-        # Use InvitationHandler to process invitations
-        handler = InvitationHandler(project, request.user)
-        result = handler.send_invitations(emails_text, request)
-
-        # Check for Celery error first
-        if result.get('celery_error'):
-            return redirect('projects:project_settings', project_id=project_id)
-
-        # Check for validation error
-        if result.get('validation_error'):
-            return redirect('projects:project_settings', project_id=project_id)
-
+    Safety:
+    - Only the project owner can do this
+    - Only deletes the user if they are in no projects
+    """
+    project = get_object_or_404(Project, pk=project_id, owner=request.user)
+    record = UserLeftLastProject.objects.filter(user_id=user_id, project=project).select_related('user').first()
+    if not record:
         return redirect('projects:project_settings', project_id=project_id)
+
+    user = record.user
+    record.delete()
+
+    if not ProjectMembership.objects.filter(user=user).exists():
+        user.delete()
 
     return redirect('projects:project_settings', project_id=project_id)
 
 
 @login_required
 @require_project_owner
-def validate_emails(request, project_id):
-    """AJAX endpoint to validate email addresses before sending invitations"""
-    project = get_object_or_404(Project, pk=project_id)
-    if request.method == 'POST':
-        try:
-            import json
-            data = json.loads(request.body)
-            emails_text = data.get('emails', '').strip()
-            handler = InvitationHandler(project, request.user)
-            result = handler.validate_emails(emails_text)
+def create_and_add_user_to_project(request, project_id):
+    """
+    It creates a user and adds him to a project
+    """
+    if not request.method == 'POST':
+        return JsonResponse({'error': 'Only POST method allowed'})
 
-            # Only check Celery if emails are valid
-            if result['valid']:
-                from .invitation_handler import is_celery_available
-                if not is_celery_available():
-                    result['celery_error'] = 'Email service is temporarily unavailable. Please try again later.'
-                    result['valid'] = False
-                    result['error'] = result['celery_error']  # Also set error for backward compatibility
+    data = json.loads(request.body)
 
-            return JsonResponse(result)
+    email = data.get('email')
+    password = data.get('password')
 
-        except json.JSONDecodeError:
-            return JsonResponse({
-                'valid': False,
-                'error': 'Invalid request data.'
-            })
+    # Validate form data
+    if not email:
+        return JsonResponse({'error': 'Email is required'})
 
-    return JsonResponse({
-        'valid': False,
-        'error': 'Invalid request method.'
-    })
+    if not password or len(password) < 8:
+        return JsonResponse({'error': 'Password must contain at least 8 characters'})
 
+    # Create user
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
 
-def invitation_create_account(request, token):
-    """Handle account creation from invitation"""
-    invitation = get_object_or_404(Invitation, token=token)
-
-    # If invitation is already accepted, redirect to project settings
-    if invitation.active:
-        return redirect('projects:project_intro', project_id=invitation.project.pk)
-
-    if invitation.is_expired():
-        return redirect('projects:project_list')
-
-    if request.method == 'POST':
-        email = request.POST.get('email')
-        password = request.POST.get('password')
-        terms = request.POST.get('terms')
-
-        # Validate form data
-        form_errors = {}
-        if not password or len(password) < 8:
-            form_errors['password'] = 'Password must be at least 8 characters long.'
-        if not terms:
-            form_errors['terms'] = 'You must agree to the Terms and Conditions.'
-
-        # Additional password validation using Django's password validators
-        if password and len(password) >= 8:
-            from django.contrib.auth.password_validation import validate_password
-            try:
-                validate_password(password)
-            except Exception as e:
-                form_errors['password'] = str(e)
-
-        if form_errors:
-            context = {
-                'invitation': invitation,
-                'project': invitation.project,
-                'inviter_name': invitation.invited_by.get_full_name() or invitation.invited_by.username,
-                'form_errors': form_errors,
-            }
-            return render(request, 'projects/invitation_create_account.html', context)
-
-        # Create user
-        from django.contrib.auth import get_user_model
-        User = get_user_model()
-
-        try:
-            user = User.objects.create_user(
-                username=email,
-                email=email,
-                password=password
-            )
-
-            # Auto-login the user
-            from django.contrib.auth import login
-            login(request, user, backend='django.contrib.auth.backends.ModelBackend')
-
-            # Auto-verify the email address since they confirmed the invitation
-            from allauth.account.models import EmailAddress
-            email_address, created = EmailAddress.objects.get_or_create(
-                user=user,
-                email=email,
-                defaults={'verified': True, 'primary': True}
-            )
-            if not created:
-                # If email address already exists, mark it as verified
-                email_address.verified = True
-                email_address.primary = True
-                email_address.save()
-
-            # Auto-accept the invitation
-            ProjectMembership.objects.get_or_create(
-                user=user, project=invitation.project, defaults={'is_owner': False}
-            )
-
-            # Mark this invitation as accepted and clean up other pending invitations
-            invitation.active = True
-            invitation.save()
-
-            # Clean up other pending invitations for the same email
-            Invitation.objects.filter(
-                project=invitation.project,
-                email=invitation.email,
-                active=False
-            ).exclude(id=invitation.id).delete()
-
-            return redirect('projects:project_intro', project_id=invitation.project.pk)
-
-        except Exception as e:
-            form_errors['general'] = 'An error occurred while creating your account. Please try again.'
-            context = {
-                'invitation': invitation,
-                'project': invitation.project,
-                'inviter_name': invitation.invited_by.get_full_name() or invitation.invited_by.username,
-                'form_errors': form_errors,
-            }
-            return render(request, 'projects/invitation_create_account.html', context)
-
-    # GET request - show the form
-    context = {
-        'invitation': invitation,
-        'project': invitation.project,
-        'inviter_name': invitation.invited_by.get_full_name() or invitation.invited_by.username,
-    }
-    return render(request, 'projects/invitation_create_account.html', context)
-
-
-def accept_invitation_action(request, token):
-    """Handle the accept button click to join the project"""
-    invitation = get_object_or_404(Invitation, token=token, active=False)
-
-    if invitation.is_expired():
-        return redirect('projects:project_list')
-
-    # Check if user is authenticated and email matches
-    if not request.user.is_authenticated:
-        return redirect('account_login')
-
-    if request.user.email.lower() != invitation.email.lower():
-        return redirect('projects:project_list')
-
-    # Auto-verify the email address since they confirmed the invitation
-    from allauth.account.models import EmailAddress
-    email_address, created = EmailAddress.objects.get_or_create(
-        user=request.user,
-        email=request.user.email,
-        defaults={'verified': True, 'primary': True}
-    )
-    if not created:
-        # If email address already exists, mark it as verified
-        email_address.verified = True
-        email_address.primary = True
-        email_address.save()
-
-    # Accept the invitation
-    already_member = ProjectMembership.objects.filter(user=request.user, project=invitation.project).exists()
-
-    if not already_member:
-        ProjectMembership.objects.get_or_create(
-            user=request.user, project=invitation.project, defaults={'is_owner': False}
+    try:
+        user, created = User.objects.get_or_create(
+            username=email,
+            defaults={'email': email}
         )
+        if created:
+            user.set_password(password)  # hashes the password before storing
+            user.save()
 
-    # Mark this invitation as accepted and clean up other pending invitations
-    invitation.active = True
-    invitation.save()
+        # Auto-verify the email address since they confirmed the invitation
+        from allauth.account.models import EmailAddress
+        email_address, created = EmailAddress.objects.get_or_create(
+            user=user,
+            email=email,
+            defaults={'verified': True, 'primary': True}
+        )
+        if not created:
+            # If email address already exists, mark it as verified
+            email_address.verified = True
+            email_address.primary = True
+            email_address.save()
 
-    # Clean up other pending invitations for the same email
-    Invitation.objects.filter(
-        project=invitation.project,
-        email=invitation.email,
-        active=False
-    ).exclude(id=invitation.id).delete()
+        # Auto-accept the invitation
+        ProjectMembership.objects.get_or_create(
+            user=user, project_id=project_id, defaults={'is_owner': False}
+        )
+        # User is back in a project - remove from UserLeftLastProject if present
+        UserLeftLastProject.objects.filter(user=user).delete()
+        return JsonResponse({'error': ''})
+    except Exception as e:
+        return JsonResponse({'error': f'Cannot add user to project. The error is {e}'})
 
-    return redirect('projects:project_intro', project_id=invitation.project.pk)
+
+@login_required
+@require_project_owner
+def save_chatgpt_key(request, project_id):
+    """Add or update ChatGPT API key for the project (Ajax). Only the project owner can do this."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'Invalid request method.'})
+
+    project = get_object_or_404(Project, pk=project_id)
+
+    # Accept JSON or form-encoded body
+    if request.content_type and 'application/json' in request.content_type:
+        try:
+            data = json.loads(request.body)
+            key = (data.get('key') or '').strip()
+        except json.JSONDecodeError:
+            return JsonResponse({'success': False, 'error': 'Invalid JSON.'})
+    else:
+        key = (request.POST.get('key') or '').strip()
+
+    if not key:
+        return JsonResponse({'success': False, 'error': 'API key is required.'})
+
+    chatgpt_key, created = ChatGptKey.objects.get_or_create(project=project, defaults={'key': key})
+    if not created:
+        chatgpt_key.key = key
+    chatgpt_key.is_checked = False
+    chatgpt_key.check_result = None
+    chatgpt_key.save()
+
+    return JsonResponse({'success': True})
 
 
 @login_required
 @require_project_member
-def project_intro(request, project_id):
-    """View for project intro page after joining"""
-    project = get_object_or_404(Project, pk=project_id)
+def check_chatgpt_key(request, project_id):
+    """Check if the project's ChatGPT API key is valid (Ajax). Saves result to DB so all users see it."""
+    if request.method != 'GET':
+        return JsonResponse({'valid': False, 'error': 'Invalid request method.'})
 
-    context = {
-        'project': project,
-    }
-    return render(request, 'projects/project_intro.html', context)
+    project = get_object_or_404(Project, pk=project_id)
+    chatgpt_key = ChatGptKey.objects.filter(project=project).first()
+    if not chatgpt_key or not chatgpt_key.key:
+        return JsonResponse({'valid': False})
+
+    try:
+        valid = chatgpt_key.key_is_valid()
+        chatgpt_key.is_checked = True
+        chatgpt_key.check_result = valid
+        chatgpt_key.save(update_fields=['is_checked', 'check_result'])
+        return JsonResponse({'valid': valid})
+    except Exception:
+        chatgpt_key.is_checked = True
+        chatgpt_key.check_result = False
+        chatgpt_key.save(update_fields=['is_checked', 'check_result'])
+        return JsonResponse({'valid': False})
+
+
+@login_required
+@require_project_owner
+def remove_chatgpt_key(request, project_id):
+    """Remove the project's ChatGPT API key (Ajax). Only the project owner can do this."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'Invalid request method.'})
+
+    project = get_object_or_404(Project, pk=project_id)
+    ChatGptKey.objects.filter(project=project).delete()
+    return JsonResponse({'success': True})

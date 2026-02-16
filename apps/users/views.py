@@ -1,149 +1,47 @@
 import json
 
-from allauth.account.views import ConfirmEmailView
-from allauth.account.views import LoginView
-from allauth.account.views import SignupView as AllauthSignupView
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth.forms import PasswordResetForm, SetPasswordForm
-from django.contrib.auth.password_validation import validate_password
-from django.contrib.auth.tokens import default_token_generator
-from django.core.exceptions import ValidationError
-from django.http import JsonResponse, HttpResponseRedirect
+from django.http import JsonResponse
 from django.shortcuts import render, redirect
-from django.utils.encoding import force_str
-from django.utils.http import urlsafe_base64_decode
-
+from django.contrib.auth import login
+from apps.projects.cls.homepage import check_if_any_superuser_exists
 from apps.users.forms import ProfileNameForm, ProfilePasswordForm
+from django.contrib import messages
 
 
-# User Authentication Views
-def custom_email_verification_sent(request):
-    """Custom view to handle email verification sent page"""
-    # Get the email from the session or request
-    email = request.session.get('signup_email', '')
+def create_admin_account(request):
+    if request.method != 'POST':
+        messages.error(request, 'Invalid request method')
+        return redirect('index')
 
-    # If no email in session, try to get it from the request
-    if not email:
-        email = request.GET.get('email', '')
+    email = request.POST.get('email')
+    password = request.POST.get('password')
 
-    # Render our custom template
-    return render(request, 'users/email_verification_sent.html', {'email': email})
+    if not (email and len(password) > 7):
+        messages.error(request, 'Email and Password (min length is 8) fields are required')
+        return redirect('index')
 
+    if check_if_any_superuser_exists():
+        messages.error(request, 'Superuser exists')
+        return redirect('index')
 
-class CustomSignupView(AllauthSignupView):
-    """Custom signup view that redirects to our custom email-sent URL"""
-    template_name = 'users/sign_up.html'
+    # Create user
+    User = get_user_model()
 
-    def form_valid(self, form):
-        """Override form_valid to check email uniqueness and redirect to our custom URL"""
-        # Get the email from the form
-        email = form.cleaned_data.get('email', '')
-        
-        # Check if email already exists
-        User = get_user_model()
-        if User.objects.filter(email__iexact=email).exists():
-            # Add error to the form and keep the email in the field
-            form.add_error('email', 'A user with this email address already exists.')
-            # Make form.data mutable and preserve the email
-            if hasattr(form.data, '_mutable'):
-                form.data._mutable = True
-            form.data['email'] = email
-            return self.form_invalid(form)
-        
-        # Store email in session for the email-sent page
-        self.request.session['signup_email'] = email
-
-        # Call parent form_valid to handle the signup
-        response = super().form_valid(form)
-
-        # Override the redirect to our custom URL
-        return HttpResponseRedirect('/sign-up/email-sent/')
-
-
-def sign_in(request):
-    return LoginView.as_view(template_name='users/sign_in.html')(request)
-
-
-@login_required
-def welcome(request):
-    """Welcome page view for newly signed up users."""
-    return render(request, 'users/welcome.html')
-
-
-# Password Reset Views
-def password_reset_request(request):
-    """Handle password reset request - ask for email"""
-    if request.method == 'POST':
-        form = PasswordResetForm(request.POST)
-        if form.is_valid():
-            email = form.cleaned_data['email']
-            # Store email in session for the email-sent page
-            request.session['reset_email'] = email
-            form.save(
-                request=request,
-                email_template_name='account/email/password_reset_email.html',
-                subject_template_name='account/email/password_reset_subject.txt'
-            )
-            return redirect('password_reset_email_sent')
-    else:
-        form = PasswordResetForm()
-
-    return render(request, 'users/password_reset_request.html', {'form': form})
-
-
-def password_reset_email_sent(request):
-    """Show email sent confirmation page"""
-    email = request.session.get('reset_email', '')
-    return render(request, 'users/password_reset_email_sent.html', {'email': email})
-
-
-def password_reset_set_new(request, uidb64, token):
-    """Handle setting new password"""
     try:
-        uid = force_str(urlsafe_base64_decode(uidb64))
-        user = get_user_model().objects.get(pk=uid)
-    except (TypeError, ValueError, OverflowError, get_user_model().DoesNotExist, ValidationError):
-        user = None
-
-    if user is not None and default_token_generator.check_token(user, token):
-        if request.method == 'POST':
-            password = request.POST.get('new_password1')
-            errors = []
-
-            # Validate password
-            if not password:
-                errors.append('Password is required.')
-            elif len(password) < 8:
-                errors.append('Password must be at least 8 characters long.')
-            else:
-                try:
-                    validate_password(password, user)
-                except ValidationError as e:
-                    errors.extend(e.messages)
-
-            if errors:
-                # Return form with errors
-                form = SetPasswordForm(user)
-                form.errors['new_password1'] = errors
-                return render(request, 'users/password_reset_set_new.html', {'form': form})
-            else:
-                # Set the password and redirect to success
-                user.set_password(password)
-                user.save()
-                return redirect('password_reset_success')
-        else:
-            form = SetPasswordForm(user)
-
-        return render(request, 'users/password_reset_set_new.html', {'form': form})
-    else:
-        # Invalid token
-        return redirect('password_reset_request')
-
-
-def password_reset_success(request):
-    """Show password reset success page"""
-    return render(request, 'users/password_reset_success.html')
+        user = User.objects.create_superuser(
+            username=email,
+            email=email,
+            password=password
+        )
+        # Autologin the user
+        login(request, user, backend='django.contrib.auth.backends.ModelBackend')
+        return redirect('project_list')
+    except Exception as e:
+        messages.error(request, e)
+        print(f"Error creating admin account: {e}")
+        return redirect('index')
 
 
 @login_required
@@ -207,26 +105,3 @@ def validate_old_password(request):
             return JsonResponse({'valid': False, 'error': 'Invalid request data'})
 
     return JsonResponse({'valid': False, 'error': 'Invalid request method'})
-
-
-class AutoLoginConfirmEmailView(ConfirmEmailView):
-    def get_redirect_url(self):
-        return "/welcome/"
-
-    def get(self, *args, **kwargs):
-        # Get the confirmation object
-        confirmation = self.get_object()
-        
-        # Confirm the email
-        confirmation.confirm(self.request)
-
-        # Get the user from the email address
-        user = confirmation.email_address.user
-        
-        # Log in the user
-        if user:
-            from allauth.account.utils import perform_login
-            perform_login(self.request, user, email_verification='optional')
-        
-        # Always redirect to welcome
-        return redirect("/welcome/")

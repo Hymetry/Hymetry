@@ -57,7 +57,7 @@
 
       <!-- Right Section: Profile Menu -->
       <div class="flex items-center h-full">
-        
+
         <a href="{% url 'users:user_profile' %}" class="flex items-center text-sky-800 duration-150 hover:bg-slate-100 rounded-md py-2 px-4 font-medium gap-1">Profile</a>
       </div>
     </nav>
@@ -104,10 +104,10 @@
                 <div class="flex justify-between items-center mb-6">
                   <h2 class="text-lg font-semibold text-slate-600">TEAM</h2>
                   {% if is_owner %}
-                    <button data-modal-trigger aria-controls="add-team-members" class="flex items-center gap-2 font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                    <button data-modal-trigger aria-controls="add-team-member" class="flex items-center gap-2 font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
                       <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
                         <path d="M450-450H220v-60h230v-230h60v230h230v60H510v230h-60v-230Z" />
-                      </svg>Add team members
+                      </svg>Add team member
                     </button>
                   {% endif %}
                 </div>
@@ -136,6 +136,8 @@
                           <span class="bg-blue-100 text-blue-800 font-medium px-2 py-1 rounded-full">invited</span>
                         {% elif member.status == 'expired' %}
                           <span class="bg-red-100 text-red-800 font-medium px-2 py-1 rounded-full">expired</span>
+                        {% elif member.status == 'left_project' %}
+                          <span class="bg-slate-50 text-slate-700 font-medium px-2 py-1 rounded-full">inactive</span>
                         {% endif %}
                       </div>
                       <div class="col-span-1 relative">
@@ -149,6 +151,8 @@
                             <div class="py-2" role="none">
                               {% if member.status == 'active' %}
                                 <button onclick="document.location.href=&quot;{% url 'projects:remove_active_user' project_id=project.id membership_id=member.membership_id %}&quot;" class="w-full text-left px-4 py-3 hover:bg-gray-100" role="menuitem" tabindex="-1">Remove</button>
+                              {% elif member.status == 'left_project' %}
+                                <button onclick="document.location.href=&quot;{% url 'projects:delete_left_user' project_id=project.id user_id=member.user_id %}&quot;" class="w-full text-left px-4 py-3 hover:bg-gray-100 text-red-700" role="menuitem" tabindex="-1">Delete user</button>
                               {% elif member.status == 'invited' %}
                                 <button onclick="document.location.href=&quot;{% url 'projects:remove_invitation' project_id=project.id token=member.invitation_token %}&quot;" class="w-full text-left px-4 py-3 hover:bg-gray-100" role="menuitem" tabindex="-1">Cancel and remove</button>
                               {% elif member.status == 'expired' %}
@@ -271,7 +275,7 @@
   &lt;span&gt;Order #847392&lt;/span&gt;
 &lt;/div&gt;</code></pre>
 
-                          
+
 
                           <h3 class="mt-6 text-lg font-medium text-slate-900">Good practices</h3>
                           <ul class="mt-3 list-disc space-y-1 pl-5">
@@ -295,6 +299,200 @@
                 </div>
               </section>
             {% endif %}
+
+            <!-- Chat GPT Key section (only for project owner) -->
+                    {% if is_owner %}
+                    {% if chatgpt_key_value and chatgpt_key_is_valid != True %}
+                        <div id="chatgpt-key-invalid-warning" class="my-4 bg-yellow-100 border border-yellow-200 text-sm text-yellow-800 rounded-lg p-4 {% if chatgpt_key_is_valid is None %}hidden{% endif %}" role="alert" tabindex="-1" aria-labelledby="hs-soft-color-warning-label">
+                            Your API key appears to be invalid. Create a new API key in your ChatGPT account
+                            <a href="https://platform.openai.com/settings/organization/api-keys" class="underline font-semibold hover:text-red-900" target="_blank">here</a>
+                            and try again.
+                        </div>
+                    {% endif %}
+
+                    {% if not chatgpt_key_value %}
+                        <!-- Card: ✅✅✅ AI -->
+                        <section
+                            class="bg-white border-2 border-yellow-400 shadow-lg shadow-yellow-500/20 rounded-xl p-6 mb-6">
+                            <h2 class="text-lg font-semibold text-slate-600 uppercase">
+                                ChatGPT API key {% if is_owner and chatgpt_key_value and chatgpt_key_needs_check %}<span id="chatgpt-key-checking"></span>{% endif %}
+                            </h2>
+                            <div class="flex justify-between items-start gap-4 mt-2">
+                                <div class="mt-2">
+                                    <p class="flex items-center gap-2">
+                                        <svg
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            width="24"
+                                            height="24"
+                                            viewBox="0 0 128 128">
+                                            <path
+                                                fill="#fcc21b"
+                                                d="M64 9.64C1.69 9.64.21 79.5.21 93.33S28.77 118.36 64 118.36c35.24 0 63.79-11.21 63.79-25.03c0-13.83-1.47-83.69-63.79-83.69" />
+                                            <path
+                                                fill="#2f2f2f"
+                                                d="M38.31 97.58c-.69 0-1.38-.24-1.95-.72a2.997 2.997 0 0 1-.33-4.23c7-8.19 17.19-12.89 27.97-12.89c10.77 0 20.97 4.7 27.96 12.89c1.08 1.26.93 3.15-.33 4.23a2.997 2.997 0 0 1-4.23-.33A30.73 30.73 0 0 0 64 85.75c-9.02 0-17.55 3.93-23.4 10.79c-.6.69-1.44 1.04-2.29 1.04m-4.3-37.35c.03-.94.18-1.84.4-2.71c1.74-.23 3.62-.59 5.68-1.21c3.04-.91 5.3-2.41 7.05-4.04c1.93 1.83 3.17 4.72 3.09 7.99c-.12 5.53-3.85 9.99-8.34 9.97c-4.47.01-7.99-4.48-7.88-10m60.4 0c-.03-.94-.18-1.84-.4-2.71c-1.74-.23-3.62-.59-5.68-1.21c-3.04-.91-5.3-2.41-7.05-4.04c-1.93 1.83-3.17 4.72-3.09 7.99c.12 5.53 3.85 9.99 8.34 9.97c4.46.01 7.99-4.48 7.88-10" />
+                                        </svg>
+                                        <span>Key not provided</span>
+                                    </p>
+                                </div>
+                                <div class="flex gap-2">
+                                    <button
+                                        data-modal-trigger
+                                        aria-controls="add-chatgpt-key"
+                                        class="flex items-center gap-2 font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                                        <svg
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            height="24px"
+                                            viewBox="0 -960 960 960"
+                                            width="24px"
+                                            fill="#5f6368">
+                                            <path d="M450-450H220v-60h230v-230h60v230h230v60H510v230h-60v-230Z" />
+                                        </svg>
+                                        Add key
+                                    </button>
+                                </div>
+                            </div>
+                            <div>
+                                <p class="mt-4">
+                                    We use GPT to shorten long page names so charts and the left panel stay readable. In
+                                    the future, it will also power AI summaries and analytics.
+                                </p>
+                                <p class="mt-4">
+                                    If no key is provided, page names are shown as-is and AI features will be disabled.
+                                </p>
+                                <p class="mt-4">
+                                    Your key is used only for enabled AI features and billed to your OpenAI account.
+                                </p>
+                            </div>
+                        </section>
+                    {% endif %}
+                    {% if chatgpt_key_value %}
+                        <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+                            <h2 class="text-lg font-semibold text-slate-600 uppercase">
+                                ChatGPT API key {% if is_owner and chatgpt_key_value and chatgpt_key_needs_check %}<span id="chatgpt-key-checking"></span>{% endif %}
+                            </h2>
+
+                            <div class="flex justify-between items-start gap-4 mt-2">
+                                <div class="mt-2">
+                                    <p class="flex items-center gap-2">
+                                        <svg
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            height="24px"
+                                            viewBox="0 -960 960 960"
+                                            width="24px"
+                                            fill="currentColor"
+                                            class="text-green-700">
+                                            <path
+                                                d="m423.23-309.85 268.92-268.92L650-620.92 423.23-394.15l-114-114L267.08-466l156.15 156.15ZM480.07-100q-78.84 -36-148.21-29.92t-120.68-81.21q-51.31-51.29-81.25-120.63Q100-401.1 100-479.93q0-78.84 29.92-148.21t81.21-120.68q51.29-51.31 120.63-81.25Q401.1-860 479.93-860q78.84 0 148.21 29.92t120.68 81.21q51.31 51.29 81.25 120.63Q860-558.9 860-480.07q0 78.84-29.92 148.21t-81.21 120.68q-51.29 51.31-120.63 81.25Q558.9-100 480.07-100Z" />
+                                        </svg>
+                                        <span>{{ chatgpt_key_value|slice:":10" }}...</span>
+                                    </p>
+                                </div>
+                                <div class="flex gap-2 items-center">
+                                    <div class="relative">
+                                        <button
+                                            class="flex items-center gap-2 font-medium text-slate-600 duration-150 hover:bg-slate-100 rounded px-2 py-1.5"
+                                            data-dropdown-toggle="#remove-chatgpt-key-menu">
+                                            <svg
+                                                xmlns="http://www.w3.org/2000/svg"
+                                                height="24px"
+                                                viewBox="0 -960 960 960"
+                                                width="24px"
+                                                fill="currentColor">
+                                                <path
+                                                    d="M249.23-420q-24.75 0-42.37-17.63-17.63-17.62-17.63-42.37 0-24.75 17.63-42.37Q224.48-540 249.23-540q24.75 0 42.38 17.63 17.62 17.62 17.62 42.37 0 24.75-17.62 42.37Q273.98-420 249.23-420ZM480-420q-24.75 0-42.37-17.63Q420-455.25 420-480q0-24.75 17.63-42.37Q455.25-540 480-540q24.75 0 42.37 17.63Q540-504.75 540-480q0 24.75-17.63 42.37Q504.75-420 480-420Zm230.77 0q-24.75 0-42.38-17.63-17.62-17.62-17.62-42.37 0-24.75 17.62-42.37Q686.02-540 710.77-540q24.75 0 42.37 17.63 17.63 17.62 17.63 42.37 0 24.75-17.63 42.37Q735.52-420 710.77-420Z" />
+                                            </svg>
+                                        </button>
+                                        <div id="remove-chatgpt-key-menu" data-dropdown-menu class="hidden absolute left-0 z-10 mt-2 w-40 rounded-md bg-white shadow-lg border border-slate-200 py-1" role="menu" tabindex="-1">
+                                            <button type="button" id="remove-chatgpt-key-btn" class="w-full text-left px-4 py-3 hover:bg-gray-100 text-slate-700" role="menuitem" tabindex="-1">Remove</button>
+                                        </div>
+                                    </div>
+                                    <button
+                                        data-modal-trigger
+                                        aria-controls="change-chatgpt-key"
+                                        class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                                        Change
+                                    </button>
+                                </div>
+                            </div>
+                            <div>
+                                <p class="mt-4">
+                                    We use GPT to shorten long page names so charts and the left panel stay readable. In
+                                    the future, it will also power AI summaries and analytics.
+                                </p>
+                                <p class="mt-4">
+                                    If no key is provided, page names are shown as-is and AI features will be disabled.
+                                </p>
+                                <p class="mt-4">
+                                    Your key is used only for enabled AI features and billed to your OpenAI account.
+                                </p>
+                                <details class="mt-8 group w-full rounded-lg border border-slate-200">
+                                    <!-- Hide the native marker gutter so width doesn't shift -->
+                                    <summary
+                                        class="flex cursor-pointer items-center justify-between gap-x-3 px-6 py-3 text-sky-800 list-none [&::-webkit-details-marker]:hidden">
+                                        <span>How to get a new ChatGPT API key</span>
+                                        <svg
+                                            class="h-5 w-5 text-gray-500 transition-transform duration-200 group-open:rotate-180"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            fill="none"
+                                            viewBox="0 0 24 24"
+                                            stroke="currentColor">
+                                            <path
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                stroke-width="2"
+                                                d="M19 9l-7 7-7-7" />
+                                        </svg>
+                                    </summary>
+
+                                    <!-- Match the horizontal padding with the summary (px-6) -->
+                                    <div class="px-6 pb-6 pt-0">
+                                        <section class="pt-6">
+                                            <div class="space-y-2">
+                                                <ul class="list-disc pl-5 space-y-1">
+                                                    <li>
+                                                        Sign in to the OpenAI Platform:
+                                                        <a
+                                                            class="underline"
+                                                            href="https://platform.openai.com/"
+                                                            target="_blank"
+                                                            rel="noopener noreferrer">
+                                                            platform.openai.com
+                                                        </a>
+                                                    </li>
+                                                    <li>
+                                                        Open <span class="font-medium">API keys</span>:
+                                                        <a
+                                                            class="underline"
+                                                            href="https://platform.openai.com/settings/organization/api-keys"
+                                                            target="_blank"
+                                                            rel="noopener noreferrer">
+                                                            API keys page
+                                                        </a>
+                                                    </li>
+                                                    <li>
+                                                        Click <span class="font-medium">Create new secret key</span>.
+                                                    </li>
+                                                    <li>Copy the key (you’ll only see it once) and paste it here.</li>
+                                                </ul>
+                                            </div>
+                                        </section>
+                                    </div>
+                                </details>
+                            </div>
+                        </section>
+
+                    {% endif %}
+                    {% endif %}
+                    {% if not is_owner and not chatgpt_key_value or not is_owner and chatgpt_key_is_valid == False %}
+                        <div class="my-4 mb-6 bg-yellow-100 border border-yellow-200 text-sm text-yellow-800 rounded-lg p-4" role="alert" tabindex="-1">
+                            Your ChatGPT API key appears to be invalid. Please contact the administrator for assistance.
+                        </div>
+                    {% endif %}
+                        <!-- Card: ✅✅✅ AI end -->
+            <!-- Chat GPT Key section /-->
+
+
 
             <!-- Card 4: Pricing -->
             <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
@@ -425,13 +623,14 @@
         </div>
       </div>
 
-      <div id="add-team-members" data-modal-target class="hidden">
+      <div id="add-team-member" data-modal-target class="hidden">
         <div class="flex items-start justify-center fixed inset-0 z-50">
           <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
 
           <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
-            <form action="{% url 'projects:invite_multiple_users' project_id=project.id %}" method="POST" id="invite-form">
+            <form action="{% url 'projects:create_and_add_user_to_project' project_id=project.id %}" method="POST" id="add-user-form">
               {% csrf_token %}
+
               <div class="bg-white px-6 py-4">
                 <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
                   <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
@@ -440,28 +639,26 @@
                 </button>
                 <div class="flex items-start">
                   <div class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-green-600 bg-green-100">
-                    <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
-                      <path d="M172.31-180Q142-180 121-201q-21-21-21-51.31v-455.38Q100-738 121-759q21-21 51.31-21h615.38Q818-780 839-759q21 21 21 51.31v455.38Q860-222 839-201q-21 21-51.31 21H172.31ZM480-457.69 160-662.31v410q0 5.39 3.46 8.85t8.85 3.46h615.38q5.39 0 8.85-3.46t3.46-8.85v-410L480-457.69Zm0-62.31 313.85-200h-627.7L480-520ZM160-662.31V-720v467.69q0 5.39 3.46 8.85t8.85 3.46H160v-422.31Z" />
-                    </svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor"><path d="M360-390q-21 0-35.5-14.5T310-440q0-21 14.5-35.5T360-490q21 0 35.5 14.5T410-440q0 21-14.5 35.5T360-390Zm240 0q-21 0-35.5-14.5T550-440q0-21 14.5-35.5T600-490q21 0 35.5 14.5T650-440q0 21-14.5 35.5T600-390ZM480-160q134 0 227-93t93-227q0-24-3-46.5T786-570q-21 5-42 7.5t-44 2.5q-91 0-172-39T390-708q-32 78-91.5 135.5T160-486v6q0 134 93 227t227 93Zm.07 60q-78.84 0-148.21-29.92t-120.68-81.21q-51.31-51.29-81.25-120.63Q100-401.1 100-479.93q0-78.84 29.92-148.21t81.21-120.68q51.29-51.31 120.63-81.25Q401.1-860 479.93-860q78.84 0 148.21 29.92t120.68 81.21q51.31 51.29 81.25 120.63Q860-558.9 860-480.07q0 78.84-29.92 148.21t-81.21 120.68q-51.29 51.31-120.63 81.25Q558.9-100 480.07-100Zm-72.92-691.15q45.46 83.84 126.12 127.5Q613.92-620 700-620q16.31 0 31.81-1.69t31.42-4.85q-40.08-79.61-116.11-126.54Q571.08-800 480-800q-20.15 0-37.58 2.27-17.42 2.27-35.27 6.58ZM171.23-556.38q56.39-28.23 107.08-82.5Q329-693.15 343.77-769q-65.62 29.77-110.92 85.58-45.31 55.81-61.62 127.04Zm235.92-234.77ZM343.77-769Z"/></svg>
                   </div>
                   <div class="w-full mt-2 ml-4">
-                    <h3 class="text-base font-semibold">Add team members</h3>
+                    <h3 class="text-base font-semibold">Add team member</h3>
                     <div class="mt-6">
-                      <p class="mb-2">Enter team members, one email per row (max 10).</p>
-                      <textarea rows="6" name="emails" id="emails-textarea" placeholder="E.g.
-mail1@domain.com
-mail2@domain.com" class="block w-full appearance-none border border-slate-300 rounded py-3 px-3 text-gray-700 leading-tight" data-modal-input-focus autofocus required></textarea>
-                      <div id="email-error" class="mt-2 text-red-600 text-sm hidden">Please enter valid email addresses (one per line, max 10).</div>
+                      <p class="mb-2">Email</p>
+                      <input type="email" name="email" id="user-email" class="block w-full appearance-none border border-slate-300 rounded py-3 px-3 text-gray-700 leading-tight" data-modal-input-focus autofocus required>
+                    </div>
+                  <div class="mt-4">
+                      <p class="mb-2">Password</p>
+                      <input minlength="8" type="password" name="password" id="user-password" placeholder="Must be at least 8 characters" class="block w-full appearance-none border border-slate-300 rounded py-3 px-3 text-gray-700 leading-tight" data-modal-input-focus autofocus required>
+                      <div id="general-error" class="mt-2 text-red-600 text-sm hidden"></div>
                     </div>
                   </div>
                 </div>
               </div>
 
               <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
-                <button type="submit" id="send-invitations-btn" class="flex items-center gap-2 bg-green-600 font-medium text-white duration-150 hover:bg-green-700 rounded pl-4 pr-6">
-                  <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
-                    <path d="M140-190v-580l688.46 290L140-190Zm60-90 474-200-474-200v147.69L416.92-480 200-427.69V-280Zm0 0v-400 400Z" />
-                  </svg>Send invitations
+                <button type="submit" id="add-user-btn" class="flex items-center gap-2 bg-green-600 font-medium text-white duration-150 hover:bg-green-700 rounded px-4">
+                  Add team member
                 </button>
                 <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Cancel</button>
               </div>
@@ -547,7 +744,191 @@ mail2@domain.com" class="block w-full appearance-none border border-slate-300 ro
       </div>
     </div>
 
+        <div id="change-chatgpt-key" data-modal-target class="hidden">
+            <div class="flex items-start justify-center fixed inset-0 z-50">
+                <div
+                    data-modal-close
+                    data-modal-overlay
+                    tabindex="-1"
+                    data-class-in="opacity-50"
+                    data-class-out="opacity-0"
+                    class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+
+                <div
+                    data-modal-wrapper
+                    data-class-in="opacity-100 translate-y-0"
+                    data-class-out="opacity-0 translate-y-5"
+                    class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+                    <div class="bg-white px-6 py-4">
+                        <button
+                            type="button"
+                            data-modal-close
+                            class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                height="24px"
+                                viewBox="0 -960 960 960"
+                                width="24px"
+                                fill="currentColor">
+                                <path
+                                    d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                            </svg>
+                        </button>
+                        <div class="flex items-start">
+                            <div
+                                class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
+                                <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    height="24px"
+                                    viewBox="0 -960 960 960"
+                                    width="24px"
+                                    fill="currentColor">
+                                    <path
+                                        d="M200-200h50.46l409.46-409.46-50.46-50.46L200-250.46V-200Zm-60 60v-135.38l527.62-527.39q9.07-8.24 20.03-12.73 10.97-4.5 23-4.5t23.3 4.27q11.28 4.27 19.97 13.58l48.85 49.46q9.31 8.69 13.27 20 3.96 11.31 3.96 22.62 0 12.07-4.12 23.03-4.12 10.97-13.11 20.04L275.38-140H140Zm620.38-570.15-50.23-50.23 50.23 50.23Zm-126.13 75.9-24.79-25.67 50.46 50.46-25.67-24.79Z" />
+                                </svg>
+                            </div>
+                            <div class="w-full mt-2 ml-4">
+                                <h3 class="text-base font-semibold leading-6">ChatGPT API key</h3>
+                                <div class="mt-6">
+                                    <p class="mb-2">Enter a new key</p>
+                                    <input
+                                        type="text"
+                                        id="change-chatgpt-key-input"
+                                        name="key"
+                                        placeholder="New API key, e.g. sk-proj-mlSIc8..."
+                                        class="shadow-sm appearance-none border rounded w-full py-3 px-3 text-gray-700 leading-tight focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500"
+                                        data-modal-input-focus
+                                        autofocus />
+                                    <div id="change-chatgpt-key-error" class="mt-2 text-red-600 text-sm hidden"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+                        <button
+                            type="button"
+                            id="save-chatgpt-key-btn"
+                            class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">
+                            Save key
+                        </button>
+                        <button
+                            type="button"
+                            data-modal-close
+                            class="flex items-center gap-2 bg-sla font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="add-chatgpt-key" data-modal-target class="hidden">
+            <div class="flex items-start justify-center fixed inset-0 z-50">
+                <div
+                    data-modal-close
+                    data-modal-overlay
+                    tabindex="-1"
+                    data-class-in="opacity-50"
+                    data-class-out="opacity-0"
+                    class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+
+                <div
+                    data-modal-wrapper
+                    data-class-in="opacity-100 translate-y-0"
+                    data-class-out="opacity-0 translate-y-5"
+                    class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+                    <div class="bg-white px-6 py-4">
+                        <button
+                            type="button"
+                            data-modal-close
+                            class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                height="24px"
+                                viewBox="0 -960 960 960"
+                                width="24px"
+                                fill="currentColor">
+                                <path
+                                    d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                            </svg>
+                        </button>
+                        <div class="flex items-start">
+                            <div
+                                class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
+                                <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    height="24px"
+                                    viewBox="0 -960 960 960"
+                                    width="24px"
+                                    fill="currentColor">
+                                    <path
+                                        d="M200-200h50.46l409.46-409.46-50.46-50.46L200-250.46V-200Zm-60 60v-135.38l527.62-527.39q9.07-8.24 20.03-12.73 10.97-4.5 23-4.5t23.3 4.27q11.28 4.27 19.97 13.58l48.85 49.46q9.31 8.69 13.27 20 3.96 11.31 3.96 22.62 0 12.07-4.12 23.03-4.12 10.97-13.11 20.04L275.38-140H140Zm620.38-570.15-50.23-50.23 50.23 50.23Zm-126.13 75.9-24.79-25.67 50.46 50.46-25.67-24.79Z" />
+                                </svg>
+                            </div>
+                            <div class="w-full mt-2 ml-4">
+                                <h3 class="text-base font-semibold leading-6">ChatGPT API key</h3>
+                                <div class="mt-6">
+                                    <p class="mb-2">Enter a key</p>
+                                    <input
+                                        type="text"
+                                        id="add-chatgpt-key-input"
+                                        name="key"
+                                        placeholder="E.g. sk-proj-mlSIc8..."
+                                        class="shadow-sm appearance-none border rounded w-full py-3 px-3 text-gray-700 leading-tight focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500"
+                                        data-modal-input-focus
+                                        autofocus />
+                                    <div id="add-chatgpt-key-error" class="mt-2 text-red-600 text-sm hidden"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+                        <button
+                            type="button"
+                            id="add-chatgpt-key-btn"
+                            class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">
+                            Add key
+                        </button>
+                        <button
+                            type="button"
+                            data-modal-close
+                            class="flex items-center gap-2 bg-sla font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
     <script>
+      // Check ChatGPT key validity via Ajax (avoids slow check on initial page load)
+      const chatgptKeyChecking = document.getElementById('chatgpt-key-checking')
+      const chatgptKeyInvalidWarning = document.getElementById('chatgpt-key-invalid-warning')
+      if (chatgptKeyChecking) {
+        const chatgpt_key_needs_check = '{{ chatgpt_key_needs_check }}' === 'True'
+        if (chatgpt_key_needs_check) {
+        fetch("{% url 'projects:check_chatgpt_key' project_id=project.id %}", {
+          method: 'GET',
+          headers: { 'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]')?.value || '' }
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            chatgptKeyChecking.classList.add('hidden')
+            if (data.valid !== true && chatgptKeyInvalidWarning) {
+              chatgptKeyInvalidWarning.classList.remove('hidden')
+            }
+          })
+          .catch(() => {
+            chatgptKeyChecking.classList.add('hidden')
+            if (chatgptKeyInvalidWarning) {
+              chatgptKeyInvalidWarning.classList.remove('hidden')
+            }
+          })
+        }
+      }
+
       const btn = document.getElementById('copyBtn')
       const icon = document.getElementById('copyBtnIcon')
       const label = document.getElementById('copyClipboardLabel')
@@ -556,38 +937,38 @@ mail2@domain.com" class="block w-full appearance-none border border-slate-300 ro
                                                                                                                                                                     </svg>`
       const checkIcon = `
                                                                                                                             <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor"><path d="M382-253.85 168.62-467.23 211.38-510 382-339.38 748.62-706l42.76 42.77L382-253.85Z"/></svg>`
-      
+
       if (btn) {
         btn.addEventListener('click', async () => {
           try {
             // Get the script content from the pre element
             const scriptElement = document.getElementById('script-to-copy')
             const scriptContent = scriptElement ? scriptElement.textContent : ''
-      
+
             // Copy to clipboard using modern API
             await navigator.clipboard.writeText(scriptContent)
-      
+
             // Update button appearance
             btn.classList.remove('hover:bg-slate-100')
             btn.classList.add('bg-green-600')
             btn.classList.add('text-white')
-            label.textContent = 'Copied to clipboard'
-            icon.innerHTML = checkIcon
+            if (label) label.textContent = 'Copied to clipboard'
+            if (icon) icon.innerHTML = checkIcon
             btn.setAttribute('disabled', 'disabled')
-      
+
             // Reset after 2 seconds
             setTimeout(() => {
               btn.classList.remove('bg-green-600')
               btn.classList.remove('text-white')
               btn.classList.add('hover:bg-slate-100')
-              label.textContent = 'Copy to clipboard'
-              icon.innerHTML = plusIcon
+              if (label) label.textContent = 'Copy to clipboard'
+              if (icon) icon.innerHTML = plusIcon
               btn.removeAttribute('disabled')
             }, 2000)
           } catch (err) {
             // Fallback for older browsers
             console.error('Failed to copy: ', err)
-      
+
             // Try the old method
             const scriptElement = document.getElementById('script-to-copy')
             if (scriptElement) {
@@ -596,26 +977,26 @@ mail2@domain.com" class="block w-full appearance-none border border-slate-300 ro
               const selection = window.getSelection()
               selection.removeAllRanges()
               selection.addRange(range)
-      
+
               try {
                 document.execCommand('copy')
                 selection.removeAllRanges()
-      
+
                 // Update button appearance
                 btn.classList.remove('hover:bg-slate-100')
                 btn.classList.add('bg-green-600')
                 btn.classList.add('text-white')
-                label.textContent = 'Copied to clipboard'
-                icon.innerHTML = checkIcon
+                if (label) label.textContent = 'Copied to clipboard'
+                if (icon) icon.innerHTML = checkIcon
                 btn.setAttribute('disabled', 'disabled')
-      
+
                 // Reset after 2 seconds
                 setTimeout(() => {
                   btn.classList.remove('bg-green-600')
                   btn.classList.remove('text-white')
                   btn.classList.add('hover:bg-slate-100')
-                  label.textContent = 'Copy to clipboard'
-                  icon.innerHTML = plusIcon
+                  if (label) label.textContent = 'Copy to clipboard'
+                  if (icon) icon.innerHTML = plusIcon
                   btn.removeAttribute('disabled')
                 }, 2000)
               } catch (err) {
@@ -625,18 +1006,18 @@ mail2@domain.com" class="block w-full appearance-none border border-slate-300 ro
           }
         })
       }
-      
+
       // Delete project confirmation
       const deleteConfirmationInput = document.getElementById('delete-confirmation-input')
       const deleteProjectBtn = document.getElementById('delete-project-btn')
       const deleteErrorMessage = document.getElementById('delete-error-message')
       const deleteProjectForm = document.getElementById('delete-project-form')
-      
+
       if (deleteConfirmationInput && deleteProjectBtn) {
         deleteConfirmationInput.addEventListener('input', function () {
           const projectName = '{{ project.name }}'
           const inputValue = this.value.trim()
-      
+
           if (inputValue === projectName) {
             deleteProjectBtn.disabled = false
             deleteErrorMessage.classList.add('hidden')
@@ -649,125 +1030,38 @@ mail2@domain.com" class="block w-full appearance-none border border-slate-300 ro
             }
           }
         })
-      
+
         deleteProjectBtn.addEventListener('click', function () {
           const projectName = '{{ project.name }}'
           const inputValue = deleteConfirmationInput.value.trim()
-      
+
           if (inputValue === projectName) {
             deleteProjectForm.submit()
           }
         })
       }
-      
-      // Email validation for invite form
-      const inviteForm = document.getElementById('invite-form')
-      const emailsTextarea = document.getElementById('emails-textarea')
-      const emailError = document.getElementById('email-error')
-      const sendInvitationsBtn = document.getElementById('send-invitations-btn')
-      
-      if (inviteForm && emailsTextarea) {
-        inviteForm.addEventListener('submit', function (e) {
-          e.preventDefault()
-      
-          // Clear any existing errors when starting
-          emailError.classList.add('hidden')
-      
-          const emailsText = emailsTextarea.value.trim()
-          if (!emailsText) {
-            emailError.textContent = 'Please enter at least one email address.'
-            emailError.classList.remove('hidden')
-            emailError.classList.remove('text-yellow-600')
-            emailError.classList.add('text-red-600')
-            return false
-          }
-      
-          // Disable button to prevent double submission
-          sendInvitationsBtn.disabled = true
-          sendInvitationsBtn.textContent = 'Sending...'
-      
-          // Validate emails via AJAX
-          fetch("{% url 'projects:validate_emails' project_id=project.id %}", {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
-            },
-            body: JSON.stringify({
-              emails: emailsText
-            })
-          })
-            .then((response) => response.json())
-            .then((data) => {
-              if (data.valid) {
-                // Clear any previous errors
-                emailError.classList.add('hidden')
-      
-                // Show warnings if any
-                if (data.warnings && data.warnings.length > 0) {
-                  emailError.textContent = data.warnings.join(' ')
-                  emailError.classList.remove('hidden')
-                  emailError.classList.remove('text-red-600')
-                  emailError.classList.add('text-yellow-600')
-                }
-      
-                // Check for Celery error
-                if (data.celery_error) {
-                  emailError.textContent = data.celery_error
-                  emailError.classList.remove('hidden')
-                  emailError.classList.remove('text-yellow-600')
-                  emailError.classList.add('text-red-600')
-                  sendInvitationsBtn.disabled = false
-                  sendInvitationsBtn.textContent = 'Send invitations'
-                  return
-                }
-      
-                // Submit the form
-                inviteForm.submit()
-              } else {
-                // Show error and re-enable button
-                const errorMessage = data.celery_error || data.error || 'An error occurred during validation.'
-                emailError.textContent = errorMessage
-                emailError.classList.remove('hidden')
-                emailError.classList.remove('text-yellow-600')
-                emailError.classList.add('text-red-600')
-                sendInvitationsBtn.disabled = false
-                sendInvitationsBtn.textContent = 'Send invitations'
-              }
-            })
-            .catch((error) => {
-              console.error('Validation error:', error)
-              emailError.textContent = 'An error occurred during validation.'
-              emailError.classList.remove('hidden')
-              emailError.classList.remove('text-yellow-600')
-              emailError.classList.add('text-red-600')
-              sendInvitationsBtn.disabled = false
-              sendInvitationsBtn.textContent = 'Send invitations'
-            })
-        })
-      }
-      
+
       // Leave project confirmation
       const leaveProjectBtn = document.getElementById('leave-project-btn')
       const leaveProjectForm = document.getElementById('leave-project-form')
-      
+
       if (leaveProjectBtn && leaveProjectForm) {
         leaveProjectBtn.addEventListener('click', function () {
           leaveProjectForm.submit()
         })
       }
-      
+
       // Timezone search functionality
       const timezoneSelect = document.getElementById('timezone-select')
-      
+
       // Project timezone change form
       const changeProjectTimezoneForm = document.getElementById('change-project-timezone-form')
       if (changeProjectTimezoneForm) {
         changeProjectTimezoneForm.addEventListener('submit', function (e) {
           e.preventDefault()
-          
+
           const formData = new FormData(changeProjectTimezoneForm)
-          
+
           // Submit form normally (not via AJAX since we want to reload the page)
           changeProjectTimezoneForm.submit()
         })
@@ -777,16 +1071,16 @@ mail2@domain.com" class="block w-full appearance-none border border-slate-300 ro
       const changeProjectNameForm = document.getElementById('change-project-name-form')
       const projectNameInput = changeProjectNameForm ? changeProjectNameForm.querySelector('input[name="name"]') : null
       const projectNameDisplay = document.querySelector('[data-dropdown-toggle="#project-popup"]')
-      
+
       if (changeProjectNameForm && projectNameInput) {
         changeProjectNameForm.addEventListener('submit', function (e) {
           e.preventDefault()
-      
+
           const newName = projectNameInput.value.trim()
           if (!newName) {
             return false
           }
-      
+
           // Submit form via AJAX
           fetch(changeProjectNameForm.action, {
             method: 'POST',
@@ -805,7 +1099,7 @@ mail2@domain.com" class="block w-full appearance-none border border-slate-300 ro
                   const closeEvent = new Event('click')
                   modal.querySelector('[data-modal-close]').dispatchEvent(closeEvent)
                 }
-      
+
                 // Reload the settings page to show updated name
                 window.location.reload()
               } else {
@@ -817,7 +1111,220 @@ mail2@domain.com" class="block w-full appearance-none border border-slate-300 ro
             })
         })
       }
+
+      const addUserForm = document.getElementById('add-user-form')
+      if (addUserForm) {
+        addUserForm.addEventListener('submit', function (e) {
+          e.preventDefault()
+          const addUserBtn = document.getElementById('add-user-btn')
+          const email = document.getElementById('user-email').value
+          const password = document.getElementById('user-password').value
+          const generalError = document.getElementById('general-error')
+
+          // Disable button to prevent double submission
+          if (addUserBtn) addUserBtn.disabled = true
+          if (addUserBtn) addUserBtn.textContent = 'Adding a member...'
+
+          // Validate emails via AJAX
+          fetch("{% url 'projects:create_and_add_user_to_project' project_id=project.id %}", {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+            },
+            body: JSON.stringify({
+              email: email,
+              password: password
+            })
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              if (!data.error) { // successful
+                if (generalError) generalError.textContent = '';
+
+                // Close the modal
+                const modal = document.getElementById('add-team-member')
+                if (modal) {
+                  const closeEvent = new Event('click')
+                  modal.querySelector('[data-modal-close]').dispatchEvent(closeEvent)
+                }
+
+                // Reload the settings page to show updated name
+                window.location = "{% url 'projects:project_settings' project_id=project.id %}"
+              } else {
+                // Show error and re-enable button
+                if (generalError) {
+                  generalError.textContent = data.error;
+                  generalError.classList.remove('hidden')
+                }
+                if (addUserBtn) {
+                  addUserBtn.disabled = false
+                  addUserBtn.textContent = 'Add team member'
+                }
+              }
+            })
+            .catch((error) => {
+              console.error('Validation error:', error)
+              if (generalError) {
+                generalError.textContent = 'An error occurred during adding a user.'
+                generalError.classList.remove('hidden')
+              }
+              if (addUserBtn) {
+                addUserBtn.disabled = false
+                addUserBtn.textContent = 'Add team member'
+              }
+            })
+        })
+      }
+
+      // Add ChatGPT key (Ajax)
+      const addChatgptKeyBtn = document.getElementById('add-chatgpt-key-btn')
+      const addChatgptKeyInput = document.getElementById('add-chatgpt-key-input')
+      const addChatgptKeyError = document.getElementById('add-chatgpt-key-error')
+      if (addChatgptKeyBtn && addChatgptKeyInput) {
+        addChatgptKeyBtn.addEventListener('click', function () {
+          const key = addChatgptKeyInput.value.trim()
+          if (addChatgptKeyError) {
+            addChatgptKeyError.textContent = ''
+            addChatgptKeyError.classList.add('hidden')
+          }
+          if (!key) {
+            if (addChatgptKeyError) {
+              addChatgptKeyError.textContent = 'Please enter an API key.'
+              addChatgptKeyError.classList.remove('hidden')
+            }
+            return
+          }
+          addChatgptKeyBtn.disabled = true
+          addChatgptKeyBtn.textContent = 'Adding...'
+          fetch("{% url 'projects:save_chatgpt_key' project_id=project.id %}", {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+            },
+            body: JSON.stringify({ key: key })
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              if (data.success) {
+                const modal = document.getElementById('add-chatgpt-key')
+                if (modal && modal.querySelector('[data-modal-close]')) {
+                  modal.querySelector('[data-modal-close]').click()
+                }
+                window.location.reload()
+              } else {
+                if (addChatgptKeyError) {
+                  addChatgptKeyError.textContent = data.error || 'Failed to save key.'
+                  addChatgptKeyError.classList.remove('hidden')
+                }
+                addChatgptKeyBtn.disabled = false
+                addChatgptKeyBtn.textContent = 'Add key'
+              }
+            })
+            .catch((err) => {
+              console.error('Error saving ChatGPT key:', err)
+              if (addChatgptKeyError) {
+                addChatgptKeyError.textContent = 'An error occurred. Please try again.'
+                addChatgptKeyError.classList.remove('hidden')
+              }
+              addChatgptKeyBtn.disabled = false
+              addChatgptKeyBtn.textContent = 'Add key'
+            })
+        })
+      }
+
+      // Change ChatGPT key (Ajax)
+      const saveChatgptKeyBtn = document.getElementById('save-chatgpt-key-btn')
+      const changeChatgptKeyInput = document.getElementById('change-chatgpt-key-input')
+      const changeChatgptKeyError = document.getElementById('change-chatgpt-key-error')
+      if (saveChatgptKeyBtn && changeChatgptKeyInput) {
+        saveChatgptKeyBtn.addEventListener('click', function () {
+          const key = changeChatgptKeyInput.value.trim()
+          if (changeChatgptKeyError) {
+            changeChatgptKeyError.textContent = ''
+            changeChatgptKeyError.classList.add('hidden')
+          }
+          if (!key) {
+            if (changeChatgptKeyError) {
+              changeChatgptKeyError.textContent = 'Please enter an API key.'
+              changeChatgptKeyError.classList.remove('hidden')
+            }
+            return
+          }
+          saveChatgptKeyBtn.disabled = true
+          saveChatgptKeyBtn.textContent = 'Saving...'
+          fetch("{% url 'projects:save_chatgpt_key' project_id=project.id %}", {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+            },
+            body: JSON.stringify({ key: key })
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              if (data.success) {
+                const modal = document.getElementById('change-chatgpt-key')
+                if (modal && modal.querySelector('[data-modal-close]')) {
+                  modal.querySelector('[data-modal-close]').click()
+                }
+                window.location.reload()
+              } else {
+                if (changeChatgptKeyError) {
+                  changeChatgptKeyError.textContent = data.error || 'Failed to save key.'
+                  changeChatgptKeyError.classList.remove('hidden')
+                }
+                saveChatgptKeyBtn.disabled = false
+                saveChatgptKeyBtn.textContent = 'Save key'
+              }
+            })
+            .catch((err) => {
+              console.error('Error saving ChatGPT key:', err)
+              if (changeChatgptKeyError) {
+                changeChatgptKeyError.textContent = 'An error occurred. Please try again.'
+                changeChatgptKeyError.classList.remove('hidden')
+              }
+              saveChatgptKeyBtn.disabled = false
+              saveChatgptKeyBtn.textContent = 'Save key'
+            })
+        })
+      }
+
+      // Remove ChatGPT key (Ajax)
+      const removeChatgptKeyBtn = document.getElementById('remove-chatgpt-key-btn')
+      if (removeChatgptKeyBtn) {
+        removeChatgptKeyBtn.addEventListener('click', function () {
+          removeChatgptKeyBtn.disabled = true
+          removeChatgptKeyBtn.textContent = 'Removing...'
+          fetch("{% url 'projects:remove_chatgpt_key' project_id=project.id %}", {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+            },
+            body: JSON.stringify({})
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              if (data.success) {
+                window.location.reload()
+              } else {
+                removeChatgptKeyBtn.disabled = false
+                removeChatgptKeyBtn.textContent = 'Remove'
+              }
+            })
+            .catch((err) => {
+              console.error('Error removing ChatGPT key:', err)
+              removeChatgptKeyBtn.disabled = false
+              removeChatgptKeyBtn.textContent = 'Remove'
+            })
+        })
+      }
+
     </script>
+
+
 
     <script src="{% static 'js/modals.js' %}"></script>
     <script src="{% static 'js/dropdowns.js' %}"></script>

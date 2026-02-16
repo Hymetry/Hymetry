@@ -6,12 +6,14 @@ from openai import OpenAIError
 from django.conf import settings
 from django.db import models
 
-from apps.tracker.models import Page, TitlePrompt, OpenAIModel, ProjectNormalizationFactor
+from config.utils import get_django_settings_module
+from apps.projects.models import ChatGptKey
+from apps.tracker.models import Page, Session, TitlePrompt, OpenAIModel, ProjectNormalizationFactor
 from apps.tracker.session_visualizer import SessionVisualizer
 
 
 @shared_task
-def generate_clean_title(page_id):
+def generate_clean_title(project_id, page_id):
     try:
         print("Task generate_clean_title started")
         page = Page.objects.get(id=page_id)
@@ -24,7 +26,7 @@ def generate_clean_title(page_id):
         full_prompt = full_prompt.replace("{{PAGE_URL}}", page.url)
         print(full_prompt)
         # Use the current OpenAI API format
-        client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+        client = openai.OpenAI(api_key=settings.OPENAI_API_KEY_PROVIDER(project_id))
         openai_model = OpenAIModel.objects.filter(is_active=True).first()
         openai_model_name = 'gpt-4o' if openai_model is None else openai_model.name
 
@@ -39,10 +41,12 @@ def generate_clean_title(page_id):
         page.save()
         output = f"Task generate_clean_title finished: {page.original_title} - {page.title}"
         print(output)
+        ChatGptKey.objects.update_check_fields(project_id, True)
         return output
     except Page.DoesNotExist:
         return f"Page {page_id} not found"
     except OpenAIError as e:
+        ChatGptKey.objects.update_check_fields(project_id, False)
         return f"OpenAI error: {e}"
     except Exception as e:
         return f"Unhandled error: {e}"
@@ -73,8 +77,9 @@ def process_pages_with_empty_titles():
         
         for page in pages_with_empty_titles:
             try:
-                # Run the generate_clean_title task for each page
-                result = generate_clean_title.delay(page.id)
+                # Page has no project FK; get project_id from a session that has this page (Event -> Session -> Visitor -> project)
+                project_id = Session.objects.filter(events__page=page).values_list('visitor__project_id', flat=True).first()
+                result = generate_clean_title.delay(project_id, page.id)
                 processed_count += 1
                 print(f"Queued generate_clean_title task for page {page.id}: {page.original_title}")
             except Exception as e:
@@ -168,7 +173,7 @@ def get_project_normalization_factor(project_id):
 @shared_task
 def run_calculate_bubble_cache():
     result = subprocess.run(
-        ["python", "manage.py", "calculate_bubble_cache", "--settings=config.settings.prod"],
+        ["python", "manage.py", "calculate_bubble_cache", f"--settings={get_django_settings_module()}"],
         capture_output=True,
         text=True,
     )

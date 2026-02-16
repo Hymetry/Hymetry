@@ -270,7 +270,7 @@ class SessionTracker:
                 original_title=self.page_title or self.page_url
             )
             # AI page title by Celery task
-            generate_clean_title.delay(self.page.id)
+            generate_clean_title.delay(self.project.id, self.page.id)
 
     def process_events(self):
         """Process events (single or batch) using bulk insertion to avoid N+1 queries."""

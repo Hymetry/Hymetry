@@ -90,6 +90,7 @@
                 </header>
 
                 <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+                   {% if request.user.is_superuser %}
                     <div class="flex justify-between items-center mb-8">
                         <button
                             data-modal-trigger
@@ -106,7 +107,7 @@
                             Create new project
                         </button>
                     </div>
-
+                    {% endif %}
                     <div
                         class="grid grid-cols-10 gap-4 font-medium text-slate-500 pb-2 mb-1 border-b border-slate-200">
                         <div class="col-span-7">Name</div>

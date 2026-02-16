@@ -48,7 +48,7 @@ class ProjectMembership(models.Model):
     def __str__(self):
         return f"{self.user} in {self.project}"
 
-
+# Cloud version only
 class Invitation(models.Model):
     email = models.EmailField()
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
@@ -64,3 +64,53 @@ class Invitation(models.Model):
 
     def __str__(self):
         return f"Invite {self.email} to {self.project}"
+
+# OSS version only - users who left their last project by themselves (1:1 with User)
+class UserLeftLastProject(models.Model):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name='left_last_project_oss',
+    )
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='users_who_left_oss')
+
+    class Meta:
+        db_table = 'projects_userleftlastproject'
+
+    def __str__(self):
+        return f"{self.user} left {self.project}"
+
+
+# OSS version only
+class ChatGptKeyManager(models.Manager):
+    def update_check_fields(self, project_id, value):
+        if project_id is None:
+            return 0
+        return self.filter(project_id=project_id).update(is_checked=True, check_result=value)
+
+# OSS version only
+class ChatGptKey(models.Model):
+    project = models.ForeignKey(Project, on_delete=models.CASCADE)
+    key = models.CharField(max_length=255)
+    is_checked = models.BooleanField(default=False, help_text='True when validation has been run')
+    check_result = models.BooleanField(null=True, help_text='True=valid, False=invalid. Meaningful when is_checked is True')
+
+    objects = ChatGptKeyManager()
+
+    def key_is_valid(self):
+        from openai import OpenAI
+        from apps.tracker.models import OpenAIModel
+
+        client = OpenAI(api_key=str(self.key))
+        try:
+            openai_model = OpenAIModel.objects.filter(is_active=True).first()
+            openai_model_name = 'gpt-4o' if openai_model is None else openai_model.name
+
+            client.chat.completions.create(
+                model=openai_model_name,
+                messages=[{"role": "user", "content": "just tell me 'yes'"}]
+            )
+            return True
+        except Exception:
+            return False

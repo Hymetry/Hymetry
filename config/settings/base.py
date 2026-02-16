@@ -49,7 +49,6 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'apps.projects.middleware.InvitationRedirectMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     "allauth.account.middleware.AccountMiddleware",
@@ -157,10 +156,6 @@ AUTHENTICATION_BACKENDS = [
 SESSION_EXPIRATION_SECONDS = int(os.getenv('SESSION_EXPIRATION_SECONDS', '1800').split('#')[0].strip())
 SESSION_MAX_CLOCK_SKEW_SECONDS = int(os.getenv('SESSION_MAX_CLOCK_SKEW_SECONDS', '300').split('#')[0].strip())
 
-EMAIL_BACKEND = 'config.email_backends.postmark_backend.PostmarkBackend'
-POSTMARK_API_TOKEN = os.getenv('POSTMARK_API_TOKEN')
-DEFAULT_FROM_EMAIL = 'notifications@productpathpro.com'  # Must be verified in Postmark
-
 # EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
 # EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
 # EMAIL_PORT = os.getenv('EMAIL_PORT', 587)
@@ -205,10 +200,6 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_SEND_SENT_EVENT = True
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-
 
 ROWS_PER_PAGE = int(os.environ.get('ROWS_PER_PAGE', 100))
 
