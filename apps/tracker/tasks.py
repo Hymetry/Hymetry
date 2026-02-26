@@ -24,7 +24,7 @@ def generate_clean_title(project_id, page_id):
 
         full_prompt = prompt.prompt_text.replace("{{ORIGINAL_TITLE}}", page.original_title)
         full_prompt = full_prompt.replace("{{PAGE_URL}}", page.url)
-        print(full_prompt)
+
         # Use the current OpenAI API format
         client = openai.OpenAI(api_key=settings.OPENAI_API_KEY_PROVIDER(project_id))
         openai_model = OpenAIModel.objects.filter(is_active=True).first()

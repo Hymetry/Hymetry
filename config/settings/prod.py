@@ -1,5 +1,4 @@
 from .base import *
-import sentry_sdk
 
 # Production settings
 DEBUG = False

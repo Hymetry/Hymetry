@@ -10,10 +10,6 @@ class ProjectForm(forms.ModelForm):
         fields = ['name']
 
 
-class InvitationForm(forms.Form):
-    email = forms.EmailField()
-
-
 class ProfileNameForm(forms.Form):
     first_name = forms.CharField(
         max_length=30,
@@ -62,6 +58,7 @@ class ProfilePasswordForm(PasswordChangeForm):
 
 from django import forms
 from django.contrib.auth import password_validation
+
 
 class SinglePasswordResetForm(forms.Form):
     password = forms.CharField(

@@ -14,10 +14,10 @@ const mainFunc = function() {
     const API_KEY = script?.dataset.apiKey;
     if (!API_KEY) {
       // Optionally log error in dev
-      console.error('Productpathpro: data-api-key not set in <script> definition')
+      console.error('Hymetry: data-api-key not set in <script> definition')
       return;
     } else {
-      console.info('Productpathpro started')
+      console.info('Hymetry started')
     }
     const TAB_ID_KEY = 'tracker_tab_id';
     const VISITOR_ID_KEY = 'tracker_visitor_id';
@@ -331,7 +331,7 @@ const mainFunc = function() {
             clearTimeout(batchTimeout);
         }
         
-        console.info('Productpathpro: Access denied.');
+        console.info('Hymetry: Access denied.');
     }
 
     function startRecording() {

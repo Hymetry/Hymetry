@@ -1,0 +1,31 @@
+{
+	# Local/dev: never redirect to HTTPS automatically.
+	auto_https off
+}
+
+:80 {
+	@trackingscript path /main.js /lib.min.js
+	handle @trackingscript {
+		root * /srv/tracker-js
+		file_server
+		header {
+			Access-Control-Allow-Origin *
+			Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+			Access-Control-Allow-Headers "Content-Type"
+			Cache-Control "public, max-age=86400"
+		}
+	}
+
+	handle_path /static/* {
+		root * /srv/staticfiles
+		file_server
+	}
+
+	handle_path /media/* {
+		root * /srv/media
+		file_server
+	}
+
+	reverse_proxy web:8000
+}
+

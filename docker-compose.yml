@@ -1,0 +1,124 @@
+# Виносимо спільні налаштування для web, celery та celery-beat в один блок
+x-app-common: &app-common
+  build: .
+  image: hymetry_app:latest # Спільний образ для всіх трьох сервісів
+  restart: unless-stopped
+  env_file:
+    - ./.env
+  volumes:
+    - staticfiles:/app/staticfiles
+    - media:/app/media
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5433:5432"    
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s          # Агресивніше опитування для швидкого старту
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+
+  init:
+    <<: *app-common
+    user: "0:0"
+    restart: "no"
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        chown -R appuser:appuser /app/staticfiles /app/media || true
+        python manage.py bootstrap
+        chown -R appuser:appuser /app/staticfiles /app/media || true
+
+  web:
+    <<: *app-common         # Підтягуємо всі спільні налаштування
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    command:
+      - gunicorn
+      - config.wsgi:application
+      - --bind
+      - 0.0.0.0:8000
+      - --access-logfile
+      - "-"
+      - --error-logfile
+      - "-"
+
+  celery:
+    <<: *app-common
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    command: ["celery", "-A", "config", "worker", "-l", "info"]
+
+  celery-beat:
+    <<: *app-common
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    command: ["celery", "-A", "config", "beat", "-l", "info"]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - ./static/js:/srv/tracker-js:ro
+      - staticfiles:/srv/staticfiles:ro
+      - media:/srv/media:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
+volumes:
+  postgres_data:
+  redis_data:
+  staticfiles:
+  media:
+  caddy_data:
+  caddy_config:

@@ -3,7 +3,6 @@ import secrets
 
 from django.conf import settings
 from django.db import models
-from django.utils import timezone
 
 
 def generate_unique_id():
@@ -48,24 +47,7 @@ class ProjectMembership(models.Model):
     def __str__(self):
         return f"{self.user} in {self.project}"
 
-# Cloud version only
-class Invitation(models.Model):
-    email = models.EmailField()
-    project = models.ForeignKey(Project, on_delete=models.CASCADE)
-    invited_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    token = models.CharField(max_length=64, unique=True)
-    active = models.BooleanField(default=False)
-    failed = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
 
-    def is_expired(self):
-        expiration = getattr(settings, 'INVITATION_EXPIRATION_HOURS', 24)
-        return (timezone.now() - self.created_at).total_seconds() > expiration * 3600
-
-    def __str__(self):
-        return f"Invite {self.email} to {self.project}"
-
-# OSS version only - users who left their last project by themselves (1:1 with User)
 class UserLeftLastProject(models.Model):
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -82,19 +64,19 @@ class UserLeftLastProject(models.Model):
         return f"{self.user} left {self.project}"
 
 
-# OSS version only
 class ChatGptKeyManager(models.Manager):
     def update_check_fields(self, project_id, value):
         if project_id is None:
             return 0
         return self.filter(project_id=project_id).update(is_checked=True, check_result=value)
 
-# OSS version only
+
 class ChatGptKey(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
     key = models.CharField(max_length=255)
     is_checked = models.BooleanField(default=False, help_text='True when validation has been run')
-    check_result = models.BooleanField(null=True, help_text='True=valid, False=invalid. Meaningful when is_checked is True')
+    check_result = models.BooleanField(null=True,
+                                       help_text='True=valid, False=invalid. Meaningful when is_checked is True')
 
     objects = ChatGptKeyManager()
 

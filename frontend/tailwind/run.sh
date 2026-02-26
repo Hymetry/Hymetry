@@ -1,5 +1,5 @@
 # Run from script dir so npm finds package.json and input.css
-cd /opt/productpathpro/frontend/tailwind/
+cd ./frontend/tailwind/
 
 # Production build (minified) - outputs to /static/css/output.css
 npm run build:prod

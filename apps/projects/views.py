@@ -1,22 +1,38 @@
 import json
 from zoneinfo import ZoneInfo, available_timezones
 
-from django import forms
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import user_passes_test
 from django.http import JsonResponse
-from django.shortcuts import render, redirect, get_object_or_404
+from django.shortcuts import get_object_or_404
+from django.shortcuts import render, redirect
 from django.utils import timezone
 
 from apps.tracker.models import Event
 from apps.users.forms import ProjectForm
 from .decorators import require_project_member, require_project_owner
 from .models import Project, ProjectMembership, ChatGptKey, UserLeftLastProject
-
-User = get_user_model()
 from .utils import generate_tracking_script
 
-from django.contrib.auth.decorators import user_passes_test
+User = get_user_model()
+
+
+def check_if_any_superuser_exists():
+    User = get_user_model()
+    if User.objects.filter(is_superuser=True).exists():
+        print("At least one superuser exists.")
+        return True
+    else:
+        print("No superusers found in the database.")
+        return False
+
+
+def homepage(request):
+    if not check_if_any_superuser_exists():
+        return render(request, "users/superadmin_password.html")
+    return redirect('project_list')
+
 
 def superadmin_required(view_func):
     decorated_view_func = user_passes_test(

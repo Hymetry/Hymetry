@@ -5,7 +5,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.shortcuts import render, redirect
 from django.contrib.auth import login
-from apps.projects.cls.homepage import check_if_any_superuser_exists
+from apps.projects.views import check_if_any_superuser_exists
 from apps.users.forms import ProfileNameForm, ProfilePasswordForm
 from django.contrib import messages
 

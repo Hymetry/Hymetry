@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'django_celery_beat',
+    'apps.core',
     'apps.users',
     'allauth',
     'allauth.account',
@@ -115,11 +116,11 @@ EDGE_URL = os.getenv("EDGE_URL", "http://localhost:8001")
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('DB_NAME'),
-        'USER': os.getenv('DB_USER'),
-        'PASSWORD': os.getenv('DB_PASSWORD'),
-        'HOST': os.getenv('DB_HOST', 'localhost'),
-        'PORT': os.getenv('DB_PORT', '5432'),
+        'NAME': os.getenv('POSTGRES_DB'),
+        'USER': os.getenv('POSTGRES_USER'),
+        'PASSWORD': os.getenv('POSTGRES_PASSWORD'),
+        'HOST': os.getenv('POSTGRES_HOST', 'db'),
+        'PORT': os.getenv('POSTGRES_PORT', '5432'),
     }
 }
 
@@ -171,10 +172,9 @@ ACCOUNT_ADAPTER = "config.adapters.MyAccountAdapter"
 
 LOGIN_URL = '/sign-in/'
 LOGIN_REDIRECT_URL = '/projects/'
-ACCOUNT_CONFIRM_EMAIL_REDIRECT_URL = "/welcome/"
+
 ACCOUNT_LOGOUT_REDIRECT_URL = '/sign-in/'
 ACCOUNT_CONFIRM_EMAIL_ON_GET = True
-ACCOUNT_EMAIL_VERIFICATION_SENT_URL = '/sign-up/email-sent/'
 ACCOUNT_LOGIN_ON_EMAIL_CONFIRMATION = True
 
 # Additional allauth settings for better email confirmation flow
@@ -186,18 +186,16 @@ ACCOUNT_FORMS = {
     'reset_password_from_key': 'projects.forms.SinglePasswordResetForm',
 }
 
-INVITATION_EXPIRATION_HOURS = 24
-
 # AXES - attempts locker (python manage.py axes_reset - to RESET)
 AXES_FAILURE_LIMIT = 5  # кількість дозволених невдалих спроб
 AXES_COOLOFF_TIME = 0.08  # хвилин блокування (0.08 * 60 = 4.8 хвилин)
 AXES_RESET_ON_SUCCESS = True
 
 # Celery settings
-CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_SEND_SENT_EVENT = True
 

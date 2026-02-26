@@ -5,20 +5,19 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "minify": "terser tracking_script.js -o ..\\..\\..\\edgeproductpathpro\\main.js -c toplevel,sequences=false --compress drop_console=false --mangle",
     "minify_dev": "terser tracking_script.js -o ..\\..\\static\\js\\main.js -c toplevel,sequences=false --compress drop_console=false --mangle"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ArtemSyzonenko/productpathpro.git"
+    "url": "git+https://github.com/Hymetry/hymetry.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/ArtemSyzonenko/productpathpro/issues"
+    "url": "https://github.com/Hymetry/hymetry/issues"
   },
-  "homepage": "https://github.com/ArtemSyzonenko/productpathpro#readme",
+  "homepage": "https://github.com/Hymetry/hymetry#readme",
   "devDependencies": {
     "terser": "^5.43.1"
   }

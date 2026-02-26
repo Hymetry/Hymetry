@@ -8,7 +8,7 @@ from django.urls import path, include
 from apps.projects.views import project_list
 from apps.tracker.views import recordings, recording, get_consolidated_data, asset_proxy
 
-from apps.projects.cls.homepage import homepage
+from apps.projects.views import homepage
 
 urlpatterns = [
     path('', homepage, name='index'),  # Homepage
