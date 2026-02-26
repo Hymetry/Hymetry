@@ -1,7 +1,6 @@
-# Виносимо спільні налаштування для web, celery та celery-beat в один блок
 x-app-common: &app-common
   build: .
-  image: hymetry_app:latest # Спільний образ для всіх трьох сервісів
+  image: hymetry_app:latest 
   restart: unless-stopped
   env_file:
     - ./.env
@@ -26,7 +25,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 2s          # Агресивніше опитування для швидкого старту
+      interval: 2s          
       timeout: 3s
       retries: 5
       start_period: 3s
@@ -56,7 +55,7 @@ services:
         chown -R appuser:appuser /app/staticfiles /app/media || true
 
   web:
-    <<: *app-common         # Підтягуємо всі спільні налаштування
+    <<: *app-common         
     ports:
       - "8000:8000"
     depends_on:
