@@ -63,6 +63,8 @@ def project_create(request):
             # Validate timezone using zoneinfo
             try:
                 ZoneInfo(timezone_value)  # This will raise an exception if timezone is invalid
+                if timezone_value == "Europe/Kiev":
+                    timezone_value = "Europe/Kyiv"
                 project.timezone = timezone_value
             except Exception:
                 project.timezone = 'UTC'  # Fallback to UTC if invalid
