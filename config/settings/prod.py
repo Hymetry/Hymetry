@@ -34,3 +34,20 @@ REDIS_URL = os.environ.get("REDIS_URL")
 if REDIS_URL:
     CELERY_BROKER_URL = REDIS_URL or "redis://redis:6379/0"
     CELERY_RESULT_BACKEND = REDIS_URL or "redis://redis:6379/0"
+
+import sys
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "stream": sys.stdout,
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+}
