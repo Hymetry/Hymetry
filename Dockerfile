@@ -3,6 +3,8 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+ENV DJANGO_SETTINGS_MODULE=config.settings.prod
+
 WORKDIR /app
 
 RUN adduser --disabled-password --gecos "" appuser

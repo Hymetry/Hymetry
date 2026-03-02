@@ -1,5 +1,3 @@
-from .base import *
-
 # Production settings
 DEBUG = False
 SESSION_COOKIE_AGE = 15768000  # 6 months in seconds
@@ -26,13 +24,3 @@ MIDDLEWARE = [
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
-
-ACCOUNT_EMAIL_VERIFICATION = 'none'
-
-
-def OPENAI_API_KEY_PROVIDER(project_id):
-    from apps.projects.models import ChatGptKey
-    key_obj = ChatGptKey.objects.filter(project__id=project_id).first()
-    if not key_obj:
-        return ""
-    return "" if not key_obj.key else key_obj.key

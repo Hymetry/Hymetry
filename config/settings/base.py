@@ -166,9 +166,9 @@ SESSION_MAX_CLOCK_SKEW_SECONDS = int(os.getenv('SESSION_MAX_CLOCK_SKEW_SECONDS',
 
 ACCOUNT_SIGNUP_FIELDS = ['email*', 'password1*']
 ACCOUNT_EMAIL_SUBJECT_PREFIX = ""
-ACCOUNT_EMAIL_VERIFICATION = 'mandatory'
 ACCOUNT_LOGIN_METHODS = {'email'}
 ACCOUNT_ADAPTER = "config.adapters.MyAccountAdapter"
+ACCOUNT_EMAIL_VERIFICATION = 'none'
 
 LOGIN_URL = '/sign-in/'
 LOGIN_REDIRECT_URL = '/projects/'
@@ -205,3 +205,11 @@ ROWS_PER_PAGE = int(os.environ.get('ROWS_PER_PAGE', 100))
 HANDLER403 = 'config.views.permission_denied'
 HANDLER404 = 'config.views.page_not_found'
 HANDLER500 = 'config.views.server_error'
+
+
+def OPENAI_API_KEY_PROVIDER(project_id):
+    from apps.projects.models import ChatGptKey
+    key_obj = ChatGptKey.objects.filter(project__id=project_id).first()
+    if not key_obj:
+        return ""
+    return "" if not key_obj.key else key_obj.key
