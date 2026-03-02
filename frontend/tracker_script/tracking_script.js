@@ -36,10 +36,7 @@ const mainFunc = function() {
       if (script?.src) {
         try {
           const url = new URL(script.src);
-
-          // Remove filename → keep directory path
-          const path = url.pathname.replace(/\/[^\/]*$/, '');
-          return `${url.protocol}//${url.host}${path}`;
+          return `${url.protocol}//${url.host}`;
         } catch (e) {}
       }
       // Fall back to current origin
@@ -50,8 +47,10 @@ const mainFunc = function() {
       if (script?.dataset.libUrl) {
         return script.dataset.libUrl.replace(/\/$/, '');
       }
-      // Default: use same as tracker URL (self-hosted single domain setup)
-      return getBaseUrl();
+
+      const url = new URL(script.src);
+      const path = url.pathname.replace(/\/[^\/]*$/, '');
+      return getBaseUrl() + path;
     }
     const TRACKER_URL = getBaseUrl();
     const LIB_URL = getLibUrl();
