@@ -1,3 +1,5 @@
+from .base import *
+
 # Production settings
 DEBUG = False
 SESSION_COOKIE_AGE = 15768000  # 6 months in seconds
