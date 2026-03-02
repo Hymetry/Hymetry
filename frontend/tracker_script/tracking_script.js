@@ -36,7 +36,10 @@ const mainFunc = function() {
       if (script?.src) {
         try {
           const url = new URL(script.src);
-          return `${url.protocol}//${url.host}`;
+
+          // Remove filename → keep directory path
+          const path = url.pathname.replace(/\/[^\/]*$/, '');
+          return `${url.protocol}//${url.host}${path}`;
         } catch (e) {}
       }
       // Fall back to current origin
