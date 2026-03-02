@@ -21,11 +21,15 @@ COPY --chown=appuser:appuser . /app
 RUN mkdir -p /app/staticfiles /app/media \
     && chown -R appuser:appuser /app/staticfiles /app/media
 
-RUN python manage.py migrate --noinput
+COPY --chown=appuser:appuser entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 RUN python manage.py collectstatic --noinput
-RUN python manage.py loaddata /docker/fixtures/celery_beat.json
-RUN python manage.py loaddata /docker/fixtures/ai.json
 
 USER appuser
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
 
 EXPOSE 8000
