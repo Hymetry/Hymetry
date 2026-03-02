@@ -19,6 +19,8 @@ COPY --chown=appuser:appuser . /app
 RUN mkdir -p /app/staticfiles /app/media \
     && chown -R appuser:appuser /app/staticfiles /app/media
 
+RUN python manage.py collectstatic --noinput
+
 USER appuser
 
 EXPOSE 8000
