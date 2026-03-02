@@ -91,9 +91,5 @@ print("Celery-beat fixture load complete.")
 PY
 fi
 
-if [ "${RUN_COLLECTSTATIC:-1}" = "1" ]; then
-  python manage.py collectstatic --noinput --settings="${DJANGO_SETTINGS_MODULE:-config.settings.prod}"
-fi
-
 exec "$@"
 
