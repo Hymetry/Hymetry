@@ -12,6 +12,6 @@ load_dotenv()
 def get_django_settings_module() -> str:
     """
     Get Django settings module from .env.
-    Falls back to config.settings.prod_cloud if DJANGO_SETTINGS_MODULE is not set.
+    Falls back to config.settings.prod if DJANGO_SETTINGS_MODULE is not set.
     """
-    return os.getenv('DJANGO_SETTINGS_MODULE', 'config.settings.prod_cloud')
+    return os.getenv('DJANGO_SETTINGS_MODULE', 'config.settings.prod')

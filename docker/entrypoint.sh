@@ -42,7 +42,7 @@ if [ "${SKIP_DB_WAIT:-0}" != "1" ]; then
 fi
 
 if [ "${RUN_MIGRATIONS:-1}" = "1" ]; then
-  python manage.py migrate --noinput --settings="${DJANGO_SETTINGS_MODULE:-config.settings.prod_cloud}"
+  python manage.py migrate --noinput --settings="${DJANGO_SETTINGS_MODULE:-config.settings.prod}"
 fi
 
 if [ "${LOAD_CELERY_BEAT_FIXTURE:-0}" = "1" ]; then
@@ -50,7 +50,7 @@ if [ "${LOAD_CELERY_BEAT_FIXTURE:-0}" = "1" ]; then
 import os
 from pathlib import Path
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", os.environ.get("DJANGO_SETTINGS_MODULE", "config.settings.prod_cloud"))
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", os.environ.get("DJANGO_SETTINGS_MODULE", "config.settings.prod"))
 
 import django  # noqa: E402
 
@@ -92,7 +92,7 @@ PY
 fi
 
 if [ "${RUN_COLLECTSTATIC:-1}" = "1" ]; then
-  python manage.py collectstatic --noinput --settings="${DJANGO_SETTINGS_MODULE:-config.settings.prod_cloud}"
+  python manage.py collectstatic --noinput --settings="${DJANGO_SETTINGS_MODULE:-config.settings.prod}"
 fi
 
 exec "$@"
