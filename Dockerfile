@@ -21,7 +21,10 @@ COPY --chown=appuser:appuser . /app
 RUN mkdir -p /app/staticfiles /app/media \
     && chown -R appuser:appuser /app/staticfiles /app/media
 
+RUN python manage.py migrate --noinput
 RUN python manage.py collectstatic --noinput
+RUN python manage.py loaddata /docker/fixtures/celery_beat.json
+RUN python manage.py loaddata /docker/fixtures/ai.json
 
 USER appuser
 
