@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="{% static 'css/output.css' %}" />
     <link rel="icon" href="{% static 'svg/favicon.svg' %}" sizes="any" type="image/svg+xml" />
     <title>Settings - {{ project.name }}</title>
-    <script async src="http://localhost/main.js" data-api-key="2E35A64D597FA15F"></script>
+    <script async src="{{ request.scheme }}://{{ request.get_host }}/static/js/main.js" data-api-key="65D41C9F1FBCA854"></script>
   </head>
 
   <body class="text-sm h-full bg-slate-50">
