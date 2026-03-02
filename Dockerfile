@@ -21,7 +21,7 @@ COPY --chown=appuser:appuser . /app
 RUN mkdir -p /app/staticfiles /app/media \
     && chown -R appuser:appuser /app/staticfiles /app/media
 
-COPY --chown=appuser:appuser entrypoint.sh /app/entrypoint.sh
+COPY --chown=appuser:appuser docker/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 RUN python manage.py collectstatic --noinput
