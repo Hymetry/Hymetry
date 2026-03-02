@@ -167,8 +167,13 @@ def project_settings(request, project_id):
     """View for project settings page"""
     project = get_object_or_404(Project, pk=project_id)
 
-    # Get all available timezones, excluding deprecated Kiev (use Kyiv instead)
-    all_timezones = sorted([tz for tz in available_timezones() if tz != 'Europe/Kiev'])
+    tz_map = {
+        "Europe/Kiev": "Europe/Kyiv"
+    }
+
+    all_timezones = sorted(
+        [tz_map.get(tz, tz) for tz in available_timezones()]
+    )
 
     # Get project members and invitations
     memberships = ProjectMembership.objects.filter(project=project).select_related('user')
