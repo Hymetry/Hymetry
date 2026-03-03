@@ -3,6 +3,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
+from django.http import HttpResponse
 from django.urls import path, include
 
 from apps.projects.views import project_list
@@ -11,6 +12,8 @@ from apps.tracker.views import recordings, recording, get_consolidated_data, ass
 from apps.projects.views import homepage
 
 urlpatterns = [
+    path("health", lambda request: HttpResponse(status=200)), # required by railway.com
+
     path('', homepage, name='index'),  # Homepage
     path('project-list/', project_list, name='project_list'),  # Homepage
     path('admin/', admin.site.urls),
