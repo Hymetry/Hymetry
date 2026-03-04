@@ -51,3 +51,9 @@ LOGGING = {
         "level": "INFO",
     },
 }
+
+import os
+print("==== ENV DUMP START ====")
+for k, v in os.environ.items():
+    print(f"{k}={repr(v)}")
+print("==== ENV DUMP END ====")
