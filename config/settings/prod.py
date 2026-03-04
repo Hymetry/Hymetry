@@ -1,11 +1,4 @@
-import os
-print("==== ENV DUMP START ====")
-for k, v in os.environ.items():
-    print(f"{k}={repr(v)}")
-print("==== ENV DUMP END ====")
-
 from .base import *
-
 
 # Production settings
 DEBUG = False
@@ -58,4 +51,3 @@ LOGGING = {
         "level": "INFO",
     },
 }
-

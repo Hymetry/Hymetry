@@ -8,6 +8,11 @@ import sys
 import time
 import psycopg2
 
+print("==== ENV DUMP START ====")
+for k, v in os.environ.items():
+    print(f"{k}={repr(v)}")
+print("==== ENV DUMP END ====")
+
 host = os.environ.get("POSTGRES_HOST", "db")
 port = int(os.environ.get("POSTGRES_PORT", "5432"))
 name = os.environ.get("POSTGRES_DB")
