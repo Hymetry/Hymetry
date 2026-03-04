@@ -15,3 +15,12 @@ def get_django_settings_module() -> str:
     Falls back to config.settings.prod if DJANGO_SETTINGS_MODULE is not set.
     """
     return os.getenv('DJANGO_SETTINGS_MODULE', 'config.settings.prod')
+
+def get_int_env(name, default):
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default

@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-
+from config.utils import get_int_env
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -155,8 +155,8 @@ AUTHENTICATION_BACKENDS = [
     'allauth.account.auth_backends.AuthenticationBackend',
 ]
 
-SESSION_EXPIRATION_SECONDS = int(os.getenv('SESSION_EXPIRATION_SECONDS', '1800').split('#')[0].strip())
-SESSION_MAX_CLOCK_SKEW_SECONDS = int(os.getenv('SESSION_MAX_CLOCK_SKEW_SECONDS', '300').split('#')[0].strip())
+SESSION_EXPIRATION_SECONDS = get_int_env("SESSION_EXPIRATION_SECONDS", 1800)
+SESSION_MAX_CLOCK_SKEW_SECONDS = get_int_env("SESSION_MAX_CLOCK_SKEW_SECONDS", 300)
 
 # EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
 # EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
@@ -200,7 +200,7 @@ CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_SEND_SENT_EVENT = True
 
-ROWS_PER_PAGE = int(os.environ.get('ROWS_PER_PAGE', 100))
+ROWS_PER_PAGE = get_int_env("ROWS_PER_PAGE", 100)
 
 # Custom error handlers
 HANDLER403 = 'config.views.permission_denied'
