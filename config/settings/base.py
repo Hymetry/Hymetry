@@ -114,6 +114,11 @@ SITE_URL = os.getenv("SITE_URL", "http://localhost")
 APP_URL = os.getenv("APP_URL", "http://localhost:8000")
 EDGE_URL = os.getenv("EDGE_URL", "http://localhost:8001")
 
+print("==== ENV START ====")
+for k, v in os.environ.items():
+    print(f"{k}={repr(v)}")
+print("==== ENV END ====")
+
 import dj_database_url
 DATABASES = {
     "default": dj_database_url.parse(
