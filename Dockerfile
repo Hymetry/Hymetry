@@ -25,7 +25,7 @@ COPY --chown=appuser:appuser docker/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 USER appuser
-RUN python manage.py collectstatic --noinput
+#RUN python manage.py collectstatic --noinput
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
