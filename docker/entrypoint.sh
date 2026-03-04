@@ -8,16 +8,6 @@ import sys
 import time
 import psycopg2
 
-print("==== ENV DUMP START ====")
-for k, v in os.environ.items():
-    print(f"{k}={repr(v)}")
-print("==== ENV DUMP END ====")
-
-host = os.environ.get("POSTGRES_HOST", "db")
-port = int(os.environ.get("POSTGRES_PORT", "5432"))
-name = os.environ.get("POSTGRES_DB")
-user = os.environ.get("POSTGRES_USER")
-password = os.environ.get("POSTGRES_PASSWORD")
 
 deadline = time.time() + int(os.environ.get("DB_WAIT_SECONDS", "60"))
 last_err = None
@@ -25,11 +15,8 @@ last_err = None
 while time.time() < deadline:
     try:
         conn = psycopg2.connect(
-            dbname=name,
-            user=user,
-            password=password,
-            host=host,
-            port=port,
+            os.environ["DATABASE_URL"],
+            sslmode="require",
         )
         conn.close()
         print("Postgres is ready.")
