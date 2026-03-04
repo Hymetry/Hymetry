@@ -1,12 +1,18 @@
 #!/bin/sh
 set -eu
 
+
 wait_for_postgres() {
   python - <<'PY'
 import os
 import sys
 import time
 import psycopg2
+
+print("==== ENV DUMP START ====")
+for k, v in os.environ.items():
+    print(f"{k}={repr(v)}")
+print("==== ENV DUMP END ====")
 
 
 deadline = time.time() + int(os.environ.get("DB_WAIT_SECONDS", "60"))
