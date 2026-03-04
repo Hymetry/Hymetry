@@ -117,7 +117,7 @@ EDGE_URL = os.getenv("EDGE_URL", "http://localhost:8001")
 import dj_database_url
 DATABASES = {
     "default": dj_database_url.parse(
-        os.environ.get("DATABASE_URL"),
+        os.getenv("DATABASE_URL"),
         conn_max_age=600
     )
 }
