@@ -39,6 +39,7 @@ if [ "${SKIP_DB_WAIT:-0}" != "1" ]; then
   wait_for_postgres
 fi
 
+python manage.py collectstatic --noinput --settings="${DJANGO_SETTINGS_MODULE:-config.settings.prod}"
 # Run migrations
 if [ "${RUN_MIGRATIONS:-1}" = "1" ]; then
   python manage.py migrate --noinput --settings="${DJANGO_SETTINGS_MODULE:-config.settings.prod}"
