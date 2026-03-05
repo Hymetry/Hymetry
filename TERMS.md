@@ -1,6 +1,6 @@
 # Hymetry OSS Terms
 
-**Effective date:** 20 January 2026
+**Effective date:** 5 March 2026
 
 These OSS terms apply to the self-hosted, open source edition of Hymetry (the **“Software”**).  
 They do **not** apply to any hosted Hymetry service (if offered), which may be governed by separate terms.
