@@ -51,3 +51,8 @@ LOGGING = {
         "level": "INFO",
     },
 }
+
+print("==== ENV PROD START ====")
+for k, v in os.environ.items():
+    print(f"{k}={repr(v)}")
+print("==== ENV PROD END ====")
