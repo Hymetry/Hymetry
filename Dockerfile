@@ -28,6 +28,6 @@ USER appuser
 #RUN python manage.py collectstatic --noinput --settings=config.settings.prod
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:$PORT"]
 
 EXPOSE 8000
