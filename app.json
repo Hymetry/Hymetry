@@ -1,0 +1,67 @@
+{
+  "name": "hymetry-oss",
+  "description": "Self-hosted Hymetry: Session recording, replay, and analytics powered by rrweb",
+  "repository": "https://github.com/hymetry/hymetry",
+  "website": "https://github.com/hymetry/hymetry",
+  "logo": "https://raw.githubusercontent.com/hymetry/hymetry/main/docs/logo.png",
+  "keywords": [
+    "django",
+    "analytics",
+    "rrweb",
+    "session-replay",
+    "celery"
+  ],
+  "stack": "container",
+  "env": {
+    "DJANGO_SETTINGS_MODULE": {
+      "description": "Django settings module",
+      "value": "config.settings.prod"
+    },
+    "SECRET_KEY": {
+      "description": "Django secret key",
+      "generator": "secret"
+    },
+    "DEBUG": {
+      "description": "Must be False in production",
+      "value": "False"
+    },
+    "ALLOWED_HOSTS": {
+      "description": "Comma-separated allowed hosts",
+      "value": "*"
+    },
+    "SITE_URL": {
+      "description": "Public URL of your installation (example: https://your-app.herokuapp.com). Used for CSRF_TRUSTED_ORIGINS",
+      "required": true
+    },
+    "APP_URL": {
+      "description": "Optional override for application base URL. Used for 'asset-proxy'",
+      "required": false
+    },
+    "EDGE_URL": {
+      "description": "Optional override for tracking script URL (default: SITE_URL/static/js)",
+      "required": false
+    },
+    "TERMS_ACCEPTED": {
+      "description": "Confirm Hymetry OSS Terms (5 March 2026)",
+      "value": "true"
+    }
+  },
+  "addons": [
+    "heroku-postgresql:essential-0",
+    "heroku-redis:mini"
+  ],
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    },
+    "worker": {
+      "quantity": 1,
+      "size": "basic"
+    },
+    "beat": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  }
+}

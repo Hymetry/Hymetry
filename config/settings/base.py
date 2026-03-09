@@ -15,15 +15,18 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-your-secret-key-here')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 
-CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', 'http://localhost:8000,http://127.0.0.1:8000').split(',')
+SITE_URL = os.getenv("SITE_URL", "http://localhost")
 
-railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
-if railway_domain:
-    CSRF_TRUSTED_ORIGINS.append(f"https://{railway_domain}")
+CSRF_TRUSTED_ORIGINS = os.getenv(
+    "CSRF_TRUSTED_ORIGINS",
+    "http://localhost:8000,http://127.0.0.1:8000"
+).split(",")
 
-print(CSRF_TRUSTED_ORIGINS)
+if SITE_URL:
+    CSRF_TRUSTED_ORIGINS.append(SITE_URL)
+
 # Application definition
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -106,18 +109,12 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 DEV = os.getenv('DEV')
 
-SITE_URL = os.getenv("SITE_URL", "http://localhost")
-
-# URLs for tracking script and asset proxy
-# APP_URL: Base URL for the main application (used for asset proxy)
-# EDGE_URL: Base URL for serving the tracking script (CDN/edge server)
-APP_URL = os.getenv("APP_URL", "http://localhost:8000")
-EDGE_URL = os.getenv("EDGE_URL", "http://localhost:8001")
-
-print("==== ENV START ====")
-for k, v in os.environ.items():
-    print(f"{k}={repr(v)}")
-print("==== ENV END ====")
+# CORS_TRUSTED_ORIGIN
+SITE_URL = os.getenv("SITE_URL", "http://localhost").rstrip("/")
+# Asset-proxy
+APP_URL = os.getenv("APP_URL", SITE_URL)
+# Tracking script / edge URL
+EDGE_URL = os.getenv("EDGE_URL", f"{SITE_URL}/static/js")
 
 import dj_database_url
 DATABASES = {
@@ -159,13 +156,6 @@ AUTHENTICATION_BACKENDS = [
 
 SESSION_EXPIRATION_SECONDS = int(os.getenv('SESSION_EXPIRATION_SECONDS', '1800').split('#')[0].strip())
 SESSION_MAX_CLOCK_SKEW_SECONDS = int(os.getenv('SESSION_MAX_CLOCK_SKEW_SECONDS', '300').split('#')[0].strip())
-
-# EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
-# EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
-# EMAIL_PORT = os.getenv('EMAIL_PORT', 587)
-# EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', True)
-# EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
-# EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 
 ACCOUNT_SIGNUP_FIELDS = ['email*', 'password1*']
 ACCOUNT_EMAIL_SUBJECT_PREFIX = ""

@@ -5,7 +5,7 @@ DEBUG = False
 SESSION_COOKIE_AGE = 15768000  # 6 months in seconds
 
 # WhiteNoise configuration for static files
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 # Add WhiteNoise middleware for production
 MIDDLEWARE = [
@@ -30,10 +30,10 @@ X_FRAME_OPTIONS = 'DENY'
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 
-REDIS_URL = os.environ.get("REDIS_URL")
-if REDIS_URL:
-    CELERY_BROKER_URL = REDIS_URL or "redis://redis:6379/0"
-    CELERY_RESULT_BACKEND = REDIS_URL or "redis://redis:6379/0"
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
 
 import sys
 
