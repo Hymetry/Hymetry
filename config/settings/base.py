@@ -15,14 +15,25 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-your-secret-key-here')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
+#ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 
 SITE_URL = os.getenv("SITE_URL", "http://localhost")
+# 1. Try to get the name Heroku assigned
+APP_NAME = os.environ.get('HEROKU_APP_NAME')
 
-CSRF_TRUSTED_ORIGINS = os.getenv(
-    "CSRF_TRUSTED_ORIGINS",
-    "http://localhost:8000,http://127.0.0.1:8000"
-).split(",")
+if APP_NAME:
+    # If Metadata is enabled, we know the exact URL
+    SITE_URL = f"https://{APP_NAME}.herokuapp.com"
+    CSRF_TRUSTED_ORIGINS = [SITE_URL]
+else:
+    # 2. THE FAILSAFE: Use a wildcard for all Heroku apps
+    # This allows the '1-click' install to work immediately
+    # without the user entering anything.
+    SITE_URL = os.environ.get('SITE_URL', '')
+    CSRF_TRUSTED_ORIGINS = ["https://*.herokuapp.com"]
+
+# Ensure ALLOWED_HOSTS matches
+ALLOWED_HOSTS = [".herokuapp.com", "localhost", "127.0.0.1"]
 
 if SITE_URL:
     CSRF_TRUSTED_ORIGINS.append(SITE_URL)

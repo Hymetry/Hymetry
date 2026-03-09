@@ -31,7 +31,7 @@
     },
     "SITE_URL": {
       "description": "Public URL of your installation (example: https://your-app.herokuapp.com). Used for CSRF_TRUSTED_ORIGINS",
-      "required": true
+      "required": false
     },
     "APP_URL": {
       "description": "Optional override for application base URL. Used for 'asset-proxy'",
