@@ -9,6 +9,11 @@ import sys
 import time
 import psycopg2
 
+print("==== ENV DUMP START ====")
+for k, v in os.environ.items():
+    print(f"{k}={repr(v)}")
+print("==== ENV DUMP END ====")
+
 deadline = time.time() + int(os.environ.get("DB_WAIT_SECONDS", "60"))
 last_err = None
 
