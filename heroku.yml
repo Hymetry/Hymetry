@@ -2,12 +2,6 @@ build:
   docker:
     web: Dockerfile
 
-release:
-  image: web
-  command:
-    - python manage.py collectstatic --noinput
-    - python manage.py migrate --noinput
-
 run:
   web:
     image: web
