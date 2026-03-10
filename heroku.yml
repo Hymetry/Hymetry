@@ -1,11 +1,22 @@
 build:
   docker:
     web: Dockerfile
+
 release:
   image: web
   command:
-    - sh -c "python manage.py migrate --noinput || sleep 600"
+    - python manage.py collectstatic --noinput
+    - python manage.py migrate --noinput
+
 run:
-  web: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
-  worker: celery -A config worker --loglevel=info
-  beat: celery -A config beat --loglevel=info
+  web:
+    image: web
+    command: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
+
+  worker:
+    image: web
+    command: celery -A config worker --loglevel=info
+
+  beat:
+    image: web
+    command: celery -A config beat --loglevel=info
