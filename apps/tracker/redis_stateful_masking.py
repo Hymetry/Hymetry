@@ -14,10 +14,25 @@ from .models import SafeInputRegexTemplate
 
 class RedisStatefulMaskingEngine:
     """Redis-based stateful masking engine"""
-    
+
+    # ... inside RedisStatefulMaskingEngine class ...
+
     def __init__(self, redis_url=None):
         self.redis_url = redis_url or getattr(settings, 'REDIS_URL', 'redis://localhost:6379/1')
-        self.redis = redis.from_url(self.redis_url, decode_responses=True)
+
+        # ADD THIS: Check if the URL starts with rediss:// (SSL)
+        # Heroku Redis requires ssl_cert_reqs=None for self-signed certs
+        is_ssl = self.redis_url.startswith('rediss://')
+
+        self.redis = redis.from_url(
+            self.redis_url,
+            decode_responses=True,
+            ssl_cert_reqs=None if is_ssl else None  # Explicitly set for SSL
+        )
+
+        # Alternatively, a more robust way for any redis-py version:
+        # self.redis = redis.from_url(self.redis_url, decode_responses=True, ssl_cert_reqs=None)
+
         self.pattern_rules = self._load_pattern_rules()
         self._setup_signal_handlers()
     
