@@ -11,12 +11,15 @@ release:
 run:
   web:
     image: web
-    command: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
+    command:
+      - gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
 
   worker:
     image: web
-    command: celery -A config worker --loglevel=info
+    command:
+      - celery -A config worker --loglevel=info
 
   beat:
     image: web
-    command: celery -A config beat --loglevel=info
+    command:
+      - celery -A config beat --loglevel=info
