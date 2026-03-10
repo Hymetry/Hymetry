@@ -5,7 +5,7 @@ DEBUG = False
 SESSION_COOKIE_AGE = 15768000  # 6 months in seconds
 
 # WhiteNoise configuration for static files
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+STATICFILES_STORAGE = "whitenoise.storage.CompressedStaticFilesStorage"
 
 # Add WhiteNoise middleware for production
 MIDDLEWARE = [
