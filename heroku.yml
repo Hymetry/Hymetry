@@ -11,7 +11,7 @@ run:
   worker:
     image: web
     command:
-      - celery -A config worker --loglevel=info
+      - celery -A config worker --loglevel=info --concurrency=1 --max-tasks-per-child=50
 
   beat:
     image: web
