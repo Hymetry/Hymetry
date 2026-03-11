@@ -13,7 +13,7 @@ Deploy Hymetry OSS to Heroku in one click:
 ## After Deploy
 
 - Open your Heroku app dashboard.
-- In the Heroku dashboard open **Settings** -> **Config Vars**.
+- In the Heroku dashboard, open **Settings** -> **Config Vars**.
 - Ensure `SITE_URL` is set exactly to:
   `https://<app-name>.herokuapp.com`
 - Optionally set `APP_URL` for the asset proxy and `EDGE_URL` for third-party script hosting.
