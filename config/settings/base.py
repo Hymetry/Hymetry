@@ -30,10 +30,13 @@ else:
     # This allows the '1-click' install to work immediately
     # without the user entering anything.
     SITE_URL = os.environ.get('SITE_URL', '')
-    CSRF_TRUSTED_ORIGINS = ["https://*.herokuapp.com"]
+    CSRF_TRUSTED_ORIGINS = [
+        "https://*.herokuapp.com",
+        "https://*.onrender.com",
+    ]
 
 # Ensure ALLOWED_HOSTS matches
-ALLOWED_HOSTS = [".herokuapp.com", "localhost", "127.0.0.1"]
+ALLOWED_HOSTS = [".herokuapp.com", ".onrender.com", "localhost", "127.0.0.1"]
 
 if SITE_URL:
     CSRF_TRUSTED_ORIGINS.append(SITE_URL)
