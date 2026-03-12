@@ -18,8 +18,16 @@ class RuntimeURLService:
     def _clean(self, value):
         return (value or "").strip().rstrip("/")
 
+    def _prefer_https(self, url):
+        """
+        Auto-upgrade Heroku public URLs to HTTPS.
+        """
+        if url.startswith("http://") and ".herokuapp.com" in url:
+            return "https://" + url[len("http://"):]
+        return url
+
     def _env(self, key):
-        return self._clean(os.environ.get(key, ""))
+        return self._prefer_https(self._clean(os.environ.get(key, "")))
 
     def _warn_once(self, message):
         if self._warned:
@@ -33,7 +41,7 @@ class RuntimeURLService:
             return
         if request is None:
             return
-        site = self._clean(request.build_absolute_uri("/"))
+        site = self._prefer_https(self._clean(request.build_absolute_uri("/")))
         if not site:
             return
         with self._lock:
