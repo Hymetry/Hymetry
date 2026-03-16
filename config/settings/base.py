@@ -1,6 +1,7 @@
 import os
 import secrets
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -36,10 +37,14 @@ else:
         "https://*.onrender.com",
     ]
 
-# Ensure ALLOWED_HOSTS matches
-ALLOWED_HOSTS = [".herokuapp.com", ".onrender.com", "localhost", "127.0.0.1"]
+# Ensure ALLOWED_HOSTS matches (supports self-hosted custom domains)
+_allowed_hosts_env = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()]
+ALLOWED_HOSTS = [".herokuapp.com", ".onrender.com", "localhost", "127.0.0.1", *_allowed_hosts_env]
 
 if SITE_URL:
+    site_host = urlparse(SITE_URL).hostname
+    if site_host and site_host not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(site_host)
     CSRF_TRUSTED_ORIGINS.append(SITE_URL)
 
 # Application definition

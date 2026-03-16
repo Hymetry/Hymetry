@@ -16,11 +16,13 @@ x-app-common: &app-common
 services:
   db:
     image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "127.0.0.1:5433:5432"    
     restart: unless-stopped
-    env_file:
-      - ./.env
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -84,18 +86,7 @@ services:
         condition: service_healthy
       init:
         condition: service_completed_successfully
-    command: ["celery", "-A", "config", "worker", "-l", "info"]
-
-  celery-beat:
-    <<: *app-common
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      init:
-        condition: service_completed_successfully
-    command: ["celery", "-A", "config", "beat", "-l", "info"]
+    command: ["celery", "-A", "config", "worker", "-B", "-l", "info"]
 
   caddy:
     image: caddy:2-alpine
