@@ -3,7 +3,7 @@ services:
     name: hymetry-web
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: free
+    plan: basic-1gb
     autoDeploy: true
     healthCheckPath: /
     preDeployCommand: python manage.py bootstrap
