@@ -4,7 +4,7 @@
 
 Deploy Hymetry OSS to Heroku in one click:
 
-[Deploy](https://heroku.com/deploy?template=https://github.com/Hymetry/Hymetry)
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/Hymetry/Hymetry)
 
 ### Quick Start
 
@@ -21,7 +21,7 @@ Deploy Hymetry OSS to Heroku in one click:
 
 Deploy Hymetry OSS to Render in one click using the included `render.yaml` blueprint:
 
-[Deploy to Render](https://render.com/deploy?repo=https://github.com/hymetry/hymetry)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/hymetry/hymetry)
 
 ### Quick Start
 
