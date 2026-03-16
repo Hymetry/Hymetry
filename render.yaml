@@ -3,8 +3,8 @@ services:
     name: hymetry-web
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter
-    autoDeploy: true
+    plan: free
+    autoDeploy: commit
     healthCheckPath: /
     preDeployCommand: python manage.py bootstrap
 
@@ -25,19 +25,19 @@ services:
 
       - key: REDIS_URL
         fromService:
-          type: redis
+          type: keyvalue # Updated: 'redis' is a deprecated alias
           name: hymetry-redis
           property: connectionString
 
       - key: CELERY_BROKER_URL
         fromService:
-          type: redis
+          type: keyvalue
           name: hymetry-redis
           property: connectionString
 
       - key: CELERY_RESULT_BACKEND
         fromService:
-          type: redis
+          type: keyvalue
           name: hymetry-redis
           property: connectionString
 
@@ -55,8 +55,8 @@ services:
     name: hymetry-worker
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter
-    autoDeploy: true
+    plan: free
+    autoDeploy: commit
 
     dockerCommand: celery -A config worker -B --loglevel=info --concurrency=1 --max-tasks-per-child=50
 
@@ -80,30 +80,30 @@ services:
 
       - key: REDIS_URL
         fromService:
-          type: redis
+          type: keyvalue
           name: hymetry-redis
           property: connectionString
 
       - key: CELERY_BROKER_URL
         fromService:
-          type: redis
+          type: keyvalue
           name: hymetry-redis
           property: connectionString
 
       - key: CELERY_RESULT_BACKEND
         fromService:
-          type: redis
+          type: keyvalue
           name: hymetry-redis
           property: connectionString
 
 
-  - type: redis
+  - type: keyvalue
     name: hymetry-redis
-    plan: starter
+    plan: free
     maxmemoryPolicy: allkeys-lru
     ipAllowList: []
 
 
 databases:
   - name: hymetry-db
-    plan: starter
+    plan: free
