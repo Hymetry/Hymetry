@@ -45,7 +45,7 @@ services:
     name: hymetry-worker
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: free
+    plan: starter
     autoDeploy: true
 
     dockerCommand: celery -A config worker -B --loglevel=info --concurrency=1 --max-tasks-per-child=50
