@@ -24,10 +24,6 @@
     "worker": {
       "quantity": 1,
       "size": "basic"
-    },
-    "beat": {
-      "quantity": 1,
-      "size": "basic"
     }
   }
 }
