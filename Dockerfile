@@ -25,6 +25,6 @@ USER appuser
 #RUN python manage.py collectstatic --noinput --settings=config.settings.prod
 
 #CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:$PORT"]
-CMD ["sh", "-c", "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT"]
+CMD ["sh", "-c", "BOOTSTRAP_SKIP_DB=1 BOOTSTRAP_SKIP_MIGRATE=1 BOOTSTRAP_LOAD_FIXTURES=0 BOOTSTRAP_SKIP_COLLECTSTATIC=0 python manage.py bootstrap && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT"]
 
 EXPOSE 8000
