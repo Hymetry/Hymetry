@@ -20,9 +20,11 @@ class RuntimeURLService:
 
     def _prefer_https(self, url):
         """
-        Auto-upgrade Heroku public URLs to HTTPS.
+        Auto-upgrade known PaaS public URLs to HTTPS.
         """
-        if url.startswith("http://") and ".herokuapp.com" in url:
+        if url.startswith("http://") and (
+            ".herokuapp.com" in url or ".onrender.com" in url
+        ):
             return "https://" + url[len("http://"):]
         return url
 
