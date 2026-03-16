@@ -28,7 +28,7 @@ services:
 
       - key: REDIS_URL
         fromService:
-          type: keyvalue # Updated: 'redis' is a deprecated alias
+          type: keyvalue
           name: hymetry-redis
           property: connectionString
 

@@ -36,12 +36,9 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
 
-CELERY_BROKER_USE_SSL = {
-    'ssl_cert_reqs': 'none'
-}
-CELERY_REDIS_BACKEND_USE_SSL = {
-    'ssl_cert_reqs': 'none'
-}
+if REDIS_URL.startswith("rediss://"):
+    CELERY_BROKER_USE_SSL = {"ssl_cert_reqs": "none"}
+    CELERY_REDIS_BACKEND_USE_SSL = {"ssl_cert_reqs": "none"}
 
 import sys
 
