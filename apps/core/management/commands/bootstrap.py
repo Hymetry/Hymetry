@@ -4,7 +4,6 @@ import time
 from pathlib import Path
 
 import psycopg2
-from psycopg2 import sql
 
 from django.core.management import BaseCommand, call_command
 from django.db import IntegrityError
@@ -13,55 +12,20 @@ from django.db import IntegrityError
 class Command(BaseCommand):
     help = "Initialize the app (create DB if needed, migrate, collectstatic, load fixtures)."
 
-    def _pg_env(self):
-        return {
-            "host": os.environ.get("POSTGRES_HOST", "db"),
-            "port": int(os.environ.get("POSTGRES_PORT", "5432")),
-            "name": os.environ.get("POSTGRES_DB"),
-            "user": os.environ.get("POSTGRES_USER"),
-            "password": os.environ.get("POSTGRES_PASSWORD"),
-            "admin_db": os.environ.get("POSTGRES_ADMIN_DB", "postgres"),
-            "wait_seconds": int(os.environ.get("DB_WAIT_SECONDS", "60")),
-            "create_db": os.environ.get("BOOTSTRAP_CREATE_DB", "1") == "1",
-        }
-
     def _wait_for_db_and_optionally_create(self):
-        env = self._pg_env()
-        missing = [k for k in ("name", "user", "password") if not env.get(k)]
-        if missing:
-            raise SystemExit(f"Missing required env vars for DB: {', '.join(missing)}")
+        wait_seconds = int(os.environ.get("DB_WAIT_SECONDS", "60"))
+        database_url = os.environ.get("DATABASE_URL")
 
-        deadline = time.time() + env["wait_seconds"]
+        if not database_url:
+            raise SystemExit("DATABASE_URL is required for bootstrap.")
+
+        deadline = time.time() + wait_seconds
         last_err = None
-
         while time.time() < deadline:
             try:
-                conn = psycopg2.connect(
-                    dbname=env["admin_db"],
-                    user=env["user"],
-                    password=env["password"],
-                    host=env["host"],
-                    port=env["port"],
-                )
-                conn.autocommit = True
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (env["name"],))
-                    exists = cur.fetchone() is not None
-                    if exists:
-                        self.stdout.write(self.style.SUCCESS(f"Database {env['name']} exists."))
-                        conn.close()
-                        return
-
-                    if not env["create_db"]:
-                        conn.close()
-                        raise SystemExit(
-                            f"Database {env['name']} does not exist. "
-                            f"Either create it, or set BOOTSTRAP_CREATE_DB=1."
-                        )
-
-                    cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(env["name"])))
-                    self.stdout.write(self.style.SUCCESS(f"Created database {env['name']}."))
+                conn = psycopg2.connect(database_url)
                 conn.close()
+                self.stdout.write(self.style.SUCCESS("Database is reachable via DATABASE_URL."))
                 return
             except Exception as e:
                 last_err = e
@@ -69,13 +33,17 @@ class Command(BaseCommand):
 
         raise SystemExit(f"Database not ready after timeout. Last error: {last_err}")
 
-    def handle(self, *args, **options):
+    def handle(self, *_args, **_options):
         if os.environ.get("BOOTSTRAP_SKIP_DB", "0") != "1":
             self._wait_for_db_and_optionally_create()
 
         if os.environ.get("BOOTSTRAP_SKIP_MIGRATE", "0") != "1":
-            run_syncdb = os.environ.get("BOOTSTRAP_RUN_SYNCDB", "1") == "1"
-            call_command("migrate", interactive=False, verbosity=1, run_syncdb=run_syncdb)
+            call_command(
+                "migrate",
+                interactive=False,
+                verbosity=1,
+                run_syncdb=os.environ.get("BOOTSTRAP_RUN_SYNCDB", "1") == "1",
+            )
 
         if os.environ.get("BOOTSTRAP_SKIP_COLLECTSTATIC", "0") != "1":
             call_command("collectstatic", interactive=False, verbosity=1, clear=False)
