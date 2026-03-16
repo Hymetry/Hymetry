@@ -7,6 +7,7 @@ services:
     autoDeploy: true
     healthCheckPath: /
     preDeployCommand: python manage.py bootstrap
+    dockerCommand: sh -c "python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT"
 
     envVars:
       - key: DJANGO_SETTINGS_MODULE
@@ -14,6 +15,8 @@ services:
 
       - key: DEBUG
         value: "False"
+      - key: BOOTSTRAP_SKIP_COLLECTSTATIC
+        value: "1"
 
       - key: SECRET_KEY
         generateValue: true
