@@ -41,16 +41,6 @@ services:
           name: hymetry-redis
           property: connectionString
 
-      - key: SITE_URL
-        sync: false
-
-      - key: APP_URL
-        sync: false
-
-      - key: EDGE_URL
-        sync: false
-
-
   - type: worker
     name: hymetry-worker
     runtime: docker
