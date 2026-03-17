@@ -1,56 +1,123 @@
-# Hymetry OSS - Deployment
+# Hymetry
 
-## Deploy on Heroku
+[Hymetry](https://www.hymetry.com/) is session recording software for SaaS apps.
 
-Deploy Hymetry OSS to Heroku in one click:
+It helps you capture sessions, replay user interactions, and understand how people use your product.
+
+## Deployment options
+
+Choose the setup that fits your needs:
+
+- **Render** — recommended managed deployment
+- **Heroku** — simple if you already use Heroku
+- **Docker Compose** — self-hosted deployment on your own server or cloud VM
+
+---
+
+## Render (recommended)
+
+Deploy Hymetry to Render in one click:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/hymetry/hymetry)
+
+### Quick start
+
+1. Click the **Deploy to Render** button.
+2. Create the blueprint and wait for all services to become healthy.
+3. Open the **hymetry-web** service:
+
+<img width="454" height="172" alt="Render services list with hymetry-web highlighted" src="https://github.com/user-attachments/assets/9cc2b769-a056-495c-b044-56e3fc7d8f3e" />
+
+4. Open the URL of your newly created Hymetry instance:
+
+<img width="510" height="236" alt="Render web service page showing the generated Hymetry URL" src="https://github.com/user-attachments/assets/7c08ff35-1147-4628-8dfd-9269987ae9e7" />
+
+5. Set the admin password.
+
+<details>
+<summary>Optional Render settings</summary>
+
+Optionally set `SITE_URL`, `APP_URL`, and `EDGE_URL` to your Render app URL or custom domain.
+
+Example:
+
+```env
+SITE_URL=https://example.com
+APP_URL=https://app.example.com
+EDGE_URL=https://edge.example.com
+```
+
+</details>
+
+---
+
+## Heroku
+
+Deploy Hymetry to Heroku in one click:
 
 [![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/Hymetry/Hymetry)
 
-### Quick Start
+### Quick start
 
 1. Click the **Deploy to Heroku** button.
 2. Create your Heroku app.
 3. Wait for build and release to finish.
 
-### Included Add-ons
+<details>
+<summary>Included add-ons</summary>
 
 - Heroku Postgres
 - Heroku Redis
 
-## Deploy on Render
+</details>
 
-Deploy Hymetry OSS to Render in one click using the included `render.yaml` blueprint:
+<details>
+<summary>Optional Heroku settings</summary>
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/hymetry/hymetry)
+Optionally set `SITE_URL`, `APP_URL`, and `EDGE_URL` to your app URL or custom domain.
 
-### Quick Start
+Example:
 
-1. Click the **Deploy to Render** button.
-2. Review the generated services (web, worker, Postgres, Redis).
-3. Optionally set `SITE_URL`, `APP_URL`, and `EDGE_URL` to your Render app URL (or custom domain).
-4. Create the blueprint and wait for all services to become healthy.
+```env
+SITE_URL=https://example.com
+APP_URL=https://app.example.com
+EDGE_URL=https://edge.example.com
+```
 
-## Self-hosted or cloud (Docker Compose)
+</details>
 
-Use `docker-compose.yml` to run the full stack (web, Celery worker+beat in one container, Postgres, Redis, and Caddy) on your own server or cloud VM.
+---
 
-### Quick Start
+## Self-hosted with Docker Compose
 
-1. Create your env file:
-  - Copy `.env.example` to `.env` and fill in required values.
-  - Set `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`.
-  - Set `DATABASE_URL` in `.env` to the same credentials (required), e.g. `postgresql://postgres:pwd@db:5432/hymetry_oss_db`.
-2. Build and start services:
-  - `docker compose up -d --build`
-3. Check service status:
-  - `docker compose ps`
-4. Open the app:
-  - `http://localhost` (via Caddy) or `http://localhost:8000` (web directly).
+Use `docker-compose.yml` to run the full stack on your own server or cloud VM:
 
-### Notes
+- web
+- Celery worker + beat in one container
+- Postgres
+- Redis
+- Caddy
 
-- Data is persisted with Docker volumes (`postgres_data`, `redis_data`, `staticfiles`, `media`).
+### Quick start
+
+1. Create your env file.
+   - Copy `.env.example` to `.env` and fill in required values.
+   - Set `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`.
+   - Set `DATABASE_URL` in `.env` to the same credentials, for example: `postgresql://postgres:pwd@db:5432/hymetry_oss_db`
+2. Build and start services.
+   - `docker compose up -d --build`
+3. Check service status.
+   - `docker compose ps`
+4. Open the app.
+   - `http://localhost` (via Caddy)
+   - `http://localhost:8000` (web directly)
+
+<details>
+<summary>Docker Compose notes</summary>
+
+- Data is persisted with Docker volumes: `postgres_data`, `redis_data`, `staticfiles`, `media`
 - The `init` service runs bootstrap tasks before app services start.
 - Default Postgres host mapping is `127.0.0.1:5433`.
-- Django app uses `DATABASE_URL`; Postgres container initialization uses `POSTGRES_*` from `.env`.
+- Django uses `DATABASE_URL`; Postgres container initialization uses `POSTGRES_*` from `.env`.
 
+</details>
