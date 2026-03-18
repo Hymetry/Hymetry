@@ -48,9 +48,15 @@ const mainFunc = function() {
         return script.dataset.libUrl.replace(/\/$/, '');
       }
 
-      const url = new URL(script.src);
-      const path = url.pathname.replace(/\/[^\/]*$/, '');
-      return getBaseUrl() + path;
+      // Auto-detect from script src
+      if (script?.src) {
+        try {
+          const url = new URL(script.src);
+          return `${url.protocol}//${url.host}`;
+        } catch (e) {}
+      }
+      // Fall back to current origin
+      return window.location.origin;
     }
     const TRACKER_URL = getBaseUrl();
     const LIB_URL = getLibUrl();
