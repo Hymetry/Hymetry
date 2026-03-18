@@ -17,21 +17,19 @@ SECRET_KEY = os.getenv('SECRET_KEY', secrets.token_urlsafe(50))
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-#ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
-
-SITE_URL = os.getenv("SITE_URL", "http://localhost")
+HYMETRY_DOMAIN = os.getenv("HYMETRY_DOMAIN", "http://localhost")
 # 1. Try to get the name Heroku assigned
 APP_NAME = os.environ.get('HEROKU_APP_NAME')
 
 if APP_NAME:
     # If Metadata is enabled, we know the exact URL
-    SITE_URL = f"https://{APP_NAME}.herokuapp.com"
-    CSRF_TRUSTED_ORIGINS = [SITE_URL]
+    HYMETRY_DOMAIN = f"https://{APP_NAME}.herokuapp.com"
+    CSRF_TRUSTED_ORIGINS = [HYMETRY_DOMAIN]
 else:
     # 2. THE FAILSAFE: Use a wildcard for all Heroku apps
     # This allows the '1-click' install to work immediately
     # without the user entering anything.
-    SITE_URL = os.environ.get('SITE_URL', '')
+    HYMETRY_DOMAIN = os.environ.get('HYMETRY_DOMAIN', '')
     CSRF_TRUSTED_ORIGINS = [
         "https://*.herokuapp.com",
         "https://*.onrender.com",
@@ -41,11 +39,11 @@ else:
 _allowed_hosts_env = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()]
 ALLOWED_HOSTS = [".herokuapp.com", ".onrender.com", "localhost", "127.0.0.1", *_allowed_hosts_env]
 
-if SITE_URL:
-    site_host = urlparse(SITE_URL).hostname
+if HYMETRY_DOMAIN:
+    site_host = urlparse(HYMETRY_DOMAIN).hostname
     if site_host and site_host not in ALLOWED_HOSTS:
         ALLOWED_HOSTS.append(site_host)
-    CSRF_TRUSTED_ORIGINS.append(SITE_URL)
+    CSRF_TRUSTED_ORIGINS.append(HYMETRY_DOMAIN)
 
 # Application definition
 INSTALLED_APPS = [
@@ -131,11 +129,9 @@ WSGI_APPLICATION = 'config.wsgi.application'
 DEV = os.getenv('DEV')
 
 # CORS_TRUSTED_ORIGIN
-SITE_URL = os.getenv("SITE_URL", "http://localhost").rstrip("/")
-# Asset-proxy
-APP_URL = os.getenv("APP_URL", SITE_URL)
+HYMETRY_DOMAIN = (HYMETRY_DOMAIN or "http://localhost").rstrip("/")
 # Tracking script / edge URL
-EDGE_URL = os.getenv("EDGE_URL", f"{SITE_URL}/static/js")
+EDGE_URL = os.getenv("EDGE_URL", f"{HYMETRY_DOMAIN}/static/js")
 
 import dj_database_url
 DATABASES = {

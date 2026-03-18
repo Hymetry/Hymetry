@@ -29,8 +29,8 @@ const mainFunc = function() {
     // Configuration - auto-detect from script src or use data attributes
     function getBaseUrl() {
       // Check for explicit data attribute override
-      if (script?.dataset.trackerUrl) {
-        return script.dataset.trackerUrl.replace(/\/$/, '');
+      if (script?.dataset.apiUrl) {
+        return script.dataset.apiUrl.replace(/\/$/, '');
       }
       // Auto-detect from script src
       if (script?.src) {

@@ -25,7 +25,7 @@ def replace_urls_with_proxy(events_data):
     """
     if isinstance(events_data, str):
         events_data = json.loads(events_data)
-    app_url = runtime_urls.get_app_url()
+    domain_url = runtime_urls.get_hymetry_domain()
     
     def replace_urls_in_object(obj):
         """Recursively replace URLs in an object."""
@@ -63,7 +63,7 @@ def replace_urls_with_proxy(events_data):
                 return False
             
             # Don't proxy our own domain
-            app_domain = urlparse(app_url).netloc
+            app_domain = urlparse(domain_url).netloc
             own_domains = [app_domain, 'localhost', '127.0.0.1']
             if parsed.netloc in own_domains:
                 return False
@@ -123,7 +123,7 @@ def replace_urls_with_proxy(events_data):
     
     def create_proxy_url(original_url):
         """Create an asset proxy URL."""
-        return f"{app_url}/asset-proxy?url={original_url}"
+        return f"{domain_url}/asset-proxy?url={original_url}"
     
     def contains_external_resource_urls(text):
         """Check if text contains any external resource URLs."""

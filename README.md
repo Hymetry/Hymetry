@@ -27,7 +27,7 @@ Deploy Hymetry OSS to Render in one click using the included `render.yaml` bluep
 
 1. Click the **Deploy to Render** button.
 2. Review the generated services (web, worker, Postgres, Redis).
-3. Optionally set `SITE_URL`, `APP_URL`, and `EDGE_URL` to your Render app URL (or custom domain).
+3. Optionally set `HYMETRY_DOMAIN` and `EDGE_URL` to your Render app URL (or custom domain).
 4. Create the blueprint and wait for all services to become healthy.
 
 ## Self-hosted or cloud (Docker Compose)
