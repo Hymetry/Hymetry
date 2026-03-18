@@ -37,13 +37,12 @@ Deploy Hymetry to Render in one click:
 <details>
 <summary>Optional Render settings</summary>
 
-Optionally set `SITE_URL`, `APP_URL`, and `EDGE_URL` to your Render app URL or custom domain.
+Optionally set `HYMETRY_DOMAIN` and `EDGE_URL` to your Render app URL or custom domain.
 
 Example:
 
 ```env
-SITE_URL=https://example.com
-APP_URL=https://app.example.com
+HYMETRY_DOMAIN=https://example.com
 EDGE_URL=https://edge.example.com
 ```
 
@@ -74,13 +73,12 @@ Deploy Hymetry to Heroku in one click:
 <details>
 <summary>Optional Heroku settings</summary>
 
-Optionally set `SITE_URL`, `APP_URL`, and `EDGE_URL` to your app URL or custom domain.
+Optionally set `HYMETRY_DOMAIN` and `EDGE_URL` to your app URL or custom domain.
 
 Example:
 
 ```env
-SITE_URL=https://example.com
-APP_URL=https://app.example.com
+HYMETRY_DOMAIN=https://example.com
 EDGE_URL=https://edge.example.com
 ```
 
@@ -104,6 +102,7 @@ Use `docker-compose.yml` to run the full stack on your own server or cloud VM:
    - Copy `.env.example` to `.env` and fill in required values.
    - Set `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`.
    - Set `DATABASE_URL` in `.env` to the same credentials, for example: `postgresql://postgres:pwd@db:5432/hymetry_oss_db`
+   - For Docker Compose, keep Redis/Celery URLs on the internal service host, for example: `redis://redis:6379/0`.
 2. Build and start services.
    - `docker compose up -d --build`
 3. Check service status.
