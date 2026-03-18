@@ -50,7 +50,7 @@ const mainFunc = function() {
 
       const url = new URL(script.src);
       const path = url.pathname.replace(/\/[^\/]*$/, '');
-      return window.location.origin + path;
+      return url.origin + path;
     }
     const TRACKER_URL = getBaseUrl();
     const LIB_URL = getLibUrl();
