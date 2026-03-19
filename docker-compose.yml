@@ -1,5 +1,4 @@
 x-app-common: &app-common
-  build: .
   image: hymetry_app:latest 
   restart: unless-stopped
   env_file:
@@ -58,6 +57,7 @@ services:
 
   web:
     <<: *app-common         
+    build: .
     ports:
       - "8000:8000"
     depends_on:
