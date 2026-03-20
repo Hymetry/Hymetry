@@ -89,5 +89,3 @@ yarn-error.log*
 static/css/output.css
 package-lock.json
 package.json
-
-last-snapshot.bcss
