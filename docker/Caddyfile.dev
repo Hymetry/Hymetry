@@ -6,7 +6,8 @@
 :80 {
 
 	handle_path /static/* {
-		root * /srv/staticfiles
+		root * /srv/static
+		header Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
 		file_server
 	}
 
