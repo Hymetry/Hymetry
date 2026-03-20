@@ -1,0 +1,45 @@
+services:
+  init:
+    volumes:
+      - .:/app
+      - staticfiles:/app/staticfiles
+      - media:/app/media
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      BOOTSTRAP_SKIP_COLLECTSTATIC: "1"
+
+  web:
+    volumes:
+      - .:/app
+      - staticfiles:/app/staticfiles
+      - media:/app/media
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      DEBUG: "1"
+    command:
+      - python
+      - manage.py
+      - runserver
+      - 0.0.0.0:8000
+
+  celery:
+    volumes:
+      - .:/app
+      - staticfiles:/app/staticfiles
+      - media:/app/media
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      DEBUG: "1"
+    command:
+      - celery
+      - -A
+      - config
+      - worker
+      - -B
+      - -l
+      - info
+
+  caddy:
+    volumes:
+      - ./docker/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - ./static:/srv/static:ro

@@ -1,4 +1,4 @@
-/*! tailwindcss v4.2.1 | MIT License | https://tailwindcss.com */
+/*! tailwindcss v4.2.2 | MIT License | https://tailwindcss.com */
 @layer properties;
 @font-face {
   font-family: 'Inter';
@@ -31,6 +31,8 @@
   --color-red-900: oklch(39.6% 0.141 25.723);
   --color-orange-100: oklch(95.4% 0.038 75.164);
   --color-orange-600: oklch(64.6% 0.222 41.116);
+  --color-amber-50: oklch(98.7% 0.022 95.277);
+  --color-amber-500: oklch(76.9% 0.188 70.08);
   --color-amber-700: oklch(55.5% 0.163 48.998);
   --color-yellow-100: oklch(97.3% 0.071 103.193);
   --color-yellow-200: oklch(94.5% 0.129 101.54);
@@ -91,6 +93,7 @@
   --color-gray-600: oklch(44.6% 0.03 256.802);
   --color-gray-700: oklch(37.3% 0.034 259.733);
   --color-gray-900: oklch(21% 0.034 264.665);
+  --color-zinc-100: oklch(96.7% 0.001 286.375);
   --color-black: #000;
   --color-white: #fff;
   --spacing: 0.25rem;
@@ -1320,9 +1323,6 @@
   .pt-8 {
     padding-top: calc(var(--spacing) * 8);
   }
-  .pt-12 {
-    padding-top: calc(var(--spacing) * 12);
-  }
   .pt-16 {
     padding-top: calc(var(--spacing) * 16);
   }
@@ -1450,6 +1450,12 @@
   .whitespace-pre-wrap {
     white-space: pre-wrap;
   }
+  .text-amber-50 {
+    color: var(--color-amber-50);
+  }
+  .text-amber-500 {
+    color: var(--color-amber-500);
+  }
   .text-amber-700 {
     color: var(--color-amber-700);
   }
@@ -1548,6 +1554,9 @@
   }
   .text-yellow-800 {
     color: var(--color-yellow-800);
+  }
+  .text-zinc-100 {
+    color: var(--color-zinc-100);
   }
   .uppercase {
     text-transform: uppercase;
