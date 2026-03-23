@@ -99,17 +99,13 @@ Use `docker-compose.yml` to run the full stack on your own server or cloud VM:
 ### Quick start
 
 1. Create your env file.
-   - Copy `.env.example` to `.env` and fill in required values.
-   - Set `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`.
-   - Set `DATABASE_URL` in `.env` to the same credentials, for example: `postgresql://postgres:pwd@db:5432/hymetry_oss_db`
-   - For Docker Compose, keep Redis/Celery URLs on the internal service host, for example: `redis://redis:6379/0`.
+   - Copy `.env.example` to `.env` and edit it if needed.
 2. Build and start services.
    - `docker compose up -d --build`
 3. Check service status.
    - `docker compose ps`
 4. Open the app.
-   - `http://localhost` (via Caddy)
-   - `http://localhost:8000` (web directly)
+   - `http://localhost`
 
 <details>
 <summary>Docker Compose notes</summary>
