@@ -116,3 +116,9 @@ Use `docker-compose.yml` to run the full stack on your own server or cloud VM:
 - Django uses `DATABASE_URL`; Postgres container initialization uses `POSTGRES_*` from `.env`.
 
 </details>
+
+---
+
+## License
+
+AGPL. Check [AGPL terms.md](https://github.com/Hymetry/Hymetry/blob/main/AGPL%20terms.md) 
