@@ -10,13 +10,17 @@ WORKDIR /app
 RUN adduser --disabled-password --gecos "" appuser
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY --chown=appuser:appuser . /app
+
+RUN mkdir -p /app/static/css \
+    && npm --prefix /app/frontend/tailwind install \
+    && npm --prefix /app/frontend/tailwind run build:prod
 
 RUN mkdir -p /app/staticfiles /app/media \
     && chown -R appuser:appuser /app/staticfiles /app/media
