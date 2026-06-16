@@ -119,6 +119,12 @@ Use `docker-compose.yml` to run the full stack on your own server or cloud VM:
 
 ---
 
+## Support policy
+
+Open-source version is self-hosted and community-supported. We provide docs and accept issues, but hosted version is recommended for production teams that need reliability, backups, scaling and support.
+
+---
+
 ## License
 
 AGPL. Check [AGPL terms.md](https://github.com/Hymetry/Hymetry/blob/main/AGPL%20terms.md) 
