@@ -1,75 +1,95 @@
+from django.conf import settings
+
+
+def password_policy(request):
+    return {
+        'password_min_length': settings.PASSWORD_MIN_LENGTH,
+        'password_max_length': settings.PASSWORD_MAX_LENGTH,
+    }
+
+
 def project_context(request):
-    """
-    Context processor to provide selected_project and user_projects to all templates.
-    """
     context = {}
-    
-    if request.user.is_authenticated:
-        # Get user's projects with details
-        user_projects = request.user.projectmembership_set.select_related('project').all()
-        context['user_projects'] = user_projects
-        
-        # Get selected project from query parameters or session ID
-        selected_project = None
-        
-        # First try to get project from query parameters
-        try:
-            project_id = int(request.GET.get('project'))
-            # Verify user has access to this project
-            if project_id in [membership.project.id for membership in user_projects]:
-                selected_project = next((membership.project for membership in user_projects 
-                                       if membership.project.id == project_id), None)
-        except (TypeError, ValueError):
-            pass
-        
-        # If no project from query params, try to get from URL path
-        if not selected_project:
-            from apps.tracker.models import Session
-            try:
-                # Extract project_id or session_id from URL path
-                path_parts = request.path.strip('/').split('/')
-                
-                # Check for new URL structure: projects/<project_id>/ or projects/<project_id>/recordings/
-                if len(path_parts) >= 2 and path_parts[0] == 'projects':
-                    project_id = int(path_parts[1])
-                    # Verify user has access to this project
-                    if project_id in [membership.project.id for membership in user_projects]:
-                        selected_project = next((membership.project for membership in user_projects 
-                                               if membership.project.id == project_id), None)
-                
-                # Check for old tracker/recordings/<project_id>/ path (backward compatibility)
-                elif len(path_parts) >= 3 and path_parts[0] == 'tracker' and path_parts[1] == 'recordings':
-                    project_id = int(path_parts[2])
-                    # Verify user has access to this project
-                    if project_id in [membership.project.id for membership in user_projects]:
-                        selected_project = next((membership.project for membership in user_projects 
-                                               if membership.project.id == project_id), None)
-                
-                # Check for tracker/recording/<session_id>/ path
-                elif len(path_parts) >= 3 and path_parts[0] == 'tracker' and path_parts[1] == 'recording':
-                    session_id = path_parts[2]
-                    print(f"DEBUG: Found session_id in URL: {session_id}")
-                    print(f"DEBUG: Path parts: {path_parts}")
-                    # Get session and its project
-                    try:
-                        session = Session.objects.get(
-                            session_id=session_id,
-                            visitor__project__in=[membership.project.id for membership in user_projects]
-                        )
-                        selected_project = session.visitor.project
-                        print(f"DEBUG: Found session project: {selected_project.id}")
-                    except Session.DoesNotExist:
-                        print(f"DEBUG: Session not found for session_id: {session_id}")
-                        print(f"DEBUG: Available project IDs: {[membership.project.id for membership in user_projects]}")
-                        # Try without project filter to see if session exists
-                        try:
-                            session = Session.objects.get(session_id=session_id)
-                            print(f"DEBUG: Session exists but project {session.visitor.project.id} not in user projects")
-                        except Session.DoesNotExist:
-                            print(f"DEBUG: Session does not exist at all")
-            except (Session.DoesNotExist, ValueError, IndexError):
-                pass
-        
-        context['selected_project'] = selected_project
-    
-    return context 
+    if not request.user.is_authenticated:
+        return context
+
+    from apps.projects.access import active_workspace_memberships
+    from apps.projects.models import Project
+
+    memberships = list(
+        active_workspace_memberships()
+        .filter(user=request.user)
+        .select_related('workspace')
+        .order_by('workspace__name', 'workspace__created_at')
+    )
+    workspace_ids = [membership.workspace_id for membership in memberships]
+    projects = list(
+        Project.active.filter(workspace_id__in=workspace_ids)
+        .select_related('workspace')
+        .order_by('workspace__name', 'name')
+    )
+    membership_by_workspace = {membership.workspace_id: membership for membership in memberships}
+    projects_by_workspace = {}
+    for project in projects:
+        projects_by_workspace.setdefault(project.workspace_id, []).append(project)
+
+    selected_project = None
+    try:
+        requested_project_id = int(request.GET.get('project', ''))
+        selected_project = next((project for project in projects if project.id == requested_project_id), None)
+    except (TypeError, ValueError):
+        pass
+
+    path_parts = request.path.strip('/').split('/')
+    if selected_project is None:
+        project_id = None
+        if len(path_parts) >= 4 and path_parts[0] == 'w' and path_parts[2] == 'projects' and path_parts[3].isdigit():
+            project_id = int(path_parts[3])
+        elif len(path_parts) >= 2 and path_parts[0] == 'projects' and path_parts[1].isdigit():
+            project_id = int(path_parts[1])
+        if project_id is not None:
+            selected_project = next((project for project in projects if project.id == project_id), None)
+
+    selected_workspace = selected_project.workspace if selected_project else None
+    if selected_workspace is None and len(path_parts) >= 2 and path_parts[0] == 'w':
+        selected_workspace = next(
+            (
+                membership.workspace
+                for membership in memberships
+                if path_parts[1] in {membership.workspace.slug, membership.workspace.previous_slug}
+            ),
+            None,
+        )
+
+    selected_membership = (
+        membership_by_workspace.get(selected_workspace.id)
+        if selected_workspace
+        else None
+    )
+    nav_workspaces = [
+        {
+            'workspace': membership.workspace,
+            'membership': membership,
+            'projects': projects_by_workspace.get(membership.workspace_id, []),
+        }
+        for membership in memberships
+    ]
+    user_projects = [
+        {
+            'project': project,
+            'role': membership_by_workspace[project.workspace_id].role,
+            'is_owner': membership_by_workspace[project.workspace_id].role == 'owner',
+        }
+        for project in projects
+    ]
+
+    context.update({
+        'nav_workspaces': nav_workspaces,
+        'workspace_memberships': memberships,
+        'user_projects': user_projects,
+        'selected_project': selected_project,
+        'selected_workspace': selected_workspace,
+        'selected_workspace_membership': selected_membership,
+        'nav_context': 'project' if selected_project else ('workspace' if selected_workspace else 'global'),
+    })
+    return context

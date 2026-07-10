@@ -1,0 +1,249 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}{% if is_demo_view %}Users - {{ demo_project_display_name }}{% else %}Users - {{ project.name }}{% endif %}{% endblock %}
+
+{% block extra_js %}
+  <link rel="stylesheet" href="{% static 'css/users/overview.css' %}" type="text/css" />
+{% endblock %}
+
+{% block nav %}
+  {% if is_demo_view %}
+    {% include 'projects/partials/demo_project_top_nav.html' with active_demo_section='users' %}
+  {% else %}
+    {% include 'projects/partials/project_top_nav.html' with active_project_section='users' %}
+  {% endif %}
+{% endblock %}
+
+{% block body_classes %}
+  class="h-full bg-slate-50 text-sm" data-users-view="overview" data-project-id="{{ project.id }}" data-users-data-url="{{ users_data_url }}" data-user-detail-base-url="{{ users_detail_base_url }}" data-company-detail-base-url="{{ company_detail_base_url }}" data-user-options-url="{{ users_options_url }}" data-users-initial-limit="{{ users_initial_limit }}"
+{% endblock %}
+
+{% block content %}
+  <main class="page-shell w-full pb-12 pt-20">
+    <header class="mb-8">
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div class="min-w-0">
+          <h1 class="text-3xl font-bold text-slate-900">Users</h1>
+          <p class="mt-2 max-w-3xl text-slate-600">
+            User-level adoption, engagement, and product usage across B2B accounts.
+          </p>
+        </div>
+
+        <div class="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+          {% if not analytics_is_empty %}
+          <div id="users-header-search" class="company-search">
+            <label class="sr-only" for="users-filter-search">Go to user</label>
+            <input
+              id="users-filter-search"
+              class="company-search__input users-search-input--compact"
+              type="search"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-controls="users-search-results"
+              placeholder="Go to user..."
+              autocomplete="off" />
+            <div id="users-search-results" class="company-search__dropdown" role="listbox" hidden></div>
+          </div>
+
+          {% endif %}
+
+          {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='users-period-selector' analytics_period_selector_label='Date range' analytics_range_options=users_range_options analytics_range_key=users_range_key %}
+        </div>
+      </div>
+    </header>
+
+    {% if analytics_is_empty %}
+      {% include 'partials/analytics_empty_state.html' %}
+    {% else %}
+    <section
+      id="users-kpis"
+      class="mb-6"
+      aria-label="User metrics summary"
+      style="
+        --users-kpi-border-color: var(--color-slate-200);
+        --users-kpi-positive-color: var(--color-green-700);
+        --users-kpi-negative-color: var(--color-red-600);
+        --users-kpi-neutral-color: var(--color-slate-700);
+      ">
+      <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div data-users-kpis-grid class="grid md:grid-cols-2 xl:grid-cols-4"></div>
+      </div>
+
+      <template id="users-kpi-card-template">
+        <article data-users-kpi-card class="block px-5 py-4">
+          <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0">
+              <div data-users-kpi-label class="text-sm font-medium uppercase text-slate-500"></div>
+              <div data-users-kpi-value class="mt-2 truncate text-2xl font-semibold leading-tight text-slate-900"></div>
+            </div>
+            <div data-users-kpi-delta data-delta-direction="neutral" class="shrink-0 whitespace-nowrap text-right text-sm font-medium"></div>
+          </div>
+          <div data-users-kpi-trend class="mt-3 h-12 w-full" aria-hidden="true"></div>
+        </article>
+      </template>
+    </section>
+
+    <section class="users-chart-card">
+      <div class="px-6 py-5">
+        <h2 class="text-lg font-semibold uppercase text-gray-600">Engagement distribution</h2>
+        <p class="mt-1 text-sm text-slate-500">Engaged-time buckets use the selected period. Status mix compares company activity with the previous matching period.</p>
+      </div>
+      <div class="grid gap-6 px-6 pb-5 lg:grid-cols-2">
+        <div>
+          <h3 class="text-sm font-medium text-slate-700">Engaged time buckets</h3>
+          <div
+            id="users-engagement-bucket-chart"
+            class="mt-3 h-[280px] w-full"
+            role="img"
+            aria-label="Horizontal bar chart of users by engaged time bucket"></div>
+        </div>
+        <div>
+          <h3 class="text-sm font-medium text-slate-700">Status mix vs previous period</h3>
+          <div
+            id="users-status-distribution-chart"
+            class="mt-3 h-[280px] w-full"
+            role="img"
+            aria-label="Stacked area chart of users by status"></div>
+        </div>
+      </div>
+    </section>
+
+    <section
+      class="users-card mt-6"
+      style="
+        --pages-value-bar-max-width: 72px;
+        --pages-split-cell-gap: 0.125rem;
+        --pages-split-change-width: 96px;
+        --pages-change-axis: 18px;
+        --pages-change-positive-track: 36px;
+        --pages-change-negative-track: 17px;
+      ">
+      <div class="flex flex-col gap-4 px-6 py-5 xl:flex-row xl:items-start xl:justify-between">
+        <div>
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Users list</h2>
+          <p class="mt-1 text-sm text-slate-500">Top users during the selected period.</p>
+        </div>
+      </div>
+
+      <div class="users-table-scroll users-table-scroll-shell overflow-x-auto px-6 pb-4" data-users-table-scroll>
+        <table class="users-table w-full table-auto text-left">
+          <thead class="border-b border-gray-300 bg-white text-slate-600">
+            <tr>
+              <th scope="col" class="sticky left-0 z-[2] bg-white py-3 pl-0 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="users-table-sort-button" data-users-table-sort="name" aria-describedby="users-table-tooltip-user">User</button>
+                  <span id="users-table-tooltip-user" class="metric-header-tooltip__content" role="tooltip">Identified user active during the selected period. Hover a user name to see their email.</span>
+                </span>
+              </th>
+              <th scope="col" class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="users-table-sort-button" data-users-table-sort="company" aria-describedby="users-table-tooltip-company">Company</button>
+                  <span id="users-table-tooltip-company" class="metric-header-tooltip__content" role="tooltip">Company account the user belongs to</span>
+                </span>
+              </th>
+              <th scope="col" class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="users-table-sort-button" data-users-table-sort="status" aria-describedby="users-table-tooltip-status">Status</button>
+                  <span id="users-table-tooltip-status" class="metric-header-tooltip__content" role="tooltip">User health state based on engagement, breadth, and recency</span>
+                </span>
+              </th>
+              <th scope="col" class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="users-table-sort-button" data-users-table-sort="companySharePct" aria-describedby="users-table-tooltip-company-share">Company share</button>
+                  <span id="users-table-tooltip-company-share" class="metric-header-tooltip__content" role="tooltip">Share of this company's engaged time contributed by the user</span>
+                </span>
+              </th>
+              <th scope="col" class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="users-table-sort-button" data-users-table-sort="engagedSeconds" aria-describedby="users-table-tooltip-engaged">Engaged</button>
+                  <span id="users-table-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent by this user during the selected period, with previous-period change</span>
+                </span>
+              </th>
+              <th scope="col" class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="users-table-sort-button" data-users-table-sort="visitsCount" aria-describedby="users-table-tooltip-visits">Visits</button>
+                  <span id="users-table-tooltip-visits" class="metric-header-tooltip__content" role="tooltip">Number of page visits by this user during the selected period</span>
+                </span>
+              </th>
+              <th scope="col" class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="users-table-sort-button" data-users-table-sort="avgVisitSeconds" aria-describedby="users-table-tooltip-avg-visit">Avg / visit</button>
+                  <span id="users-table-tooltip-avg-visit" class="metric-header-tooltip__content" role="tooltip">Average active time per visit</span>
+                </span>
+              </th>
+              <th scope="col" class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip" tabindex="0" aria-describedby="users-table-tooltip-area-usage">
+                  Area usage
+                  <span id="users-table-tooltip-area-usage" class="metric-header-tooltip__content" role="tooltip">Product areas used during the selected period. Filled cells show relative engagement intensity.</span>
+                </span>
+                <div class="companies-matrix-heading"></div>
+              </th>
+            </tr>
+          </thead>
+          <tbody id="users-table-body" class="text-slate-700"></tbody>
+        </table>
+        <div class="users-table-loading-overlay" data-users-table-loading hidden aria-hidden="true">
+          <div class="users-table-loader"></div>
+        </div>
+      </div>
+      <div class="users-pagination mt-4 mb-6 flex flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between" data-users-pagination hidden></div>
+    </section>
+
+    <section class="users-chart-card mt-6">
+      <div class="px-6 py-5">
+        <h2 class="text-lg font-semibold uppercase text-gray-600">User consistency vs intensity</h2>
+        <p class="mt-1 text-sm text-slate-500">How often users return and how deeply they engage per session. Shows up to 300 users.</p>
+      </div>
+      <div class="px-6 pb-3">
+        <div id="users-breadth-depth-scatter" class="w-full" style="height:520px;" role="img" aria-label="Scatter plot of user consistency and intensity"></div>
+      </div>
+      <p class="px-6 pb-5 text-sm text-slate-500">
+        Return frequency and session depth are calculated from distinct sessions in the selected period.
+      </p>
+    </section>
+
+    <div class="mt-6 grid gap-6 xl:grid-cols-2">
+      <section class="users-chart-card">
+        <div class="px-6 py-5">
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Users needing attention</h2>
+          <p class="mt-1 text-sm text-slate-500">Users with declining activity, recent inactivity, or weak engagement signals.</p>
+        </div>
+        <div id="users-attention-list" class="px-6 pb-5"></div>
+      </section>
+
+      <section class="users-chart-card">
+        <div class="px-6 py-5">
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Users gaining momentum</h2>
+          <p class="mt-1 text-sm text-slate-500">Users with growing engagement, broader feature usage, or newly strong activity.</p>
+        </div>
+        <div id="users-momentum-list" class="px-6 pb-5"></div>
+      </section>
+    </div>
+
+    <section id="users-loading-state" class="mt-6 hidden rounded-xl border border-slate-200 bg-white p-6 shadow-sm" aria-label="Loading users analytics">
+      <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <div class="h-28 animate-pulse rounded-lg bg-slate-100"></div>
+        <div class="h-28 animate-pulse rounded-lg bg-slate-100"></div>
+        <div class="h-28 animate-pulse rounded-lg bg-slate-100"></div>
+        <div class="h-28 animate-pulse rounded-lg bg-slate-100"></div>
+        <div class="h-28 animate-pulse rounded-lg bg-slate-100"></div>
+      </div>
+      <div class="mt-6 h-72 animate-pulse rounded-lg bg-slate-100"></div>
+    </section>
+    {% endif %}
+  </main>
+
+  {% if not analytics_is_empty %}
+  <script id="users-overview-data" type="application/json">{{ users_overview_payload_json }}</script>
+  <script src="{% static 'echarts/lib/echarts.min.js' %}"></script>
+  <script src="{% static 'js/vendor/vega.min.js' %}"></script>
+  <script src="{% static 'js/vendor/vega-embed.min.js' %}"></script>
+  <script src="{% static 'js/shared/analytics-status-colors.js' %}"></script>
+  <script src="{% static 'js/shared/product-area-colors.js' %}"></script>
+  <script src="{% static 'js/users/django-users-data.js' %}"></script>
+  <script src="{% static 'js/users/users-analytics.js' %}?v=20260709-2"></script>
+  {% endif %}
+{% endblock %}

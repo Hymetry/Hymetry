@@ -1,0 +1,320 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}{% if is_demo_view %}Pages - {{ demo_project_display_name }}{% else %}Pages - {{ project.name }}{% endif %}{% endblock %}
+
+{% block extra_js %}
+  <link rel="stylesheet" href="{% static 'css/pages/overview.css' %}" type="text/css" />
+{% endblock %}
+
+{% block nav %}
+  {% if is_demo_view %}
+    {% include 'projects/partials/demo_project_top_nav.html' with active_demo_section='pages' %}
+  {% else %}
+    {% include 'projects/partials/project_top_nav.html' with active_project_section='pages' %}
+  {% endif %}
+{% endblock %}
+
+{% block body_classes %}
+  {% if is_demo_view %}
+    class="text-sm h-full bg-slate-50" data-pages-view="overview" data-project-id="{{ project.id }}" data-pages-overview-url="{% url 'demo_pages' %}?range={{ pages_range_key }}" data-pages-overview-table-url="{{ pages_overview_table_url }}" data-pages-detail-base-url="/projects/demo/pages/" data-pages-range-key="{{ pages_range_key }}"
+  {% else %}
+    class="text-sm h-full bg-slate-50" data-pages-view="overview" data-project-id="{{ project.id }}" data-pages-overview-url="{% url 'w:project_pages' workspace_slug=project.workspace.slug project_id=project.id %}?range={{ pages_range_key }}" data-pages-overview-table-url="{{ pages_overview_table_url }}" data-pages-detail-base-url="{% url 'w:project_pages' workspace_slug=project.workspace.slug project_id=project.id %}/" data-pages-range-key="{{ pages_range_key }}"
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+  <main
+    class="w-full px-6 pb-12 pt-20 lg:px-12 xl:px-20"
+    data-pages-overview
+    {% if not is_demo_view %}data-scatter-tooltips-url="{% url 'w:project_pages_scatter_tooltips' workspace_slug=project.workspace.slug project_id=project.id %}?range={{ pages_range_key }}"{% endif %}>
+    <header class="mb-8">
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div class="min-w-0">
+          <h1 class="text-3xl font-bold text-slate-900">Pages</h1>
+          <p class="mt-2 max-w-3xl text-slate-600">
+            Understand which pages/features are used, by whom, and how people move through them.
+          </p>
+        </div>
+
+        <div class="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center">
+          {% if not analytics_is_empty %}
+          <div id="page-search" class="page-search">
+            <label for="pages-global-search" class="sr-only">Go to page</label>
+            <input
+              id="pages-global-search"
+              class="page-search__input"
+              type="search"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-controls="page-search-results"
+              autocomplete="off"
+              placeholder="Go to page&hellip;" />
+            <div id="page-search-results" class="page-search__dropdown" role="listbox" hidden></div>
+          </div>
+
+          <div id="product-area-filter" class="product-area-filter">
+            <span id="product-area-filter-title" class="sr-only">Filter product area</span>
+            <button
+              id="product-area-filter-button"
+              type="button"
+              class="product-area-filter__button"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-labelledby="product-area-filter-title product-area-filter-label"
+              aria-controls="product-area-filter-dropdown"
+              data-has-selection="{% if pages_product_area_filter_has_selection %}true{% else %}false{% endif %}">
+              <span
+                id="product-area-filter-label"
+                class="product-area-filter__label"
+                title="{% if pages_product_area_filter_has_selection %}{{ pages_product_area_filter_label }}{% endif %}"
+                {% if not pages_product_area_filter_has_selection %}data-placeholder="true"{% endif %}>{{ pages_product_area_filter_label }}</span>
+              <svg
+                class="product-area-filter__icon"
+                xmlns="http://www.w3.org/2000/svg"
+                height="20px"
+                viewBox="0 -960 960 960"
+                width="20px"
+                fill="currentColor"
+                aria-hidden="true">
+                <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
+              </svg>
+            </button>
+            <button id="product-area-filter-reset" type="button" class="product-area-filter__reset" aria-label="Clear product area filter" {% if not pages_product_area_filter_has_selection %}hidden{% endif %}>&times;</button>
+            <div id="product-area-filter-dropdown" class="product-area-filter__dropdown" hidden>
+              <div id="product-area-filter-options" class="product-area-filter__options" role="group" aria-labelledby="product-area-filter-title">
+                {% for option in pages_product_area_filter_options %}
+                  <label class="product-area-filter__option">
+                    <input
+                      class="product-area-filter__checkbox"
+                      type="checkbox"
+                      value="{{ option.key }}"
+                      {% if option.is_selected %}checked{% endif %} />
+                    <span class="product-area-filter__option-label">{{ option.name }}</span>
+                  </label>
+                {% empty %}
+                  <div class="product-area-filter__empty">No product areas found</div>
+                {% endfor %}
+              </div>
+              <div class="product-area-filter__footer">
+                <button id="product-area-filter-apply" type="button" class="product-area-filter__apply">Apply</button>
+              </div>
+            </div>
+          </div>
+          {% endif %}
+
+          {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='pages-period-selector' analytics_period_selector_class='pages-period-selector inline-flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white' analytics_range_options=pages_range_options analytics_range_key=pages_range_key analytics_query_suffix=pages_filter_query_suffix %}
+        </div>
+      </div>
+    </header>
+
+    {% if analytics_is_empty %}
+      {% include 'partials/analytics_empty_state.html' %}
+    {% else %}
+    <section
+      id="pages-kpis"
+      class="mb-6"
+      aria-label="Page metrics summary">
+      <div data-pages-kpis-shell class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div data-pages-kpis-grid class="grid md:grid-cols-2 xl:grid-cols-4"></div>
+      </div>
+
+      <template id="pages-kpi-card-template">
+        <article data-pages-kpi-card class="block px-5 py-4">
+          <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0">
+              <div data-pages-kpi-label class="text-sm font-medium text-slate-500 uppercase"></div>
+              <div data-pages-kpi-value class="mt-2 truncate text-2xl font-semibold leading-tight text-slate-900"></div>
+            </div>
+            <div
+              data-pages-kpi-delta
+              data-delta-direction="neutral"
+              class="shrink-0 whitespace-nowrap text-right text-sm font-medium"></div>
+          </div>
+          <div data-pages-kpi-trend class="mt-3 h-12 w-full" aria-hidden="true"></div>
+        </article>
+      </template>
+    </section>
+
+    <section class="product-area-summary-section mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div class="px-6 py-5">
+        <div>
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Product area summary</h2>
+          <p class="mt-1 text-sm text-slate-500">Compare product-area reach, adoption, and engaged time across the selected period.</p>
+        </div>
+      </div>
+
+      <div class="product-area-summary-scroll overflow-x-auto px-6 pb-4">
+        <table class="product-area-summary-table w-full table-auto text-left">
+          <thead class="bg-white text-slate-600">
+            <tr>
+              <th class="py-3 pl-0 font-normal">Product area</th>
+              <th class="product-area-pages-cell py-3 font-normal">Pages</th>
+              <th class="py-3 font-normal">Companies</th>
+              <th class="py-3 font-normal">Adoption</th>
+              <th class="py-3 font-normal">Users</th>
+              <th class="py-3 font-normal">Engaged</th>
+            </tr>
+          </thead>
+          <tbody id="product-area-summary-body" class="text-slate-700"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="page-metrics-section overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div class="px-6 py-5">
+        <div>
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Page metrics</h2>
+          <p class="mt-1 text-sm text-slate-500">Compare current values and period-over-period changes for key page metrics.</p>
+        </div>
+      </div>
+
+      <div class="page-metrics-scroll-shell overflow-x-auto px-6 pb-4" data-page-metrics-scroll>
+        <table class="pages-combined-table w-full table-auto text-left">
+          <thead class="border-b border-gray-300 bg-white text-slate-600">
+            <tr>
+              <th class="sticky left-0 z-[2] w-[210px] bg-white py-3 pl-0 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="page-metrics-sort-button" data-page-metrics-sort="page" aria-describedby="page-metric-2-tooltip-page">Page</button>
+                  <span id="page-metric-2-tooltip-page" class="metric-header-tooltip__content" role="tooltip">Page or grouped feature tracked during the selected period</span>
+                </span>
+              </th>
+              <th class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="page-metrics-sort-button" data-page-metrics-sort="companies" aria-describedby="page-metric-2-tooltip-companies">Companies</button>
+                  <span id="page-metric-2-tooltip-companies" class="metric-header-tooltip__content" role="tooltip">Number of companies that used this page during the selected period</span>
+                </span>
+              </th>
+              <th class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="page-metrics-sort-button" data-page-metrics-sort="adoption" aria-describedby="page-metric-2-tooltip-adoption">Adoption</button>
+                  <span id="page-metric-2-tooltip-adoption" class="metric-header-tooltip__content" role="tooltip">Share of active companies that used this page during the selected period</span>
+                </span>
+              </th>
+              <th class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="page-metrics-sort-button" data-page-metrics-sort="users" aria-describedby="page-metric-2-tooltip-users">Users</button>
+                  <span id="page-metric-2-tooltip-users" class="metric-header-tooltip__content" role="tooltip">Number of users who used this page during the selected period</span>
+                </span>
+              </th>
+              <th class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="page-metrics-sort-button" data-page-metrics-sort="penetration" aria-describedby="page-metric-2-tooltip-penetration">Penetration</button>
+                  <span id="page-metric-2-tooltip-penetration" class="metric-header-tooltip__content" role="tooltip">Share of active users from adopted companies who used this page</span>
+                </span>
+              </th>
+              <th class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="page-metrics-sort-button" data-page-metrics-sort="visits" aria-describedby="page-metric-2-tooltip-visits">Visits</button>
+                  <span id="page-metric-2-tooltip-visits" class="metric-header-tooltip__content" role="tooltip">Number of page visits during the selected period</span>
+                </span>
+              </th>
+              <th class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="page-metrics-sort-button" data-page-metrics-sort="engaged" aria-describedby="page-metric-2-tooltip-engaged">Engaged</button>
+                  <span id="page-metric-2-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent on this page</span>
+                </span>
+              </th>
+              <th class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="page-metrics-sort-button" data-page-metrics-sort="avg_visit" aria-describedby="page-metric-2-tooltip-avg-visit">Avg / visit</button>
+                  <span id="page-metric-2-tooltip-avg-visit" class="metric-header-tooltip__content" role="tooltip">Average active time per page visit</span>
+                </span>
+              </th>
+              <th class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip">
+                  <button type="button" class="page-metrics-sort-button" data-page-metrics-sort="interaction" aria-describedby="page-metric-2-tooltip-interaction">Interaction</button>
+                  <span id="page-metric-2-tooltip-interaction" class="metric-header-tooltip__content" role="tooltip">Share of visits with at least one click</span>
+                </span>
+              </th>
+              <th class="py-3 pr-6 font-normal">
+                <span class="metric-header-tooltip metric-header-tooltip--end">
+                  <button type="button" class="page-metrics-sort-button" data-page-metrics-sort="clicks_per_visit" aria-describedby="page-metric-2-tooltip-clicks-visit">Clicks / visit</button>
+                  <span id="page-metric-2-tooltip-clicks-visit" class="metric-header-tooltip__content" role="tooltip">Average number of clicks per visit</span>
+                </span>
+              </th>
+            </tr>
+          </thead>
+          <tbody id="pages-change-table-body" class="text-slate-700"></tbody>
+        </table>
+        <div class="page-metrics-table-loading-overlay" data-page-metrics-table-loading hidden aria-hidden="true">
+          <div class="page-metrics-table-loader"></div>
+        </div>
+      </div>
+      <div class="page-metrics-pagination mt-4 mb-6 flex flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between" data-page-metrics-pagination hidden></div>
+    </section>
+
+    <div class="mt-6 grid gap-6 xl:grid-cols-2">
+      <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div class="px-6 py-5">
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Top pages by visits over time</h2>
+          <p class="mt-1 text-sm text-slate-500">Shows how frequently the most opened pages are used over time.</p>
+        </div>
+        <div class="px-6 py-5">
+          <div id="top-pages-visits-time-chart" class="h-[320px] w-full"></div>
+        </div>
+      </section>
+
+      <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div class="px-6 py-5">
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Top pages by time spent</h2>
+          <p class="mt-1 text-sm text-slate-500">Shows where users spend the most engaged time over time.</p>
+        </div>
+        <div class="px-6 py-5">
+          <div id="top-pages-engaged-time-chart" class="h-[320px] w-full"></div>
+        </div>
+      </section>
+    </div>
+
+    <section class="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div class="px-6 pt-5 pb-1">
+        <h2 class="text-lg font-semibold uppercase text-gray-600">Where users spend time</h2>
+        <p class="mt-1 text-sm text-slate-500">Treemap of page groups sized by engaged time and colored by product area.</p>
+      </div>
+      <div class="px-6 pb-5 pt-2">
+        <div id="engaged-time-treemap-chart" class="h-[380px] w-full"></div>
+      </div>
+    </section>
+
+    <section class="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div class="px-6 py-5">
+        <h2 class="text-lg font-semibold uppercase text-gray-600">Most common page flows</h2>
+        <p class="mt-1 text-sm text-slate-500">Global transitions across common page paths in the selected period.</p>
+      </div>
+      <div class="px-6 py-5">
+        <div id="overview-flow-chart" class="h-[420px] w-full"></div>
+      </div>
+    </section>
+
+    <section class="mt-6 rounded-xl border border-slate-200 bg-slate-100 shadow-sm">
+      <div class="px-6 py-5">
+        <h2 class="text-lg font-semibold uppercase text-gray-600">Company engagement by product area</h2>
+        <p class="mt-1 text-sm text-slate-500">Each chart shows average active users and engagement depth by company for a product area.</p>
+      </div>
+      <div class="px-6 py-5">
+        <div id="company-engagement-page-group-grid" class="company-engagement-grid"></div>
+      </div>
+    </section>
+
+    <section class="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-slate-100 shadow-sm">
+      <div class="px-6 py-5">
+        <h2 class="text-lg font-semibold uppercase text-gray-600">Top actions by page, top 10 pages</h2>
+        <p class="mt-1 text-sm text-slate-500">Most clicked elements within each page.</p>
+      </div>
+      <div id="overview-top-actions-grid" class="grid gap-4 px-6 py-5"></div>
+    </section>
+    {% endif %}
+  </main>
+
+  {% if not analytics_is_empty %}
+  <script src="{% static 'echarts/lib/echarts.min.js' %}"></script>
+  <script id="pages-overview-data" type="application/json">{{ pages_overview_payload_json }}</script>
+  <script src="{% static 'js/pages/page-details-helpers.js' %}"></script>
+  <script src="{% static 'js/pages/django-pages-data.js' %}?v=20260709-3"></script>
+  <script src="{% static 'js/vendor/vega.min.js' %}"></script>
+  <script src="{% static 'js/vendor/vega-embed.min.js' %}"></script>
+  <script src="{% static 'js/pages/pages-analytics.js' %}?v=20260709-3"></script>
+  {% endif %}
+{% endblock %}

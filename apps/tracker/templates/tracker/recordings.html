@@ -43,11 +43,17 @@
   <div class="flex items-start">
     <div class="fixed top-52 bottom-0 left-0 w-56 bg-gray-50 -z-10 {% if not overall_legend_pages %}hidden{% endif %}"></div>
 
-    <aside class="sticky top-12 min-h-32 self-start bg-gray-50 px-8 pt-3 min-w-56 {% if not overall_legend_pages %}hidden{% endif %}">
+    <aside class="sticky top-12 z-20 min-h-32 w-56 max-w-56 flex-none self-start bg-gray-50 px-8 pt-3 {% if not overall_legend_pages %}hidden{% endif %}">
       <section class="select-none space-y-3">
         {% for legend_item in overall_legend_pages %}
-          <div>
-            <h3 class="font-medium leading-tight {{ legend_item.color.0 }} truncate">{{ legend_item.page_title }}</h3>
+          <div class="min-w-0">
+            <h3
+              class="tracker-title-tooltip font-medium leading-tight {{ legend_item.color.0 }}"
+              tabindex="0"
+              aria-describedby="recording-legend-title-{{ forloop.counter }}">
+              <span class="tracker-title-tooltip__label">{{ legend_item.page_title }}</span>
+              <span id="recording-legend-title-{{ forloop.counter }}" class="tracker-title-tooltip__content" role="tooltip">{{ legend_item.page_title }}</span>
+            </h3>
             <div style="width: {{ legend_item.percentage_width }}%" class="mt-1 h-4 rounded-full {{ legend_item.color.3 }}"></div>
           </div>
         {% endfor %}
@@ -95,7 +101,7 @@
           {% if session_item.bubbles %}
             <li class="relative{% if forloop.first %} max-w-full{% endif %}">
               <!-- The entire row is a clickable link -->
-              <a href="{% url 'recording' selected_project.id session_item.session.session_id %}" class="flex items-start outline outline-transparent transition-colors duration-150 hover:outline-1 hover:outline-slate-200 hover:bg-slate-50">
+              <a href="{% if is_demo_view %}{% url 'demo_recording' session_item.session.session_id %}{% else %}{% url 'w:recording' workspace_slug=selected_project.workspace.slug project_id=selected_project.id session_id=session_item.session.session_id %}{% endif %}" class="flex items-start outline outline-transparent transition-colors duration-150 hover:outline-1 hover:outline-slate-200 hover:bg-slate-50">
                 <!-- User Email -->
                 <p class="flex-shrink-0 w-32 py-2 ml-4 mt-0.5 font-medium text-slate-800">{{ session_item.session.start_time|format_in_project_timezone:project_timezone }}</p>
                 <!-- Circles -->
@@ -289,8 +295,8 @@
     <div class="text-xs font-medium text-gray-900" data-field="date"></div>
   </template>
 
-  <script src="{% static '/js/labella.min.js' %}"></script>
-  <script src="{% static '/js/dragscroll.js' %}"></script>
+  <script src="{% static 'js/labella.min.js' %}"></script>
+  <script src="{% static 'js/dragscroll.js' %}"></script>
 
   <script type="module">
     import { computePosition, autoUpdate, offset, flip, shift } from 'https://cdn.jsdelivr.net/npm/@floating-ui/dom@1.7.2/+esm'
@@ -490,6 +496,7 @@
         const el = document.createElement('div')
         el.className = 'page-label'
         el.textContent = g.title
+        el.title = g.title
         el.style.maxWidth = '280px'
         el.style.whiteSpace = 'nowrap'
         el.style.overflow = 'hidden'

@@ -1,0 +1,578 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Workspace details - {{ workspace.name }}{% endblock %}
+
+{% block nav %}
+  {% include 'projects/partials/project_top_nav.html' with workspace=workspace active_project_section='settings' %}
+{% endblock %}
+
+{% block content %}
+  <div class="flex min-h-screen pt-12">
+    {% include 'projects/partials/settings_sidebar.html' with active_settings_section='workspace_details' %}
+
+    <div class="flex-1 p-8 lg:px-12 xl:px-20 2xl:px-28 3xl:pl-36 4xl:pl-44">
+      <div class="flex flex-row gap-8 lg:gap-12 items-start">
+        <div class="w-full lg:flex-1 max-w-240">
+          <header class="mb-8">
+            <h1 class="text-3xl font-bold text-slate-900">Workspace details</h1>
+          </header>
+
+          <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+            <h2 class="text-lg font-semibold text-slate-600 uppercase">GENERAL</h2>
+
+            <div class="mt-4 space-y-4">
+              <div class="flex flex-wrap items-center justify-between gap-4">
+                <p>Workspace name: {{ workspace.name }}</p>
+                {% if can_edit_workspace %}
+                  <button data-modal-trigger aria-controls="change-workspace-name" class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                    Change name
+                  </button>
+                {% endif %}
+              </div>
+              <div class="flex flex-wrap items-center justify-between gap-4">
+                <p>Workspace URL slug: {{ workspace.slug }}</p>
+                {% if can_edit_workspace %}
+                  <button data-modal-trigger aria-controls="change-workspace-slug" class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                    Change URL slug
+                  </button>
+                {% endif %}
+              </div>
+              <div class="flex flex-wrap items-center justify-between gap-4">
+                <p>Website: {{ workspace.website_url|default:'-' }}</p>
+                {% if can_edit_workspace %}
+                  <button data-modal-trigger aria-controls="change-workspace-website" class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                    Change website
+                  </button>
+                {% endif %}
+              </div>
+            </div>
+
+            {% if messages %}
+              {% for message in messages %}
+                {% if 'workspace-name' in message.tags or 'workspace-website' in message.tags or 'workspace-details' in message.tags %}
+                  <div class="mt-4 {% if 'error' in message.tags %}bg-yellow-100 border border-yellow-200 text-yellow-800{% else %}bg-cyan-100 border border-cyan-200 text-sky-800{% endif %} rounded-lg p-4" role="alert">
+                    {{ message }}
+                  </div>
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+
+            <div class="mt-6 flex items-start gap-2 text-sm text-gray-950">
+              <svg class="mt-0.5 shrink-0 company-detail-health-summary__icon" width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M9.00043 16.5016C9.83502 16.5016 10.5116 16.1026 10.5116 15.6104C10.5116 15.1182 9.83502 14.7192 9.00043 14.7192C8.16583 14.7192 7.48926 15.1182 7.48926 15.6104C7.48926 16.1026 8.16583 16.5016 9.00043 16.5016Z" fill="#424242"></path>
+                <path d="M9.00064 1.49988C6.36531 1.49988 4.22754 3.45887 4.22754 5.87418C4.22754 6.50426 4.41756 7.17809 4.69635 7.77192C5.08765 8.60702 5.51395 9.2246 5.63897 9.45213C5.98651 10.0847 5.9365 10.751 6.03276 11.1686C6.21404 11.9487 6.75661 12.2312 8.99939 12.2312C11.2422 12.2312 11.7247 11.9624 11.926 11.2436C12.0635 10.7548 11.9298 10.221 12.276 9.58964C12.4011 9.36212 12.9099 8.60827 13.3024 7.77192C13.5812 7.17809 13.7712 6.50426 13.7712 5.87418C13.7737 3.45887 11.636 1.49988 9.00064 1.49988Z" fill="#FFD600"></path>
+                <path d="M9.00066 12.3249C10.5155 12.3249 11.7435 12.0753 11.7435 11.7674C11.7435 11.4595 10.5155 11.21 9.00066 11.21C7.48582 11.21 6.25781 11.4595 6.25781 11.7674C6.25781 12.0753 7.48582 12.3249 9.00066 12.3249Z" fill="#B26500"></path>
+                <path d="M9.0006 12.0251C10.1044 12.0251 10.9992 11.9098 10.9992 11.7676C10.9992 11.6254 10.1044 11.5101 9.0006 11.5101C7.89678 11.5101 7.00195 11.6254 7.00195 11.7676C7.00195 11.9098 7.89678 12.0251 9.0006 12.0251Z" fill="#FFA000"></path>
+                <path fill-rule="evenodd" clip-rule="evenodd" d="M7.51073 8.13831C7.52504 8.10459 7.53768 8.07481 7.54723 8.05078L7.77954 8.14311C7.76639 8.17618 7.75125 8.21184 7.73526 8.24948C7.69907 8.33468 7.65857 8.43004 7.62718 8.5286C7.60511 8.5979 7.59042 8.66084 7.58619 8.71339C7.58181 8.76771 7.58979 8.79677 7.59761 8.81017C7.69072 8.97015 7.84003 9.08567 8.00016 9.20951C8.02349 9.22755 8.04704 9.24577 8.07069 9.26434C8.23973 9.39701 8.43959 9.56575 8.43959 9.82686C8.43959 10.1353 8.32963 10.7713 8.22355 11.3166C8.16993 11.5922 8.11633 11.8493 8.07615 12.0375C8.05605 12.1315 8.0393 12.2084 8.02757 12.2619C8.0217 12.2886 8.01709 12.3094 8.01394 12.3236L8.0091 12.3453C8.00909 12.3453 8.00908 12.3454 7.88712 12.318C7.76516 12.2906 7.76516 12.2906 7.76517 12.2906L7.7699 12.2693C7.77301 12.2553 7.77758 12.2347 7.78341 12.2082C7.79505 12.1552 7.8117 12.0788 7.83168 11.9852C7.87165 11.7981 7.92492 11.5426 7.97816 11.2688C8.08583 10.7154 8.1896 10.1059 8.1896 9.82686C8.1896 9.70298 8.09885 9.60423 7.91635 9.46098C7.89543 9.44457 7.87345 9.42768 7.85073 9.41022C7.69366 9.28951 7.50137 9.14175 7.38163 8.93606C7.33701 8.85949 7.33076 8.77092 7.337 8.69333C7.3434 8.61394 7.36417 8.53063 7.38898 8.45275C7.42408 8.34251 7.47318 8.22682 7.51073 8.13831Z" fill="#B26500"></path>
+                <path fill-rule="evenodd" clip-rule="evenodd" d="M10.1414 8.07976C10.1414 8.07978 10.1414 8.07979 10.2547 8.02694C10.368 7.97408 10.368 7.9741 10.368 7.97412L10.3681 7.97434L10.3683 7.97481L10.369 7.97642L10.3716 7.98213C10.3739 7.98704 10.377 7.99408 10.381 8.00305C10.3888 8.02096 10.3998 8.04659 10.4125 8.0781C10.4378 8.14093 10.4706 8.22806 10.4995 8.32455C10.5284 8.42046 10.5545 8.52901 10.5652 8.6339C10.5756 8.736 10.5729 8.84963 10.5303 8.94616L10.5302 8.94634C10.4971 9.02096 10.4307 9.09307 10.3653 9.15398C10.2967 9.21789 10.2151 9.28188 10.1368 9.33937C10.058 9.39713 9.98036 9.4499 9.9188 9.49113C9.90164 9.50262 9.8863 9.51285 9.87278 9.52187C9.83542 9.54679 9.81195 9.56245 9.80236 9.56982C9.80219 9.57009 9.79623 9.57616 9.78779 9.59535C9.77826 9.61701 9.7687 9.64824 9.7603 9.69041C9.74348 9.77481 9.73412 9.88834 9.73163 10.0245C9.72666 10.2959 9.7492 10.6384 9.7821 10.9772C9.81491 11.3151 9.85766 11.6457 9.89226 11.8921C9.90955 12.0152 9.92478 12.1171 9.93567 12.1882C9.94112 12.2237 9.94549 12.2515 9.94848 12.2704L9.95191 12.2919L9.95306 12.299C9.95306 12.299 9.95307 12.2991 9.82971 12.3192C9.70635 12.3393 9.70634 12.3393 9.70634 12.3393L9.7051 12.3316L9.70158 12.3096C9.69852 12.2903 9.69409 12.262 9.68858 12.2261C9.67754 12.1541 9.66216 12.0511 9.6447 11.9269C9.60981 11.6784 9.56655 11.344 9.53328 11.0014C9.50009 10.6595 9.47645 10.3058 9.48168 10.0199C9.48429 9.87744 9.49411 9.74705 9.51513 9.64156C9.52565 9.58878 9.53966 9.53857 9.55895 9.49472C9.57778 9.45191 9.6053 9.40666 9.64758 9.37351L9.64773 9.37339C9.665 9.35989 9.70165 9.33546 9.74394 9.30728C9.75552 9.29956 9.76753 9.29156 9.77968 9.28342C9.8403 9.24282 9.91449 9.19239 9.98888 9.13781C10.0636 9.08297 10.1365 9.02548 10.195 8.971C10.2567 8.91358 10.2903 8.87043 10.3016 8.84504C10.3183 8.8072 10.3252 8.74508 10.3165 8.65916C10.308 8.57598 10.2865 8.48415 10.2601 8.39648C10.234 8.30938 10.2041 8.22972 10.1807 8.17166C10.169 8.14272 10.159 8.11938 10.152 8.10344C10.1485 8.09547 10.1458 8.08936 10.144 8.08534L10.1419 8.08091L10.1415 8.07993L10.1414 8.07976Z" fill="#B26500"></path>
+                <path fill-rule="evenodd" clip-rule="evenodd" d="M8.59513 5.47554C8.66988 5.3545 8.78667 5.2748 8.94338 5.27664C9.08657 5.27833 9.20299 5.33697 9.28742 5.43772C9.36803 5.53391 9.41436 5.66195 9.43934 5.79934C9.4893 6.07405 9.46177 6.4311 9.39223 6.78752C9.3273 7.12035 9.22365 7.4631 9.10193 7.755C9.14094 7.84228 9.18135 7.9221 9.22235 7.99204C9.29571 8.11717 9.36444 8.19926 9.42144 8.23985C9.44886 8.25937 9.46774 8.26509 9.47855 8.26625C9.48698 8.26715 9.496 8.26613 9.50929 8.25758C9.54553 8.23422 9.60152 8.17678 9.67193 8.07852C9.74006 7.98343 9.81452 7.86041 9.88992 7.71818C9.92321 7.65537 9.95649 7.58919 9.9893 7.52049C9.93326 7.29201 9.87216 7.01412 9.82823 6.73539C9.7762 6.40523 9.7463 6.06248 9.78324 5.79766C9.80164 5.66576 9.83829 5.53978 9.90851 5.44407C9.98343 5.34195 10.0927 5.28038 10.2318 5.28038C10.3809 5.28038 10.502 5.3369 10.5843 5.4444C10.6618 5.54553 10.695 5.6789 10.7044 5.81776C10.7231 6.09572 10.6497 6.45584 10.5378 6.81142C10.4593 7.0609 10.3597 7.31464 10.2533 7.54617C10.2567 7.55962 10.2601 7.57286 10.2634 7.58587C10.2947 7.70751 10.3227 7.80882 10.3428 7.87961C10.3529 7.915 10.361 7.94274 10.3666 7.96155C10.368 7.96628 10.3693 7.97044 10.3703 7.97402C10.3714 7.97756 10.3723 7.98053 10.373 7.98291L10.3746 7.98826L10.375 7.98955L10.3751 7.98984C10.3751 7.98985 10.3751 7.9899 10.2556 8.02649C10.1361 8.06308 10.1361 8.06306 10.1361 8.06302L10.1354 8.06092L10.1336 8.05504C10.1321 8.0499 10.1298 8.04235 10.1269 8.03256C10.1211 8.01297 10.1128 7.9844 10.1024 7.94812C10.097 7.92893 10.0909 7.90759 10.0845 7.88427C10.0141 8.01334 9.94316 8.12918 9.87514 8.22412C9.80094 8.32767 9.72236 8.41772 9.64454 8.46782C9.58565 8.50568 9.51984 8.52209 9.45194 8.51482C9.38644 8.50781 9.32743 8.47979 9.27643 8.44348C9.1766 8.37238 9.08633 8.25433 9.00669 8.11847C8.9929 8.09494 8.97922 8.07053 8.96569 8.04531C8.93049 8.11144 8.89427 8.17296 8.85734 8.22859C8.78281 8.34085 8.69971 8.43794 8.60921 8.49726C8.48423 8.57918 8.35009 8.55018 8.24237 8.48189C8.13852 8.41606 8.04048 8.30467 7.9515 8.1743C7.91536 8.12135 7.87961 8.06363 7.84458 8.00199C7.82203 8.05506 7.79874 8.10552 7.77476 8.15291L7.5517 8.04006C7.60166 7.94129 7.64896 7.82626 7.6925 7.70056C7.61287 7.52387 7.54047 7.33119 7.48006 7.13562C7.35868 6.74269 7.28153 6.32465 7.29686 5.9881C7.3045 5.82024 7.33554 5.66219 7.40438 5.53646C7.47572 5.40617 7.58826 5.31085 7.74599 5.28238C7.72415 2.1702 8.23538 2.23019 8.58536 2.65517C8.6841 2.77516 8.76035 2.91766 8.77785 3.07265C8.81285 3.37138 8.62786 3.65387 8.40787 3.86136C7.7804 4.45383 6.8892 4.74131 6.48422 5.55877C6.38922 5.75001 6.31423 5.95625 6.16924 6.11249C6.02424 6.26873 5.78301 6.36373 5.59427 6.26373C5.49427 6.21123 5.42552 6.11249 5.36928 6.01375C5.0143 5.38128 5.04055 4.57507 5.35303 3.9201C5.69676 3.20264 6.45047 2.48268 7.23543 2.29019Z" fill="#FFFF8D"></path>
+                <path d="M11.7374 11.8839C11.7374 11.8839 11.0173 12.2314 9.0008 12.2314C6.9843 12.2314 6.26421 11.8839 6.26421 11.8839C6.26421 11.8839 6.2192 12.5264 6.36797 12.8176C6.54674 13.1676 6.68426 13.2888 6.68426 13.2888L6.75927 13.6451L6.72927 13.7388C6.69051 13.8613 6.71801 13.9963 6.80428 14.0925L6.86928 14.165L6.94179 14.5075L6.91679 14.5763C6.86928 14.7075 6.90179 14.8538 6.9993 14.9538L7.04681 15.0025L7.10556 15.2825C7.10556 15.2825 7.4031 15.9175 9.0008 15.9175C10.5985 15.9175 10.896 15.2825 10.896 15.2825L10.901 15.2587L10.9335 15.2262C10.9985 15.1625 11.0198 15.0675 10.9885 14.9825L10.9698 14.9338L11.0473 14.5638L11.1836 14.42C11.2511 14.3488 11.2661 14.2438 11.2223 14.1563L11.1598 14.0325L11.2386 13.6613L11.2886 13.6226C11.3623 13.5413 11.3636 13.4188 11.3311 13.3351C11.3061 13.2688 11.3261 13.1938 11.3773 13.1451C11.4561 13.0701 11.5574 12.9564 11.6324 12.8151C11.7861 12.5289 11.7374 11.8839 11.7374 11.8839Z" fill="#82AEC0"></path>
+                <path d="M6.68408 13.2889L6.75158 13.6476C7.47904 13.6439 8.45024 13.6801 10.3139 13.3839C10.6501 13.3076 11.0539 13.1564 10.6076 13.2189C10.6076 13.2176 8.89647 13.3814 6.68408 13.2889Z" fill="#2F7889"></path>
+                <path d="M6.93382 14.5101C7.73878 14.4963 9.38369 14.4163 11.1511 14.0326L11.2298 13.6614C9.38119 14.0814 7.64254 14.1564 6.86133 14.1664L6.93382 14.5101Z" fill="#2F7889"></path>
+                <path d="M11.039 14.563C9.40284 14.918 7.87168 15.0092 7.04297 15.0292L7.09672 15.2842C7.09672 15.2842 7.12296 16.0754 8.99162 16.0754C10.8603 16.0754 10.8865 15.2842 10.8865 15.2842C10.8865 15.2842 10.0891 15.5117 9.10786 15.4004C9.00787 15.3892 9.00661 15.2555 9.10661 15.243C9.69283 15.1655 10.3928 15.0505 10.9615 14.933L11.039 14.563Z" fill="#2F7889"></path>
+                <path fill-rule="evenodd" clip-rule="evenodd" d="M11.9587 11.7866C12.0124 11.9136 11.9529 12.0602 11.8258 12.1139L11.7285 11.8838C11.8258 12.1139 11.8257 12.1139 11.8256 12.114L11.8254 12.1141L11.8249 12.1143L11.8237 12.1148L11.8204 12.1161C11.8177 12.1172 11.8143 12.1186 11.81 12.1203C11.8015 12.1236 11.7897 12.1281 11.7746 12.1336C11.7443 12.1446 11.7005 12.1595 11.6429 12.177C11.5276 12.2121 11.3567 12.2576 11.1261 12.3027C10.6647 12.3928 9.96477 12.4811 8.9932 12.4811C8.02165 12.4811 7.32534 12.3928 6.86746 12.3026C6.63854 12.2575 6.46935 12.212 6.35527 12.1768C6.29824 12.1592 6.25501 12.1442 6.225 12.1331C6.20999 12.1276 6.1983 12.1231 6.18984 12.1197C6.18561 12.118 6.18219 12.1166 6.17957 12.1155L6.17624 12.1142L6.17502 12.1136L6.17452 12.1134L6.1743 12.1133C6.1742 12.1133 6.1741 12.1132 6.27286 11.8838L6.1741 12.1132C6.04735 12.0587 5.98882 11.9118 6.04336 11.785C6.09778 11.6586 6.24419 11.6001 6.37073 11.6539C6.37066 11.6539 6.37062 11.6539 6.37062 11.6539L6.37068 11.6539L6.37091 11.654L6.371 11.6541L6.37128 11.6542C6.37146 11.6542 6.37281 11.6548 6.37496 11.6557C6.37927 11.6574 6.38679 11.6603 6.3976 11.6643C6.41923 11.6722 6.45403 11.6844 6.5026 11.6994C6.59972 11.7293 6.75197 11.7707 6.96405 11.8124C7.38816 11.896 8.05202 11.9815 8.9932 11.9815C9.93437 11.9815 10.6021 11.896 11.0302 11.8124C11.2443 11.7705 11.3986 11.7292 11.4973 11.6991C11.5467 11.6841 11.5822 11.6719 11.6044 11.6638C11.6154 11.6598 11.6232 11.6569 11.6276 11.6551C11.6299 11.6542 11.6313 11.6537 11.6319 11.6534C11.7591 11.6002 11.9051 11.6598 11.9587 11.7866Z" fill="#82AEC0"></path>
+                <path d="M7.23543 2.29019C7.72415 2.1702 8.23538 2.23019 8.58536 2.65517C8.6841 2.77516 8.76035 2.91766 8.77785 3.07265C8.81285 3.37138 8.62786 3.65387 8.40787 3.86136C7.7804 4.45383 6.8892 4.74131 6.48422 5.55877C6.38922 5.75001 6.31423 5.95625 6.16924 6.11249C6.02424 6.26873 5.78301 6.36373 5.59427 6.26373C5.49427 6.21123 5.42552 6.11249 5.36928 6.01375C5.0143 5.38128 5.04055 4.57507 5.35303 3.9201C5.69676 3.20264 6.45047 2.48268 7.23543 2.29019Z" fill="#FFFF8D"></path>
+                <path d="M6.80681 12.4927C6.69682 12.4427 6.74056 12.2777 6.86056 12.2865C7.26304 12.3177 7.948 12.3565 8.8542 12.3565C9.80915 12.3565 10.6491 12.2852 11.1391 12.2327C11.2603 12.2202 11.3066 12.3865 11.1953 12.4377C10.8178 12.6152 10.1266 12.8177 8.9417 12.8177C7.78551 12.8177 7.14804 12.6465 6.80681 12.4927Z" fill="#FFD600"></path>
+                <path d="M7.49277 13.7552C7.40902 13.7852 7.32278 13.8265 7.28028 13.9039C7.26528 13.9327 7.25653 13.9652 7.26278 13.9977C7.27278 14.0452 7.31653 14.0789 7.36028 14.1002C7.44777 14.1427 7.54652 14.1539 7.64276 14.1552C7.8415 14.1577 8.03899 14.1202 8.23523 14.0827C8.29398 14.0714 8.35397 14.0602 8.40647 14.0314C8.45897 14.0027 8.50397 13.9539 8.51272 13.8952C8.52522 13.8165 8.46897 13.7402 8.40022 13.7027C8.16274 13.5715 7.73276 13.669 7.49277 13.7552Z" fill="#94D1E0"></path>
+                <path d="M7.67929 14.5791C7.59555 14.6091 7.5093 14.6503 7.46681 14.7278C7.45181 14.7565 7.44306 14.789 7.44931 14.8215C7.45931 14.869 7.50305 14.9028 7.5468 14.924C7.6343 14.9665 7.73304 14.9778 7.82929 14.979C8.02803 14.9815 8.22551 14.944 8.42175 14.9065C8.4805 14.8953 8.5405 14.884 8.593 14.8553C8.64549 14.8265 8.69049 14.7778 8.69924 14.719C8.71174 14.6403 8.65549 14.5641 8.58675 14.5266C8.34926 14.3966 7.91803 14.4941 7.67929 14.5791Z" fill="#94D1E0"></path>
+                <path d="M7.25188 11.5261C7.36562 11.5373 7.48562 11.5273 7.58186 11.4661C7.67811 11.4048 7.73935 11.2798 7.7006 11.1724C7.6806 11.1161 7.63686 11.0711 7.59436 11.0286C7.50061 10.9361 7.40687 10.8436 7.31437 10.7511C7.21063 10.6474 7.10689 10.5449 6.99439 10.4511C6.82065 10.3061 6.58691 10.1699 6.35817 10.2762C6.16318 10.3661 6.11694 10.5436 6.20318 10.7299C6.38692 11.1211 6.8144 11.4811 7.25188 11.5261Z" fill="#FFFF8D"></path>
+              </svg>
+              <p>Workspace details apply to your team and all projects in this workspace.</p>
+            </div>
+          </section>
+
+          <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+            <h2 class="text-lg font-semibold text-slate-600 uppercase">OPENAI</h2>
+            <p class="mt-3 text-slate-600 leading-relaxed">
+              This optional API key is shared by every project in the workspace. The key is encrypted and never shown again after saving.
+            </p>
+            {% if openai_credential %}
+              <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p class="font-medium text-slate-900">Key: {{ openai_credential.masked_key }}</p>
+                  <p class="mt-1 text-sm text-slate-500">Validation: {{ openai_credential.get_validation_status_display }}</p>
+                </div>
+                {% if can_manage_openai_key %}
+                  <div class="flex flex-wrap gap-2">
+                    <form method="post" action="{% url 'w:validate_workspace_openai_key' workspace_slug=workspace.slug %}">
+                      {% csrf_token %}
+                      <button type="submit" class="font-medium text-slate-600 border border-slate-200 hover:bg-slate-100 rounded px-3 py-1.5">Validate</button>
+                    </form>
+                    <form method="post" action="{% url 'w:remove_workspace_openai_key' workspace_slug=workspace.slug %}">
+                      {% csrf_token %}
+                      <button type="submit" class="font-medium text-red-600 border border-red-200 hover:bg-red-50 rounded px-3 py-1.5">Remove</button>
+                    </form>
+                  </div>
+                {% endif %}
+              </div>
+            {% endif %}
+            {% if can_manage_openai_key %}
+              <form method="post" action="{% url 'w:save_workspace_openai_key' workspace_slug=workspace.slug %}" class="mt-5">
+                {% csrf_token %}
+                <label for="workspace-openai-key" class="block font-bold text-slate-950">
+                  {% if openai_credential %}Replace API key{% else %}OpenAI API key{% endif %}
+                </label>
+                <div class="mt-2 flex flex-col gap-2 sm:flex-row">
+                  <input id="workspace-openai-key" name="api_key" type="password" autocomplete="off" required class="min-w-0 flex-1 border border-slate-300 rounded p-3" placeholder="Enter an OpenAI API key" />
+                  <button type="submit" class="bg-sky-600 font-medium text-white hover:bg-sky-700 rounded px-5 py-3">Save key</button>
+                </div>
+              </form>
+            {% endif %}
+            {% if messages %}
+              {% for message in messages %}
+                {% if 'workspace-openai-key' in message.tags %}
+                  <div class="mt-4 {% if 'error' in message.tags %}bg-yellow-100 border-yellow-200 text-yellow-800{% else %}bg-cyan-100 border-cyan-200 text-sky-800{% endif %} border rounded-lg p-4">{{ message }}</div>
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+          </section>
+
+          <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+            <h2 class="text-lg font-semibold text-slate-600 uppercase">WORKSPACE ACTIONS</h2>
+            <p class="mt-4 text-slate-600 leading-relaxed">
+              Manage your access to this workspace. You'll be asked to confirm before {% if can_delete_workspace %}either action runs{% else %}leaving{% endif %}.
+            </p>
+            <div class="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2">
+              <button type="button" data-modal-trigger aria-controls="leave-workspace" class="font-medium text-red-600 hover:text-red-800 transition-colors">
+                Leave workspace
+              </button>
+              {% if can_delete_workspace %}
+                <button type="button" data-modal-trigger aria-controls="delete-workspace" class="font-medium text-red-600 hover:text-red-800 transition-colors">
+                  Delete workspace
+                </button>
+              {% endif %}
+            </div>
+          </section>
+        </div>
+
+        <div class="hidden xl:block w-1/5 min-w-24 shrink-0 pt-2">
+          <img src="{% static 'svg/ws-details.svg' %}" alt="" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if can_edit_workspace %}
+    <div id="change-workspace-name" data-modal-target class="hidden">
+      <div class="flex items-start justify-center fixed inset-0 z-50">
+        <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+        <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+          <form method="post" action="{% url 'w:update_workspace_name' workspace_slug=workspace.slug %}{% if project %}?project={{ project.id }}{% endif %}">
+            {% csrf_token %}
+            <div class="bg-white px-6 py-4">
+              <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                  <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                </svg>
+              </button>
+              <h3 class="text-base font-semibold leading-6">Workspace name</h3>
+              <div class="mt-6">
+                <label for="workspace-name" class="block font-bold text-slate-950">Workspace name</label>
+                <input id="workspace-name" type="text" name="name" value="{{ workspace.name }}" required maxlength="255" class="mt-2 appearance-none border border-slate-300 rounded w-full p-3 text-gray-700 leading-tight focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500" data-modal-input-focus />
+              </div>
+            </div>
+            <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+              <button type="submit" class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">Save</button>
+              <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-100 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-200 rounded px-3 py-3">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div id="change-workspace-slug" data-modal-target class="hidden">
+      <div class="flex items-start justify-center fixed inset-0 z-50">
+        <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+        <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+          <form id="workspace-slug-form" method="post" action="{% url 'w:update_workspace_slug' workspace_slug=workspace.slug %}{% if project %}?project={{ project.id }}{% endif %}" novalidate>
+            {% csrf_token %}
+            <div class="bg-white px-6 py-4">
+              <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                  <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                </svg>
+              </button>
+              <h3 class="text-base font-semibold leading-6">Workspace URL slug</h3>
+              <div class="mt-6">
+                <label for="workspace-slug" class="block font-bold text-slate-950">Workspace URL slug</label>
+                <input id="workspace-slug" type="text" name="slug" value="{{ workspace.slug }}" required maxlength="40" pattern="[-A-Za-z0-9_]+" class="mt-2 appearance-none border border-slate-300 rounded w-full p-3 text-gray-700 leading-tight focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500" data-modal-input-focus />
+              </div>
+              <div id="workspace-slug-error" class="mt-2 hidden text-sm text-red-600" role="alert"></div>
+              {% if messages %}
+                {% for message in messages %}
+                  {% if 'workspace-slug' in message.tags %}
+                    <div data-workspace-slug-server-error class="mt-2 text-sm text-red-600" role="alert">
+                      {{ message }}
+                    </div>
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+            </div>
+            <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+              <button type="submit" class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">Save</button>
+              <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-100 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-200 rounded px-3 py-3">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    {% if messages %}
+      {% for message in messages %}
+        {% if 'workspace-slug' in message.tags %}
+          <script>
+            document.addEventListener('DOMContentLoaded', () => {
+              if (typeof modal !== 'undefined') {
+                modal.openModal('change-workspace-slug')
+              }
+            })
+          </script>
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+
+    <div id="change-workspace-website" data-modal-target class="hidden">
+      <div class="flex items-start justify-center fixed inset-0 z-50">
+        <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+        <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+          <form id="workspace-website-form" method="post" action="{% url 'w:update_workspace_website' workspace_slug=workspace.slug %}{% if project %}?project={{ project.id }}{% endif %}">
+            {% csrf_token %}
+            <div class="bg-white px-6 py-4">
+              <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                  <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                </svg>
+              </button>
+              <h3 class="text-base font-semibold leading-6">Workspace website</h3>
+              <div class="mt-6">
+                <label for="workspace-website" class="block font-bold text-slate-950">Website</label>
+                <p class="mt-1 text-sm font-normal leading-relaxed text-gray-950">Used to help your team recognize this workspace.</p>
+                <input id="workspace-website" type="text" name="website_url" value="{{ workspace.website_url }}" placeholder="E.g. acme.com" maxlength="255" inputmode="url" class="mt-2 appearance-none border border-slate-300 rounded w-full p-3 text-gray-700 leading-tight focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500" data-modal-input-focus />
+                <div id="workspace-website-error" class="mt-2 hidden text-sm text-red-600"></div>
+              </div>
+            </div>
+            <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+              <button type="submit" class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">Save</button>
+              <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-100 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-200 rounded px-3 py-3">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
+  <div id="leave-workspace" data-modal-target class="hidden">
+    <div class="flex items-start justify-center fixed inset-0 z-50">
+      <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+      <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+        {% if can_leave_workspace %}
+          <form method="post" action="{% url 'w:leave_workspace' workspace_slug=workspace.slug %}{% if project %}?project={{ project.id }}{% endif %}">
+            {% csrf_token %}
+            <div class="bg-white px-6 py-4">
+              <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                  <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                </svg>
+              </button>
+              <h3 class="text-base font-semibold leading-6">Leave workspace</h3>
+              <p class="mt-6 text-slate-600 leading-relaxed">
+                If you leave this workspace, you'll lose access to all projects in it. A workspace owner will need to add you again to restore access.
+              </p>
+              {% if messages %}
+                {% for message in messages %}
+                  {% if 'workspace-leave' in message.tags %}
+                    <div class="mt-4 {% if 'error' in message.tags %}bg-yellow-100 border border-yellow-200 text-yellow-800{% else %}bg-cyan-100 border border-cyan-200 text-sky-800{% endif %} rounded-lg p-4" role="alert">
+                      {{ message }}
+                    </div>
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+            </div>
+            <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+              <button type="submit" class="flex items-center gap-2 bg-red-600 font-medium text-white duration-150 hover:bg-red-700 rounded px-6 py-3">Leave workspace</button>
+              <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Cancel</button>
+            </div>
+          </form>
+        {% else %}
+          <div class="bg-white px-6 py-4">
+            <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+              <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+              </svg>
+            </button>
+            <h3 class="text-base font-semibold leading-6">Leave workspace</h3>
+            {% if messages %}
+              {% for message in messages %}
+                {% if 'workspace-leave' in message.tags %}
+                  <div class="mt-6 {% if 'error' in message.tags %}bg-yellow-100 border border-yellow-200 text-yellow-800{% else %}bg-cyan-100 border border-cyan-200 text-sky-800{% endif %} rounded-lg p-4" role="alert">
+                    {{ message }}
+                  </div>
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+            <div class="mt-6 rounded-lg border border-yellow-200 bg-yellow-100 p-4 text-yellow-800" role="alert">
+              <p class="font-semibold">Leave workspace unavailable</p>
+              <p class="mt-1">You are the only owner of this workspace. Another owner must exist before you can leave.</p>
+            </div>
+          </div>
+          <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+            <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Close</button>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {% if can_delete_workspace %}
+    <div id="delete-workspace" data-modal-target class="hidden">
+      <div class="flex items-start justify-center fixed inset-0 z-50">
+        <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+        <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+          <div class="bg-white px-6 py-4">
+            <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+              <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+              </svg>
+            </button>
+            <h3 class="text-base font-semibold leading-6">Delete workspace</h3>
+            {% if messages %}
+              {% for message in messages %}
+                {% if 'workspace-delete' in message.tags %}
+                  <div class="mt-6 {% if 'error' in message.tags %}bg-yellow-100 border border-yellow-200 text-yellow-800{% else %}bg-cyan-100 border border-cyan-200 text-sky-800{% endif %} rounded-lg p-4" role="alert">
+                    {{ message }}
+                  </div>
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+            {% if has_active_workspace_projects %}
+              <div class="mt-6 rounded-lg border border-yellow-200 bg-yellow-100 p-4 text-yellow-800" role="alert">
+                <p class="font-semibold">Workspace can’t be deleted</p>
+                <p class="mt-1">This workspace still contains projects. Delete all projects in this workspace first, then you’ll be able to delete the workspace.</p>
+              </div>
+            {% else %}
+              <div class="mt-6">
+                <p class="font-bold mb-2">This workspace will be deleted.</p>
+                <p class="mb-2">To confirm, type "{{ workspace.name }}" in the box below:</p>
+                <input type="text" id="delete-workspace-confirmation-input" placeholder="Type workspace name to delete" class="appearance-none border border-slate-300 rounded w-full py-3 px-3 text-gray-700 leading-tight" />
+                <div id="delete-workspace-error-message" class="mt-2 text-red-600 text-sm hidden">Workspace name does not match. Please type the exact workspace name to confirm deletion.</div>
+              </div>
+            {% endif %}
+          </div>
+
+          <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+            {% if has_active_workspace_projects %}
+              <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Close</button>
+            {% else %}
+              <form method="post" action="{% url 'w:delete_workspace' workspace_slug=workspace.slug %}{% if project %}?project={{ project.id }}{% endif %}" id="delete-workspace-form" class="hidden">
+                {% csrf_token %}
+                <input type="hidden" name="workspace_name" id="delete-workspace-confirmation-value" value="" />
+              </form>
+              <button type="button" id="delete-workspace-btn" disabled class="flex items-center gap-2 bg-red-600 font-medium text-white duration-150 hover:bg-red-700 rounded px-6 py-3 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-red-600">Delete workspace</button>
+              <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Cancel</button>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
+  <script>
+    ;(() => {
+      const slugForm = document.getElementById('workspace-slug-form')
+      const slugInput = document.getElementById('workspace-slug')
+      const slugError = document.getElementById('workspace-slug-error')
+      const slugSubmitButton = slugForm ? slugForm.querySelector('button[type="submit"]') : null
+      const slugPattern = /^[-A-Za-z0-9_]+$/
+      const domainLabelPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i
+      const form = document.getElementById('workspace-website-form')
+      const input = document.getElementById('workspace-website')
+      const error = document.getElementById('workspace-website-error')
+
+      function clearSlugError() {
+        if (slugError) {
+          slugError.textContent = ''
+          slugError.classList.add('hidden')
+        }
+        document.querySelectorAll('[data-workspace-slug-server-error]').forEach((element) => {
+          element.classList.add('hidden')
+        })
+      }
+
+      function showSlugError(message) {
+        if (!slugError) return
+        slugError.textContent = message
+        slugError.classList.remove('hidden')
+      }
+
+      function clearError() {
+        if (!error) return
+        error.textContent = ''
+        error.classList.add('hidden')
+      }
+
+      function showError(message) {
+        if (!error) return
+        error.textContent = message
+        error.classList.remove('hidden')
+      }
+
+      function isValidDomainOrUrl(value) {
+        const rawValue = String(value || '').trim()
+        if (!rawValue) return true
+
+        try {
+          const url = new URL(rawValue.includes('://') ? rawValue : `https://${rawValue}`)
+          const hostname = url.hostname.replace(/\.$/, '').toLowerCase()
+          const labels = hostname.split('.').filter(Boolean)
+          const tld = labels[labels.length - 1] || ''
+
+          return (
+            labels.length >= 2 &&
+            hostname.length <= 253 &&
+            !/^\d+$/.test(hostname.replace(/\./g, '')) &&
+            tld.length >= 2 &&
+            /[a-z]/i.test(tld) &&
+            labels.every((label) => domainLabelPattern.test(label))
+          )
+        } catch (validationError) {
+          return false
+        }
+      }
+
+      document.querySelectorAll('[aria-controls="change-workspace-slug"]').forEach((trigger) => {
+        trigger.addEventListener('click', clearSlugError)
+      })
+
+      if (slugInput) {
+        slugInput.addEventListener('input', clearSlugError)
+      }
+
+      if (slugForm && slugInput) {
+        slugForm.addEventListener('submit', async (event) => {
+          event.preventDefault()
+          clearSlugError()
+          const slugValue = slugInput.value.trim()
+          if (!slugValue) {
+            showSlugError('Workspace URL slug is required.')
+            slugInput.focus()
+            return
+          }
+          if (slugValue.length > 40) {
+            showSlugError('Workspace URL slug is too long.')
+            slugInput.focus()
+            return
+          }
+          if (!slugPattern.test(slugValue)) {
+            showSlugError('Enter a valid URL slug.')
+            slugInput.focus()
+            return
+          }
+          if (slugSubmitButton) slugSubmitButton.disabled = true
+
+          try {
+            const response = await fetch(slugForm.action, {
+              method: 'POST',
+              body: new FormData(slugForm),
+              credentials: 'same-origin',
+              headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+              },
+            })
+            const contentType = response.headers.get('content-type') || ''
+            const data = contentType.includes('application/json') ? await response.json() : null
+
+            if (response.ok && data && data.ok && data.redirect_url) {
+              window.location.assign(data.redirect_url)
+              return
+            }
+
+            showSlugError((data && data.error) || 'Unable to update workspace URL slug.')
+            slugInput.focus()
+          } catch (requestError) {
+            showSlugError('Unable to update workspace URL slug.')
+            slugInput.focus()
+          } finally {
+            if (slugSubmitButton) slugSubmitButton.disabled = false
+          }
+        })
+      }
+
+      document.querySelectorAll('[aria-controls="change-workspace-website"]').forEach((trigger) => {
+        trigger.addEventListener('click', clearError)
+      })
+
+      if (input) {
+        input.addEventListener('input', clearError)
+      }
+
+      if (form && input) {
+        form.addEventListener('submit', (event) => {
+          clearError()
+          if (!isValidDomainOrUrl(input.value)) {
+            event.preventDefault()
+            showError('Enter a valid website URL.')
+            input.focus()
+          }
+        })
+      }
+
+      const deleteWorkspaceInput = document.getElementById('delete-workspace-confirmation-input')
+      const deleteWorkspaceButton = document.getElementById('delete-workspace-btn')
+      const deleteWorkspaceError = document.getElementById('delete-workspace-error-message')
+      const deleteWorkspaceForm = document.getElementById('delete-workspace-form')
+      const deleteWorkspaceConfirmationValue = document.getElementById('delete-workspace-confirmation-value')
+
+      if (deleteWorkspaceInput && deleteWorkspaceButton && deleteWorkspaceForm) {
+        deleteWorkspaceInput.addEventListener('input', () => {
+          const workspaceName = '{{ workspace.name|escapejs }}'
+          const inputValue = deleteWorkspaceInput.value.trim()
+
+          if (inputValue === workspaceName) {
+            deleteWorkspaceButton.disabled = false
+            deleteWorkspaceError.classList.add('hidden')
+            return
+          }
+
+          deleteWorkspaceButton.disabled = true
+          if (inputValue) {
+            deleteWorkspaceError.classList.remove('hidden')
+          } else {
+            deleteWorkspaceError.classList.add('hidden')
+          }
+        })
+
+        deleteWorkspaceButton.addEventListener('click', () => {
+          const workspaceName = '{{ workspace.name|escapejs }}'
+          if (deleteWorkspaceInput.value.trim() === workspaceName) {
+            if (deleteWorkspaceConfirmationValue) {
+              deleteWorkspaceConfirmationValue.value = deleteWorkspaceInput.value.trim()
+            }
+            deleteWorkspaceForm.submit()
+          }
+        })
+      }
+
+      const workspaceActionModalToOpen = (() => {
+        {% if messages %}
+          {% for message in messages %}
+            {% if 'workspace-leave' in message.tags %}
+              return 'leave-workspace'
+            {% elif 'workspace-delete' in message.tags %}
+              return 'delete-workspace'
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        return ''
+      })()
+
+      if (workspaceActionModalToOpen) {
+        document.addEventListener('DOMContentLoaded', () => {
+          if (typeof modal !== 'undefined') {
+            modal.openModal(workspaceActionModalToOpen)
+          }
+        })
+      }
+    })()
+  </script>
+{% endblock %}

@@ -1,0 +1,34 @@
+<div id="change-allowed-domain" data-modal-target class="hidden">
+  <div class="flex items-start justify-center fixed inset-0 z-50">
+    <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+
+    <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+      <form id="change-allowed-domain-form" method="post" action="{% url 'w:update_project_product_url' workspace_slug=project.workspace.slug project_id=project.id %}">
+        {% csrf_token %}
+        <div class="bg-white px-6 py-4">
+          <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+            <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+              <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+            </svg>
+          </button>
+          <h3 class="text-base font-semibold leading-6">Change allowed domain</h3>
+          <div class="mt-6">
+            <label for="allowed-domain-url" class="block font-medium text-gray-950">
+              Product URL
+            </label>
+            <p class="mt-1 text-sm font-normal leading-relaxed text-gray-950">
+              Where will you install Hymetry? We will detect the domain automatically.
+            </p>
+            <input id="allowed-domain-url" type="text" name="product_url" value="{{ project.product_url }}" placeholder="E.g. app.acme.com" inputmode="url" class="mt-2 appearance-none border border-slate-300 rounded w-full p-3 text-gray-950 leading-tight focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500" data-modal-input-focus required />
+            <div id="allowed-domain-url-error" class="mt-2 hidden text-sm text-red-600"></div>
+          </div>
+        </div>
+
+        <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+          <button type="submit" class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">Save changes</button>
+          <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-100 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-200 rounded px-3 py-3">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

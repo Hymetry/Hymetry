@@ -32,7 +32,7 @@ class Command(BaseCommand):
             task, created = PeriodicTask.objects.get_or_create(
                 name='Calculate normalization factors daily',
                 defaults={
-                    'task': 'tracker.tasks.calculate_project_normalization_factors',
+                    'task': 'apps.tracker.tasks.calculate_project_normalization_factors',
                     'interval': schedule,
                     'enabled': True,
                 }
@@ -72,4 +72,4 @@ class Command(BaseCommand):
             else:
                 self.stdout.write(
                     self.style.ERROR(f'Error: {result}')
-                ) 
+                )

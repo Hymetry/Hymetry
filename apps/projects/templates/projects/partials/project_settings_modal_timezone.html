@@ -1,0 +1,41 @@
+<div id="change-project-timezone" data-modal-target class="hidden">
+  <div class="flex items-start justify-center fixed inset-0 z-50">
+    <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+
+    <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+      <div class="bg-white px-6 py-4">
+        <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+          <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+            <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+          </svg>
+        </button>
+        <div class="flex items-start">
+          <div class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
+            <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+              <path d="m612-292 56-56-148-148v-184h-80v216l172 172ZM480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-400Zm0 320q133 0 226.5-93.5T800-480q0-133-93.5-226.5T480-800q-133 0-226.5 93.5T160-480q0 133 93.5 226.5T480-160Z" />
+            </svg>
+          </div>
+          <div class="w-full mt-2 ml-4">
+            <h3 class="text-base font-semibold leading-6">Change project timezone</h3>
+            <form id="change-project-timezone-form" action="{% url 'w:update_project_timezone' workspace_slug=project.workspace.slug project_id=project.id %}" method="POST">
+              {% csrf_token %}
+              <div class="mt-6">
+                <p class="mb-2">Select timezone for your project</p>
+                <select name="timezone" id="timezone-select" class="border border-slate-300 rounded w-full py-3 px-3 text-gray-700 leading-tight" data-modal-input-focus autofocus required>
+                  {% for tz in all_timezones %}
+                    <option value="{{ tz }}" {% if project.timezone == tz %}selected{% endif %}>{{ tz }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+        <button type="submit" form="change-project-timezone-form" class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">Save changes</button>
+        <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>

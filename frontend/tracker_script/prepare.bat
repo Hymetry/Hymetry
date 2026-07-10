@@ -1,1 +1,1 @@
-npm run minify
+npm run build

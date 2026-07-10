@@ -1,17 +1,27 @@
 import datetime
 import json
+import logging
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import urlsplit, urlunsplit
 
 from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.http import JsonResponse
 from django.utils import timezone
 
+from apps.projects.domain_utils import request_matches_allowed_domains
+from apps.projects.utils import normalize_capture_modes
 from apps.projects.models import Project
-from apps.tracker.models import Session, Page, Event, Visitor
+from apps.projects.services import record_project_production_event
+from apps.tracker.models import Event, Session, Visitor
+from apps.tracker.page_naming import (
+    ensure_project_first_event_at,
+    normalize_page_url,
+)
 from apps.tracker.rrweb_text_filter import mask_rrweb_event
-from apps.tracker.tasks import generate_clean_title
+from apps.tracker.visitor_ids import normalize_project_visitor_uuid
+
+logger = logging.getLogger(__name__)
 
 
 class SessionTracker:
@@ -22,7 +32,6 @@ class SessionTracker:
         self.request = request
         self.data = None
         self.session = None
-        self.page = None
         self.origin = None
         self.page_url = None
         self.page_title = None
@@ -33,25 +42,41 @@ class SessionTracker:
         self.visitor_guid = None
 
     def clean_url(self, url):
-        """Remove all query parameters from URL to treat pages with different query params as the same page."""
-        if not url:
-            return url
-        parsed = urlparse(url)
-        # Remove all query parameters and reconstruct URL
-        clean_url = parsed._replace(query='').geturl()
-        return clean_url
+        """Strip query strings and fragments before any recording URL is stored."""
+        if url is None:
+            return ''
+        value = str(url).strip()
+        try:
+            parsed = urlsplit(value)
+            return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, '', ''))
+        except ValueError:
+            return value.split('#', 1)[0].split('?', 1)[0]
+
+    def masking_page_url(self):
+        return normalize_page_url(self.page_url)
+
+    def project_uses_recording(self):
+        capture_modes = {
+            mode for mode in normalize_capture_modes(self.project.tracking_capture).split(',') if mode
+        }
+        return 'recording' in capture_modes
 
     def parse_request(self):
         """Parse the incoming request data."""
         try:
             self.data = json.loads(self.request.body)
-            self.project = Project.objects.filter(api_key=self.data.get('api_key')).first()
+            self.project = Project.active.select_related('workspace').filter(
+                api_key=self.data.get('api_key'),
+                workspace__archived_at__isnull=True,
+            ).first()
             if self.project is None:
                 raise PermissionDenied("You must provide a valid API_KEY")
-
             self.session_id = self.data.get('session_id')
             self.tab_id = self.data.get('tab_id')  # Extract tab_id from request
-            self.visitor_guid = self.data.get('visitor_id')  # Extract visitor_id from request
+            self.visitor_guid = normalize_project_visitor_uuid(
+                self.project.id,
+                self.data.get('visitor_id'),
+            )
 
             self.event_data = self.data.get('event_data', {})
             self.page_url = self.clean_url(self.data.get('page_url'))
@@ -61,6 +86,9 @@ class SessionTracker:
             self.origin = self.request.META.get('HTTP_ORIGIN', '')
             if not self.origin and 'HTTP_REFERER' in self.request.META:
                 self.origin = self.clean_url(self.request.META['HTTP_REFERER'])
+
+            if not request_matches_allowed_domains(self.request, self.project, self.page_url):
+                raise PermissionDenied("Origin is not allowed for this project's allowed domains.")
 
             return True
         except json.JSONDecodeError:
@@ -74,12 +102,9 @@ class SessionTracker:
         # Try to find existing session by visitor_id
         if self.visitor_guid:
             try:
-                # Convert string UUID to UUID object
-                visitor_uuid = uuid.UUID(str(self.visitor_guid))
-
                 # Find the most recent active session for this visitor
                 self.session = Session.objects.filter(
-                    visitor__visitor_guid=visitor_uuid,
+                    visitor__visitor_guid=self.visitor_guid,
                     visitor__project=self.project,
                     ended_at__isnull=True
                 ).order_by('-last_activity').first()
@@ -104,31 +129,16 @@ class SessionTracker:
                         else:
                             return True
 
-            except (ValueError, Exception) as e:
-                print(f"Error finding session for visitor {self.visitor_guid}: {str(e)}")
+            except (ValueError, Exception):
+                logger.exception("Error finding session for visitor %s", self.visitor_guid)
                 self.session = None
 
         # Create new session if none found
         if not self.session:
             # Create or get visitor for this project
             if self.visitor_guid:
-                try:
-                    # Try to find existing visitor by visitor_guid
-                    visitor_uuid = uuid.UUID(str(self.visitor_guid))
-                    visitor = Visitor.objects.get(visitor_guid=visitor_uuid, project=self.project)
-                    visitor.update_activity()
-                except (Visitor.DoesNotExist, ValueError):
-                    # Create new visitor with provided visitor_guid
-                    visitor_uuid = uuid.UUID(str(self.visitor_guid))
-                    visitor = Visitor.objects.create(
-                        visitor_guid=visitor_uuid,
-                        project=self.project,
-                        first_visit=timezone.now(),
-                        last_activity=timezone.now()
-                    )
-            else:
-                # Create new visitor without specific visitor_id
                 visitor, created = Visitor.objects.get_or_create(
+                    visitor_guid=self.visitor_guid,
                     project=self.project,
                     defaults={
                         'first_visit': timezone.now(),
@@ -137,6 +147,14 @@ class SessionTracker:
                 )
                 if not created:
                     visitor.update_activity()
+            else:
+                # Without a browser visitor id we cannot reliably stitch batches together,
+                # so fall back to an ephemeral visitor record for this request.
+                visitor = Visitor.objects.create(
+                    project=self.project,
+                    first_visit=timezone.now(),
+                    last_activity=timezone.now()
+                )
 
             self.session = Session.objects.create(
                 session_id=uuid.uuid4(),
@@ -256,22 +274,6 @@ class SessionTracker:
             return None
         return self._clamp_future_timestamp(event_time)
 
-    def get_or_create_page(self):
-        """Get or create a page for the current session."""
-        try:
-            # Page is now unique by URL, not by session
-            self.page = Page.objects.get(url=self.page_url)
-            # if self.page_title and self.page.title != self.page_title:
-            #    self.page.title = self.page_title
-            #    self.page.save()
-        except Page.DoesNotExist:
-            self.page = Page.objects.create(
-                url=self.page_url,
-                original_title=self.page_title or self.page_url
-            )
-            # AI page title by Celery task
-            generate_clean_title.delay(self.project.id, self.page.id)
-
     def process_events(self):
         """Process events (single or batch) using bulk insertion to avoid N+1 queries."""
         events = self.event_data.get('events', [])
@@ -284,13 +286,13 @@ class SessionTracker:
                 event,
                 session_id=str(self.session.pk) if self.session else None,
                 visitor_id=str(self.visitor_guid) if self.visitor_guid else None,
-                page_url=self.page_url
+                page_url=self.masking_page_url()
             )
 
             # Create Event object but don't save to database yet
             event_obj = Event(
-                page=self.page,
                 session=self.session,
+                url=self.page_url,
                 tab_id=self.tab_id,
                 event_type=event.get('type'),
                 timestamp=datetime.datetime.fromtimestamp(event['timestamp'] / 1000, tz=datetime.timezone.utc),
@@ -301,6 +303,10 @@ class SessionTracker:
         # Bulk insert all events in a single database operation
         if event_objects:
             Event.objects.bulk_create(event_objects, batch_size=100)
+            first_event_time = min((event.timestamp for event in event_objects), default=None)
+            last_event_time = max((event.timestamp for event in event_objects), default=first_event_time)
+            ensure_project_first_event_at(self.project, first_event_time)
+            record_project_production_event(self.project, first_event_time, last_event_time)
 
     def get_response(self):
         """Get the response for the request."""

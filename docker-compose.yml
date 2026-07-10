@@ -96,8 +96,7 @@ services:
     ports:
       - "80:80"
     volumes:
-      - ./docker/Caddyfile.dev:/etc/caddy/Caddyfile:ro
-      - ./static/js:/srv/tracker-js:ro
+      - ./docker/Caddyfile.prod:/etc/caddy/Caddyfile:ro
       - staticfiles:/srv/staticfiles:ro
       - media:/srv/media:ro
       - caddy_data:/data

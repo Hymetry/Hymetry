@@ -1,0 +1,11 @@
+{% if project %}
+  {% include 'projects/partials/project_top_nav_inner.html' with current_project=project resolved_workspace=project.workspace %}
+{% elif workspace %}
+  {% include 'projects/partials/project_top_nav_inner.html' with current_workspace=workspace resolved_workspace=workspace %}
+{% elif selected_project %}
+  {% include 'projects/partials/project_top_nav_inner.html' with current_project=selected_project resolved_workspace=selected_project.workspace %}
+{% elif selected_workspace %}
+  {% include 'projects/partials/project_top_nav_inner.html' with current_workspace=selected_workspace resolved_workspace=selected_workspace %}
+{% else %}
+  {% include 'projects/partials/project_top_nav_inner.html' %}
+{% endif %}

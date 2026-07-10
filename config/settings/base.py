@@ -56,11 +56,10 @@ INSTALLED_APPS = [
     'django_celery_beat',
     'apps.core',
     'apps.users',
-    'allauth',
-    'allauth.account',
     'corsheaders',
     'axes',
     'apps.tracker',
+    'apps.pages',
     'apps.projects'
 ]
 
@@ -75,7 +74,6 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    "allauth.account.middleware.AccountMiddleware",
 ]
 
 # CORS settings
@@ -117,8 +115,8 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
-                'django.template.context_processors.request',
                 'config.context_processors.project_context',
+                'config.context_processors.password_policy',
             ],
         },
     },
@@ -132,6 +130,12 @@ DEV = os.getenv('DEV')
 HYMETRY_DOMAIN = (HYMETRY_DOMAIN or "http://localhost").rstrip("/")
 # Tracking script / edge URL
 EDGE_URL = os.getenv("EDGE_URL", f"{HYMETRY_DOMAIN}/static/js")
+HOSTED_DEMO_URL = os.getenv('HOSTED_DEMO_URL', 'https://app.hymetry.com/projects/demo/').strip()
+OPENAI_KEY_ENCRYPTION_KEYS = os.getenv('OPENAI_KEY_ENCRYPTION_KEYS', '').strip()
+ASSET_PROXY_MAX_BYTES = int(os.getenv('ASSET_PROXY_MAX_BYTES', str(5 * 1024 * 1024)))
+ASSET_PROXY_TIMEOUT_SECONDS = float(os.getenv('ASSET_PROXY_TIMEOUT_SECONDS', '10'))
+ASSET_PROXY_MAX_REDIRECTS = int(os.getenv('ASSET_PROXY_MAX_REDIRECTS', '3'))
+ASSET_PROXY_ALLOW_PRIVATE_HOSTS = os.getenv('ASSET_PROXY_ALLOW_PRIVATE_HOSTS', 'False').lower() == 'true'
 
 import dj_database_url
 DATABASES = {
@@ -141,9 +145,17 @@ DATABASES = {
     )
 }
 
+PASSWORD_MIN_LENGTH = 12
+PASSWORD_MAX_LENGTH = 128
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'OPTIONS': {'min_length': PASSWORD_MIN_LENGTH},
+    },
+    {
+        'NAME': 'apps.users.password_validation.MaximumLengthValidator',
+        'OPTIONS': {'max_length': PASSWORD_MAX_LENGTH},
     }
 ]
 
@@ -168,33 +180,18 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTHENTICATION_BACKENDS = [
     'axes.backends.AxesBackend',
     'django.contrib.auth.backends.ModelBackend',
-    'allauth.account.auth_backends.AuthenticationBackend',
 ]
 
 SESSION_EXPIRATION_SECONDS = int(os.getenv('SESSION_EXPIRATION_SECONDS', '1800').split('#')[0].strip())
 SESSION_MAX_CLOCK_SKEW_SECONDS = int(os.getenv('SESSION_MAX_CLOCK_SKEW_SECONDS', '300').split('#')[0].strip())
-
-ACCOUNT_SIGNUP_FIELDS = ['email*', 'password1*']
-ACCOUNT_EMAIL_SUBJECT_PREFIX = ""
-ACCOUNT_LOGIN_METHODS = {'email'}
-ACCOUNT_ADAPTER = "config.adapters.MyAccountAdapter"
-ACCOUNT_EMAIL_VERIFICATION = 'none'
+ANALYTICS_SESSION_EXPIRATION_SECONDS = int(
+    os.getenv('ANALYTICS_SESSION_EXPIRATION_SECONDS', '1800').split('#')[0].strip()
+)
 
 LOGIN_URL = '/sign-in/'
 LOGIN_REDIRECT_URL = '/projects/'
 
-ACCOUNT_LOGOUT_REDIRECT_URL = '/sign-in/'
-ACCOUNT_CONFIRM_EMAIL_ON_GET = True
-ACCOUNT_LOGIN_ON_EMAIL_CONFIRMATION = True
-
-# Additional allauth settings for better email confirmation flow
-ACCOUNT_UNIQUE_EMAIL = True
-
-# Logout settings - no confirmation dialog
-ACCOUNT_LOGOUT_ON_GET = True
-ACCOUNT_FORMS = {
-    'reset_password_from_key': 'projects.forms.SinglePasswordResetForm',
-}
+EMAIL_BACKEND = 'django.core.mail.backends.dummy.EmailBackend'
 
 # AXES - attempts locker (python manage.py axes_reset - to RESET)
 AXES_FAILURE_LIMIT = 5  # кількість дозволених невдалих спроб
@@ -208,6 +205,7 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_SEND_SENT_EVENT = True
+PAGES_QUEUE_REBUILDS_ON_REQUEST = os.getenv('PAGES_QUEUE_REBUILDS_ON_REQUEST', 'True').lower() == 'true'
 
 ROWS_PER_PAGE = int(os.environ.get('ROWS_PER_PAGE', 100))
 
@@ -217,9 +215,17 @@ HANDLER404 = 'config.views.page_not_found'
 HANDLER500 = 'config.views.server_error'
 
 
-def OPENAI_API_KEY_PROVIDER(project_id):
-    from apps.projects.models import ChatGptKey
-    key_obj = ChatGptKey.objects.filter(project__id=project_id).first()
-    if not key_obj:
-        return ""
-    return "" if not key_obj.key else key_obj.key
+PAGE_NAMING_PROMPT_URL_LIMIT = 150
+PAGE_NAMING_HYBRID_TOP_LIMIT = 100
+PAGE_NAMING_HYBRID_RANDOM_LIMIT = 200
+PAGE_NAMING_TITLE_BACKFILL_URL_LIMIT = 100
+PAGE_NAMING_NEW_URLS_SHORT_WINDOW_SECONDS = 60 * 60
+PAGE_NAMING_NEW_URLS_LONG_WINDOW_SECONDS = 24 * 60 * 60
+PAGE_NAMING_COMPARISON_WINDOW_SECONDS = 4 * 24 * 60 * 60
+PAGE_NAMING_UNSTABLE_REWRITE_WINDOW_SECONDS = 4 * 24 * 60 * 60
+PAGE_NAMING_STABLE_INPUT_WINDOW_SECONDS = 7 * 24 * 60 * 60
+PAGE_NAMING_STABLE_AFTER_SOFT_SECONDS = 2 * 24 * 60 * 60
+PAGE_NAMING_STABLE_AFTER_HARD_SECONDS = 4 * 24 * 60 * 60
+PAGE_NAMING_STABLE_MIN_UNIQUE_URLS = 10
+PAGE_NAMING_STABLE_NEW_URLS_24H_THRESHOLD = 5.0
+PAGE_NAMING_UNSTABLE_NEW_URLS_24H_THRESHOLD = 30.0

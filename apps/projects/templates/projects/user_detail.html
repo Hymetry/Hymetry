@@ -1,0 +1,278 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}{% if user_detail_payload.selectedUser %}{{ user_detail_payload.selectedUser.name }} - User details{% else %}User details{% endif %} - {% if is_demo_view %}{{ demo_project_display_name }}{% else %}{{ project.name }}{% endif %}{% endblock %}
+
+{% block extra_js %}
+  <link rel="stylesheet" href="{% static 'css/users/overview.css' %}" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/users/detail.css' %}" type="text/css" />
+{% endblock %}
+
+{% block nav %}
+  {% if is_demo_view %}
+    {% include 'projects/partials/demo_project_top_nav.html' with active_demo_section='users' %}
+  {% else %}
+    {% include 'projects/partials/project_top_nav.html' with active_project_section='users' %}
+  {% endif %}
+{% endblock %}
+
+{% block body_classes %}
+  class="h-full bg-slate-50 text-sm"
+  data-users-view="detail"
+  data-project-id="{{ project.id }}"
+  data-user-id="{{ user_id }}"
+  data-users-overview-url="{{ users_overview_url }}"
+  data-user-detail-base-url="{{ users_detail_base_url }}"
+  data-user-detail-table-url="{{ user_detail_table_url }}"
+{% endblock %}
+
+{% block content %}
+  <main class="page-shell w-full pb-12 pt-20">
+    {% if user_detail_status == 'ready' and user_detail_payload %}
+      {% if analytics_is_empty %}
+      <header class="mb-6">
+        <div class="user-detail-header-row flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div class="min-w-0">
+            <h1 class="break-words text-3xl font-bold text-slate-900">{{ user_detail_payload.selectedUser.name|default:user_id }}</h1>
+            <p class="mt-2 text-slate-600">{{ user_detail_payload.selectedUser.companyName }}</p>
+          </div>
+
+          {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='user-detail-period-selector' analytics_period_selector_class='user-detail-segmented shrink-0' analytics_period_selector_label='Date range' analytics_range_options=users_range_options analytics_range_key=users_range_key %}
+        </div>
+      </header>
+
+      {% include 'partials/analytics_empty_state.html' %}
+      {% else %}
+      <section id="user-detail-loading" class="space-y-6" aria-label="Loading user details">
+        <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div class="h-8 w-72 animate-pulse rounded bg-slate-100"></div>
+          <div class="mt-4 h-4 w-96 max-w-full animate-pulse rounded bg-slate-100"></div>
+        </div>
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div class="h-44 animate-pulse rounded-xl bg-white shadow-sm"></div>
+          <div class="h-44 animate-pulse rounded-xl bg-white shadow-sm"></div>
+          <div class="h-44 animate-pulse rounded-xl bg-white shadow-sm"></div>
+          <div class="h-44 animate-pulse rounded-xl bg-white shadow-sm"></div>
+        </div>
+      </section>
+
+      <section id="user-detail-error" class="hidden rounded-xl border border-slate-200 bg-white px-8 py-10 text-center shadow-sm">
+        <h1 class="text-2xl font-semibold text-slate-900">User details are unavailable</h1>
+        <p class="mx-auto mt-2 max-w-xl text-slate-500">Try refreshing the page or rebuilding the user detail cache for this period.</p>
+      </section>
+
+      <div id="user-detail-content" class="hidden">
+        <header class="mb-6">
+          <div>
+            <div class="user-detail-header-row flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div class="min-w-0">
+                <h1 class="flex min-w-0 flex-wrap items-baseline gap-x-0 text-3xl font-bold text-slate-900">
+                  <span id="user-detail-user-search-root" class="user-detail-user-selector user-detail-title-selector">
+                    <button
+                      id="user-detail-user-selector-button"
+                      type="button"
+                      class="user-detail-user-selector__button"
+                      aria-haspopup="listbox"
+                      aria-expanded="false"
+                      aria-controls="user-detail-user-results">
+                      <span id="user-detail-title-user-name" class="min-w-0 truncate"></span>
+                      <span class="user-detail-user-selector__chevron" aria-hidden="true">
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 -960 960 960"
+                          focusable="false">
+                          <path d="M480-354.23 645.77-520 603-561.77l-123 123-123-123L314.23-520 480-354.23Zm.07 254.23q-78.84 0-148.21-29.92t-120.68-81.21q-51.31-51.29-81.25-120.63Q100-401.1 100-479.93q0-78.84 29.92-148.21t81.21-120.68q51.29-51.31 120.63-81.25Q401.1-860 479.93-860q78.84 0 148.21 29.92t120.68 81.21q51.31 51.29 81.25 120.63Q860-558.9 860-480.07q0 78.84-29.92 148.21t-81.21 120.68q-51.29 51.31-120.63 81.25Q558.9-100 480.07-100Z" />
+                        </svg>
+                      </span>
+                    </button>
+                    <span id="user-detail-user-results" class="company-search__dropdown" hidden>
+                      <label class="user-detail-user-selector__search">
+                        <span class="sr-only">Go to user</span>
+                        <input
+                          id="user-detail-user-search"
+                          class="company-search__input"
+                          type="search"
+                          role="combobox"
+                          aria-autocomplete="list"
+                          aria-haspopup="listbox"
+                          aria-expanded="false"
+                          aria-controls="user-detail-user-listbox"
+                          placeholder="Go to user..."
+                          autocomplete="off" />
+                      </label>
+                      <span id="user-detail-user-listbox" role="listbox"></span>
+                    </span>
+                  </span>
+                  <a id="user-detail-company-link" class="user-detail-title-company-link" href="#"></a>
+                </h1>
+              </div>
+
+              <div class="user-detail-header-side shrink-0">
+                <div id="user-detail-meta" class="user-detail-meta"></div>
+              </div>
+            </div>
+
+            <div class="user-detail-header-controls mt-4">
+              <p id="user-detail-company" class="user-detail-header-company"></p>
+              <div id="user-detail-period-selector" class="user-detail-segmented shrink-0" aria-label="Date range"></div>
+            </div>
+          </div>
+        </header>
+
+        <section id="user-detail-kpis" class="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" aria-label="User metrics summary">
+          <div class="metric-dynamics-section-header px-6 py-5">
+            <div class="min-w-0">
+              <h2 class="text-lg font-semibold uppercase text-gray-600">User metric dynamics</h2>
+              <p class="mt-1 text-sm text-slate-500">Blue line is this user. Dashed lines show this user's trend vs other users trend. Show peers adds selected peer traces.</p>
+            </div>
+            <label class="metric-dynamics-toggle shrink-0" for="user-metric-dynamics-show-peers">
+              <span>Show peers</span>
+              <input
+                id="user-metric-dynamics-show-peers"
+                class="metric-dynamics-toggle__input"
+                type="checkbox"
+                name="show_peers"
+                value="true"
+                data-user-metric-dynamics-show-peers />
+              <span class="metric-dynamics-toggle__switch" aria-hidden="true"></span>
+            </label>
+          </div>
+
+          <div class="metric-dynamics-grid-shell" data-user-metric-dynamics-shell>
+            <div id="user-detail-kpi-grid" class="user-detail-kpi-grid grid gap-px bg-slate-200 md:grid-cols-2 xl:grid-cols-4" data-metric-dynamics-grid></div>
+            <div class="metric-dynamics-loading-overlay" data-user-metric-dynamics-loading hidden aria-hidden="true">
+              <div class="metric-dynamics-loading-indicator">
+                <span class="metric-dynamics-loading-spinner" aria-hidden="true"></span>
+                <span>Updating...</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="users-chart-card mb-6">
+          <div class="px-6 py-5">
+            <h2 class="text-lg font-semibold uppercase text-gray-600">Daily activity by product area</h2>
+            <p id="daily-activity-summary" class="mt-1 text-sm text-slate-500"></p>
+          </div>
+          <div class="px-6 pb-5">
+            <div id="daily-product-area-chart" class="h-[420px] w-full" role="img" aria-label="Stacked bar chart of daily engaged time by product area"></div>
+          </div>
+        </section>
+
+        <section class="users-card mb-6">
+          <div class="px-6 py-5">
+            <h2 class="text-lg font-semibold uppercase text-gray-600">Product area usage vs peers</h2>
+            <p class="mt-1 text-sm text-slate-500">Compares where this user spent time during the selected period. Peer median excludes the current user.</p>
+          </div>
+          <div id="product-area-mix-2" class="px-6 pb-5"></div>
+        </section>
+
+        <section class="users-card mb-6">
+          <div class="px-6 py-5">
+            <h2 class="text-lg font-semibold uppercase text-gray-600">Peer comparison</h2>
+            <p class="mt-1 text-sm text-slate-500">Default view shows users around the selected user, not only the top users.</p>
+          </div>
+          <div class="detail-metrics-scroll company-users-scroll-shell overflow-x-auto px-6 pb-4">
+            <table class="pages-detail-metrics-table company-users-table table-auto text-left" style="--pages-detail-table-min-width: 1560px;">
+              <thead class="border-b border-gray-300 bg-white text-slate-600">
+                <tr>
+                  <th scope="col" class="py-3 pl-0 pr-6 font-normal"><span class="metric-header-tooltip" tabindex="0" aria-describedby="peer-comparison-tooltip-user">User<span id="peer-comparison-tooltip-user" class="metric-header-tooltip__content" role="tooltip">User in the comparison set during the selected period</span></span></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip" tabindex="0" aria-describedby="peer-comparison-tooltip-status">Status<span id="peer-comparison-tooltip-status" class="metric-header-tooltip__content" role="tooltip">User health state based on engagement, breadth, and recency</span></span></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip" tabindex="0" aria-describedby="peer-comparison-tooltip-active-days">Active days<span id="peer-comparison-tooltip-active-days" class="metric-header-tooltip__content" role="tooltip">Number of days this user was active during the selected period</span></span></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip" tabindex="0" aria-describedby="peer-comparison-tooltip-visits">Visits<span id="peer-comparison-tooltip-visits" class="metric-header-tooltip__content" role="tooltip">Number of page visits by this user during the selected period</span></span></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip" tabindex="0" aria-describedby="peer-comparison-tooltip-engaged">Engaged<span id="peer-comparison-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent by this user during the selected period</span></span></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip" tabindex="0" aria-describedby="peer-comparison-tooltip-area-usage">Areas used<span id="peer-comparison-tooltip-area-usage" class="metric-header-tooltip__content" role="tooltip">Areas touched by this user during the selected period. Filled cells mean used; empty cells mean not used.</span></span><div class="companies-matrix-heading"></div></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip" tabindex="0" aria-describedby="peer-comparison-tooltip-top-area">Top area<span id="peer-comparison-tooltip-top-area" class="metric-header-tooltip__content" role="tooltip">Product area where this user spent the most active time</span></span></th>
+                  <th scope="col" class="py-3 font-normal"><span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="peer-comparison-tooltip-rank">Rank<span id="peer-comparison-tooltip-rank" class="metric-header-tooltip__content" role="tooltip">User rank by total engaged time during the selected period</span></span></th>
+                </tr>
+              </thead>
+              <tbody id="peer-comparison-body" class="text-slate-700"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="users-chart-card mb-6">
+          <div class="px-6 py-5">
+            <h2 class="text-lg font-semibold uppercase text-gray-600">User consistency vs intensity</h2>
+            <p class="mt-1 text-sm text-slate-500">How often users return and how deeply they engage per session. Shows up to 300 users from this company.</p>
+          </div>
+          <div class="px-6 pb-3">
+            <div id="consistency-intensity-scatter" class="w-full" style="height:520px;" role="img" aria-label="Scatter plot of user consistency and intensity"></div>
+          </div>
+          <p class="px-6 pb-5 text-sm text-slate-500">
+            Return frequency and session depth are calculated from distinct sessions in the selected period. Dropped users are excluded from this scatter.
+          </p>
+        </section>
+
+        <section
+          class="users-card mb-6"
+          style="
+            --pages-value-bar-max-width: 72px;
+            --pages-split-cell-gap: 0.125rem;
+            --pages-split-change-width: 96px;
+            --pages-change-axis: 18px;
+            --pages-change-positive-track: 36px;
+            --pages-change-negative-track: 17px;
+          ">
+          <div class="flex flex-col gap-4 px-6 py-5 xl:flex-row xl:items-start xl:justify-between">
+            <div>
+              <h2 class="text-lg font-semibold uppercase text-gray-600">Pages used by this user</h2>
+              <p class="table-section-copy mt-1 text-sm text-slate-500">Grouped pages and features this user used during the selected period.</p>
+            </div>
+          </div>
+          <div class="detail-metrics-scroll company-top-pages-scroll company-top-pages-scroll-shell overflow-x-auto px-6 pb-4" data-user-pages-table-scroll data-sticky-table-header-id="user-pages-sticky-header">
+            <table class="pages-detail-metrics-table w-full table-auto text-left" style="--pages-detail-table-min-width: 1320px;">
+              <thead class="border-b border-gray-300 bg-white text-slate-600">
+                <tr>
+                  <th scope="col" class="py-3 pl-0 pr-6 font-normal"><span class="metric-header-tooltip"><button type="button" class="company-detail-sort-button" data-user-pages-sort="pageName" aria-describedby="user-pages-tooltip-page">Page</button><span id="user-pages-tooltip-page" class="metric-header-tooltip__content" role="tooltip">Page or grouped feature used by this user during the selected period</span></span></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip"><button type="button" class="company-detail-sort-button" data-user-pages-sort="productArea" aria-describedby="user-pages-tooltip-area">Product area</button><span id="user-pages-tooltip-area" class="metric-header-tooltip__content" role="tooltip">Product area the page belongs to</span></span></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip"><button type="button" class="company-detail-sort-button" data-user-pages-sort="visits" aria-describedby="user-pages-tooltip-visits">Visits</button><span id="user-pages-tooltip-visits" class="metric-header-tooltip__content" role="tooltip">Number of page visits during the selected period</span></span></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip"><button type="button" class="company-detail-sort-button" data-user-pages-sort="shareOfUserTimePct" aria-describedby="user-pages-tooltip-user-time">User time</button><span id="user-pages-tooltip-user-time" class="metric-header-tooltip__content" role="tooltip">Share of this user's engaged time spent on the page</span></span></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip"><button type="button" class="company-detail-sort-button" data-user-pages-sort="engagedSeconds" aria-describedby="user-pages-tooltip-engaged">Engaged</button><span id="user-pages-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent on this page</span></span></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip"><button type="button" class="company-detail-sort-button" data-user-pages-sort="avgVisitSeconds" aria-describedby="user-pages-tooltip-avg-visit">Avg / visit</button><span id="user-pages-tooltip-avg-visit" class="metric-header-tooltip__content" role="tooltip">Average active time per page visit</span></span></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip"><button type="button" class="company-detail-sort-button" data-user-pages-sort="interactionPct" aria-describedby="user-pages-tooltip-interaction">Interaction</button><span id="user-pages-tooltip-interaction" class="metric-header-tooltip__content" role="tooltip">Share of visits with at least one click</span></span></th>
+                  <th scope="col" class="py-3 pr-6 font-normal"><span class="metric-header-tooltip"><button type="button" class="company-detail-sort-button" data-user-pages-sort="peerUsagePct" aria-describedby="user-pages-tooltip-peer-usage">Peer usage</button><span id="user-pages-tooltip-peer-usage" class="metric-header-tooltip__content" role="tooltip">Share of peers who used the page during the selected period</span></span></th>
+                  <th scope="col" class="py-3 font-normal"><span class="metric-header-tooltip metric-header-tooltip--end"><button type="button" class="company-detail-sort-button" data-user-pages-sort="lastUsedAt" aria-describedby="user-pages-tooltip-last-used">Last used</button><span id="user-pages-tooltip-last-used" class="metric-header-tooltip__content" role="tooltip">Most recent date this user used the page</span></span></th>
+                </tr>
+              </thead>
+              <tbody id="pages-used-body" class="text-slate-700"></tbody>
+            </table>
+            <div class="company-top-pages-table-loading-overlay" data-user-pages-table-loading hidden aria-hidden="true">
+              <div class="company-top-pages-table-loader"></div>
+            </div>
+          </div>
+          <div class="company-top-pages-pagination mt-4 mb-6 flex flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between" data-user-pages-pagination hidden></div>
+        </section>
+
+        <section class="users-card mb-6">
+          <div class="px-6 py-5">
+            <h2 class="text-lg font-semibold uppercase text-gray-600">Recommended next steps</h2>
+            <p class="mt-1 text-sm text-slate-500">Prioritized actions based on this user's usage changes, peer gaps, and unusual product-area patterns.</p>
+          </div>
+          <div id="recommended-next-steps" class="px-6 pb-5"></div>
+        </section>
+      </div>
+
+      <script id="user-details-data" type="application/json">{{ user_detail_payload_json }}</script>
+      <script src="{% static 'echarts/lib/echarts.min.js' %}"></script>
+      <script src="{% static 'js/vendor/vega.min.js' %}"></script>
+      <script src="{% static 'js/vendor/vega-embed.min.js' %}"></script>
+      <script src="{% static 'js/shared/metric-dynamics.js' %}"></script>
+      <script src="{% static 'js/shared/product-area-colors.js' %}"></script>
+      <script src="{% static 'js/users/user-details-helpers.js' %}"></script>
+      <script src="{% static 'js/users/django-user-details-data.js' %}?v=20260709-3"></script>
+      <script src="{% static 'js/users/user-detail.js' %}?v=20260709-3"></script>
+      {% endif %}
+    {% elif user_detail_status == 'preparing' %}
+      <section class="rounded-xl border border-slate-200 bg-white px-8 py-10 text-center shadow-sm">
+        <h1 class="text-2xl font-semibold text-slate-900">User details are being prepared</h1>
+        <p class="mx-auto mt-2 max-w-xl text-slate-500">This period is being cached. Please refresh shortly.</p>
+      </section>
+    {% else %}
+      <section class="rounded-xl border border-slate-200 bg-white px-8 py-10 text-center shadow-sm">
+        <h1 class="text-2xl font-semibold text-slate-900">User details not found</h1>
+        <p class="mx-auto mt-2 max-w-xl text-slate-500">No user activity details were found for this user in the selected period.</p>
+      </section>
+    {% endif %}
+  </main>
+{% endblock %}

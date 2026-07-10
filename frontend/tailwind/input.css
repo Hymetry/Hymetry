@@ -1,17 +1,20 @@
-@font-face {
-  font-family: 'Inter';
-  src: url('/static/fonts/InterVariable.woff2') format('woff2-variations'),
-    url('static/fonts/InterVariable.woff2') format('woff2');
-  font-weight: 100 900;
-  font-display: swap;
-}
+/* 1. Import your font at the very top. This part is still valid CSS. */
 
+@import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=auto");
+
+/* 2. Configure your theme directly in the CSS using @theme.
+      This replaces the need to edit tailwind.config.js for fonts, colors, etc.
+      By setting fontFamily.sans here, you are making 'Inter' the default font
+      for the font-sans utility, which is applied to the body by default.
+*/
+
+/* 3. Import the entire Tailwind engine with a single directive.
+      This one line includes all base styles, components, and utilities.
+*/
 
 @theme {
 
-  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont,
-    'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell,
-    'Open Sans', 'Helvetica Neue', sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui;
   --color-c-blue: #4269D0;
   --color-c-orange: #EFB118;
   --color-c-red: #FF725C;
@@ -22,6 +25,9 @@
   --color-c-light-blue: #97BBF5;
   --color-c-brown: #9C6B4E;
 
+  --breakpoint-3xl: 1920px;
+  --breakpoint-4xl: 2560px;
+
 }
 
 @import "tailwindcss";
@@ -31,12 +37,15 @@
 @source inline("text-blue-700 text-yellow-700 text-red-700 text-teal-700 text-green-700 text-pink-700 text-violet-700 text-sky-700 text-amber-700 text-slate-600");
 
 
-@import "tailwindcss";
 @source "../../templates";
 @source "../../templates/account";
 @source "../../apps/tracker/templates/tracker";
 @source "../../apps/users/templates/users";
 @source "../../apps/projects/templates/projects";
+@source "../../apps/pages/templates/pages";
+@source "../../static/js/pages";
+@source "../../static/js/companies";
+@source "../../static/js/users";
 
 /* 4 – Apply it once, everywhere */
 @layer base {
@@ -45,117 +54,173 @@
     @apply text-gray-900;
   }
 
-  button {
-    @apply cursor-pointer;
+  button:not(:disabled) {
+    cursor: pointer;
   }
 
-  @view-transition {
-    navigation: auto;
-  }
-
-  ::view-transition-old(root),
-  ::view-transition-new(root) {
-    animation: none;
+  [data-company-period],
+  [data-company-detail-period],
+  [data-page-period],
+  [data-users-period],
+  [data-user-detail-period] {
+    cursor: pointer;
   }
 }
 
-  /* Bubble chart */
+/* Bubble chart */
 
-  .chart-container {
-    display: flex;
-    align-items: center;
-    white-space: nowrap;
-    width: fit-content;
-    max-width: calc(100vw - 395px);
-    /* Account for sidebar and padding */
-  }
+.chart-container {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  width: fit-content;
+  max-width: calc(100vw - 395px); /* Account for sidebar and padding */
+}
 
-  .chart-container .bubble-box:not(:first-child) {
-    margin-left: -8px;
-  }
+.chart-container .bubble-box:not(:first-child) {
+  margin-left: -8px;
+}
 
 
-  .bubble-box {
-    width: 28px;
-    height: 28px;
-    display: inline-flex;
-    justify-content: center;
-    align-items: center;
-    flex: 0 0 auto;
-  }
+.bubble-box {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  flex:0 0 auto;
+}
 
-  .circle {
-    width: var(--size);
-    height: var(--size);
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
+.circle {
+  width: var(--size);
+  height: var(--size);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
 
-  /* End of bubble chart */
+/* End of bubble chart */
 
-  /* Page labels and connectors (moved from HTML) */
-  #page-labels-container .page-label {
+/* Page labels and connectors (moved from HTML) */
+#page-labels-container .page-label {
     position: fixed;
-    font-size: 0.875rem;
-    /* 14px */
+    display: block;
+    max-width: min(280px, calc(100vw - 2rem));
+    overflow: hidden;
+    font-size: 0.875rem; /* 14px */
     padding: 4px 8px;
     border-radius: 6px;
     white-space: nowrap;
+    text-overflow: ellipsis;
     pointer-events: none;
     z-index: 9999;
     opacity: 0;
     transition: opacity 0.2s ease-in-out;
-  }
+}
 
-  #page-labels-container .page-label.visible {
+#page-labels-container .page-label.visible {
     opacity: 1;
-  }
+}
 
-  #label-connectors path {
+#label-connectors path {
     opacity: 0;
     transition: opacity 0.2s ease-in-out;
     stroke-linecap: round;
-  }
+}
 
-  #label-connectors path.visible {
+#label-connectors path.visible {
     opacity: 0.6;
+}
+/* End of page labels */
+
+/* Tracker title tooltips */
+.tracker-title-tooltip {
+    position: relative;
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    cursor: default;
+    outline: none;
+}
+
+.tracker-title-tooltip__label {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tracker-title-tooltip__content {
+    position: absolute;
+    top: calc(100% + 0.5rem);
+    left: 0;
+    z-index: 10000;
+    display: none;
+    width: max-content;
+    max-width: min(28rem, calc(100vw - 1rem));
+    padding: 0.5rem 0.625rem;
+    border: 1px solid var(--color-slate-200);
+    border-radius: 0.375rem;
+    background: var(--color-white);
+    box-shadow: 0 10px 24px rgb(15 23 42 / 12%);
+    color: var(--color-slate-700);
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.35;
+    opacity: 0;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+    transform: translateY(0.25rem);
+    transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+    visibility: hidden;
+    white-space: normal;
+}
+
+.tracker-title-tooltip:focus-visible {
+    border-radius: 0.25rem;
+    outline: 2px solid var(--color-blue-400);
+    outline-offset: 3px;
+}
+
+.tracker-title-tooltip:hover .tracker-title-tooltip__content,
+.tracker-title-tooltip:focus .tracker-title-tooltip__content,
+.tracker-title-tooltip:focus-visible .tracker-title-tooltip__content {
+    display: block;
+    opacity: 1;
+    transform: translateY(0);
+    visibility: visible;
+}
+/* End of tracker title tooltips */
+
+
+@layer components {
+  .day-bar-blue {
+    @apply w-full bg-blue-400 group-hover:bg-blue-500 group-hover:outline group-hover:outline-blue-900 duration-200;
   }
+}
 
-  /* End of page labels */
+/* Firefox */
+.chart-container.custom-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0,0,0,0.2) transparent;
+}
 
+/* Chrome / Edge / Safari */
+.chart-container.custom-scroll::-webkit-scrollbar {
+  height: 8px; /* match pb-[8px] */
+}
 
-  @layer components {
-    .day-bar-blue {
-      @apply w-full bg-blue-400 group-hover:bg-blue-500 group-hover:outline group-hover:outline-teal-500 duration-200;
-    }
-  }
+.chart-container.custom-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
 
-  /* Firefox */
-  .chart-container.custom-scroll {
-    scrollbar-width: thin;
-    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
-  }
+.chart-container.custom-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.2); /* always visible */
+  border-radius: 4px;
+}
 
-  /* Chrome / Edge / Safari */
-  .chart-container.custom-scroll::-webkit-scrollbar {
-    height: 8px;
-    /* match pb-[8px] */
-  }
-
-  .chart-container.custom-scroll::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .chart-container.custom-scroll::-webkit-scrollbar-thumb {
-    background: rgba(0, 0, 0, 0.2);
-    /* always visible */
-    border-radius: 4px;
-  }
-
-  .scrollable-x {
-    cursor: grab;
-  }
-
-  .scrollable-x:active {
-    cursor: grabbing;
-  }
+.scrollable-x {
+  cursor: grab;
+}
+.scrollable-x:active {
+  cursor: grabbing;
+}

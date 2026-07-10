@@ -104,7 +104,10 @@ class RecordingViewMixin:
         # Use only cached bubble data (do not calculate in-memory)
         from apps.tracker.bubble_cache_manager import BubbleCacheManager
         all_session_ids = [s.session_id for s in all_sessions_for_day]
-        all_session_cache, all_cached_entries = BubbleCacheManager.get_cached_bubbles_for_sessions(all_session_ids)
+        all_session_cache, all_cached_entries = BubbleCacheManager.get_cached_bubbles_for_sessions(
+            all_session_ids,
+            self.project_id,
+        )
         
         # Calculate global legend from all cached data (same as recordings())
         overall_legend_pages = BubbleCacheManager.calculate_legend_from_cache(all_cached_entries)
@@ -155,4 +158,4 @@ class RecordingViewMixin:
                 # Update timestamp to be relative for JavaScript
                 event['timestamp'] = event['relative_timestamp']
         
-        return flat_events 
+        return flat_events

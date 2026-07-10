@@ -1,0 +1,37 @@
+<section
+  id="company-metric-dynamics-section"
+  class="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
+  data-company-metric-dynamics-section
+  data-company-metric-dynamics-show-peers="{% if company_metric_dynamics_show_peers %}true{% else %}false{% endif %}">
+  <div class="metric-dynamics-section-header px-6 py-5">
+    <div>
+      <h2 class="text-lg font-semibold uppercase text-gray-600">Company metric dynamics</h2>
+      <p class="mt-1 text-sm text-slate-500">Blue line is this company. Dashed lines show current trend vs peer benchmark. Enable peers to see individual peer traces.</p>
+    </div>
+    <label class="metric-dynamics-toggle shrink-0" for="company-metric-dynamics-show-peers">
+      <span>Show peers</span>
+      <input
+        id="company-metric-dynamics-show-peers"
+        class="metric-dynamics-toggle__input"
+        type="checkbox"
+        name="show_peers"
+        value="1"
+        data-company-metric-dynamics-show-peers
+        {% if company_metric_dynamics_show_peers %}checked{% endif %}
+        hx-get="{{ company_metric_dynamics_url }}?range={{ companies_range_key }}&show_peers={% if company_metric_dynamics_show_peers %}0{% else %}1{% endif %}"
+        hx-target="#company-metric-dynamics-section"
+        hx-swap="outerHTML"
+        hx-indicator="#company-metric-dynamics-loading" />
+      <span class="metric-dynamics-toggle__switch" aria-hidden="true"></span>
+    </label>
+  </div>
+
+  <div class="metric-dynamics-grid-shell" data-company-metric-dynamics-shell>
+    <div id="company-metric-dynamics-grid" class="grid gap-px bg-slate-200 md:grid-cols-2 xl:grid-cols-4" data-metric-dynamics-grid></div>
+    <div id="company-metric-dynamics-loading" class="metric-dynamics-loading-overlay htmx-indicator" aria-hidden="true">
+      <div class="metric-dynamics-loading-indicator">
+        <span class="metric-dynamics-loading-spinner" aria-hidden="true"></span>
+      </div>
+    </div>
+  </div>
+</section>

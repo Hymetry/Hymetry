@@ -1,0 +1,553 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}{% if is_demo_view %}Companies - {{ demo_project_display_name }}{% else %}Companies - {{ project.name }}{% endif %}{% endblock %}
+
+{% block extra_js %}
+  <link rel="stylesheet" href="{% static 'css/companies/overview.css' %}" type="text/css" />
+{% endblock %}
+
+{% block nav %}
+  {% if is_demo_view %}
+    {% include 'projects/partials/demo_project_top_nav.html' with active_demo_section='companies' %}
+  {% else %}
+    {% include 'projects/partials/project_top_nav.html' with active_project_section='companies' %}
+  {% endif %}
+{% endblock %}
+
+{% block body_classes %}
+  class="h-full bg-slate-50 text-sm" data-companies-view="overview" data-project-id="{{ project.id }}" data-company-detail-base-url="{{ companies_detail_base_url }}" data-company-options-url="{{ companies_options_url }}" data-companies-table-url="{{ companies_table_url }}"
+{% endblock %}
+
+{% block content %}
+<main class="page-shell w-full pb-12 pt-20">
+            <header class="mb-8">
+                <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                    <div class="min-w-0">
+                        <h1 class="text-3xl font-bold text-slate-900">Companies</h1>
+                        <p class="mt-2 max-w-3xl text-slate-600">
+                            Track account health, activation, adoption breadth, risk, and expansion opportunities.
+                        </p>
+                    </div>
+
+                    <div class="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center">
+                        {% if not analytics_is_empty %}
+                        <div id="company-search" class="company-search">
+                            <label for="company-search-input" class="sr-only">Go to company</label>
+                            <input
+                                id="company-search-input"
+                                class="company-search__input"
+                                type="search"
+                                role="combobox"
+                                aria-autocomplete="list"
+                                aria-haspopup="listbox"
+                                aria-expanded="false"
+                                aria-controls="company-search-results"
+                                autocomplete="off"
+                                placeholder="Go to company&hellip;" />
+                            <div id="company-search-results" class="company-search__dropdown" role="listbox" hidden></div>
+                        </div>
+                        {% endif %}
+
+                        {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='companies-period-selector' analytics_range_options=companies_range_options analytics_range_key=companies_range_key %}
+                    </div>
+                </div>
+            </header>
+
+            {% if analytics_is_empty %}
+                {% include 'partials/analytics_empty_state.html' %}
+            {% else %}
+            <section
+                id="companies-kpis"
+                class="mb-6"
+                aria-label="Company metrics summary"
+                style="
+                    --pages-kpi-border-color: var(--color-slate-200);
+                    --pages-kpi-positive-color: var(--color-green-700);
+                    --pages-kpi-negative-color: var(--color-red-600);
+                    --pages-kpi-neutral-color: var(--color-slate-700);
+                    --pages-kpi-trend-color: var(--color-blue-400);
+                    --pages-kpi-trend-fill-color: var(--color-blue-50);
+                    --pages-kpi-trend-axis-color: var(--color-slate-300);
+                ">
+                <div data-pages-kpis-shell class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                    <div data-pages-kpis-grid class="grid md:grid-cols-2 xl:grid-cols-4"></div>
+                </div>
+
+                <template id="companies-kpi-card-template">
+                    <article data-pages-kpi-card class="block px-5 py-4">
+                        <div class="flex items-start justify-between gap-4">
+                            <div class="min-w-0">
+                                <div data-pages-kpi-label class="text-sm font-medium text-slate-500 uppercase"></div>
+                                <div data-pages-kpi-value class="mt-2 truncate text-2xl font-semibold leading-tight text-slate-900"></div>
+                            </div>
+                            <div
+                                data-pages-kpi-delta
+                                data-delta-direction="neutral"
+                                class="max-w-[9rem] shrink-0 text-right text-sm font-medium leading-snug"></div>
+                        </div>
+                        <div data-pages-kpi-trend class="mt-3 h-12 w-full" aria-hidden="true"></div>
+                    </article>
+                </template>
+            </section>
+
+            <section class="companies-chart-card mb-6">
+                <div class="px-6 pt-5 pb-3">
+                    <h2 class="text-lg font-semibold uppercase text-gray-600">Company health distribution</h2>
+                    <p class="mt-1 text-sm text-slate-500">Account states across activation, healthy adoption, risk, and dormancy.</p>
+                </div>
+
+                <div class="px-6 pb-5">
+                    <div id="company-health-distribution-echarts" class="companies-health-echarts"></div>
+                </div>
+            </section>
+
+            <section
+                class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
+                style="
+                    --pages-value-bar-max-width: 72px;
+                    --pages-split-cell-gap: 0.125rem;
+                    --pages-split-change-width: 96px;
+                    --pages-change-axis: 18px;
+                    --pages-change-positive-track: 36px;
+                    --pages-change-negative-track: 17px;
+                ">
+                <div class="px-6 py-5">
+                    <div>
+                        <h2 class="text-lg font-semibold uppercase text-gray-600">Companies list</h2>
+                        <p class="mt-1 text-sm text-slate-500">All companies ranked by engaged time during the selected period.</p>
+                    </div>
+                </div>
+
+                <div class="companies-table-scroll-shell overflow-x-auto px-6 pb-4" data-companies-table-scroll>
+                    <table class="companies-table w-full table-auto text-left">
+                        <thead class="border-b border-gray-300 bg-white text-slate-600">
+                            <tr>
+                                <th class="sticky left-0 z-[2] bg-white py-3 pl-0 pr-6 font-normal">
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-company-sort="name" aria-describedby="companies-main-tooltip-company">Company</button>
+                                        <span id="companies-main-tooltip-company" class="metric-header-tooltip__content" role="tooltip">Company account active during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-company-sort="status" aria-describedby="companies-main-tooltip-status">Status</button>
+                                        <span id="companies-main-tooltip-status" class="metric-header-tooltip__content" role="tooltip">Account health state based on activation, adoption, risk, and dormancy</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-company-sort="activeUsers" aria-describedby="companies-main-tooltip-active-users">Active users</button>
+                                        <span id="companies-main-tooltip-active-users" class="metric-header-tooltip__content" role="tooltip">Number of users who used this company account during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="companies-main-tooltip-user-health">
+                                        User health
+                                        <span id="companies-main-tooltip-user-health" class="metric-header-tooltip__content" role="tooltip">Mix of power, healthy, light, passive, and dropped users for this company</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-company-sort="pagesUsed" aria-describedby="companies-main-tooltip-pages">Pages</button>
+                                        <span id="companies-main-tooltip-pages" class="metric-header-tooltip__content" role="tooltip">Number of pages or features used by this company during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-company-sort="visits" aria-describedby="companies-main-tooltip-visits">Visits</button>
+                                        <span id="companies-main-tooltip-visits" class="metric-header-tooltip__content" role="tooltip">Number of page visits during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-company-sort="engagedSeconds" aria-describedby="companies-main-tooltip-engaged">Engaged</button>
+                                        <span id="companies-main-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent by this company during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-company-sort="avgEngagedSecondsPerUser" aria-describedby="companies-main-tooltip-avg-user">Avg / user</button>
+                                        <span id="companies-main-tooltip-avg-user" class="metric-header-tooltip__content" role="tooltip">Average active time per user</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-company-sort="interactionPct" aria-describedby="companies-main-tooltip-interaction">Interaction</button>
+                                        <span id="companies-main-tooltip-interaction" class="metric-header-tooltip__content" role="tooltip">Share of visits with at least one click</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="companies-main-tooltip-product-area-mix">
+                                        Area usage
+                                        <span id="companies-main-tooltip-product-area-mix" class="metric-header-tooltip__content" role="tooltip">Engaged time by area during the selected period, scaled against the current company table</span>
+                                    </span>
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="companies-table-body" class="text-slate-700"></tbody>
+                    </table>
+                    <div class="companies-table-loading-overlay" data-companies-table-loading hidden aria-hidden="true">
+                        <div class="companies-table-loader"></div>
+                    </div>
+                </div>
+                <div class="companies-pagination mt-4 mb-6 flex flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between" data-companies-pagination hidden></div>
+            </section>
+
+            <section class="companies-chart-card mt-6">
+                <div class="px-6 py-5">
+                    <h2 class="text-lg font-semibold uppercase text-gray-600">COMPANY ENGAGEMENT MAP</h2>
+                    <p class="mt-1 text-sm text-slate-500">Average active users vs average engaged time per active user.</p>
+                    <p id="company-engagement-scatter-note" class="companies-scatter-note mt-3" hidden></p>
+                </div>
+
+                <div class="px-6 pb-3">
+                    <div id="company-engagement-scatter" class="min-h-[470px] w-full"></div>
+                </div>
+            </section>
+
+            <section class="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div class="px-6 py-5">
+                    <div>
+                        <h2 class="text-lg font-semibold uppercase text-gray-600">New &amp; reactivated adoption</h2>
+                        <p class="mt-1 max-w-4xl text-sm text-slate-500">See which new or returning accounts activated, how many users engaged, and how broadly they adopted the product.</p>
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto px-6 pb-4 pt-4">
+                    <table class="companies-secondary-table companies-new-reactivated-table w-full table-auto text-left" style="--companies-secondary-min-width: 1100px; --pages-value-bar-max-width: 72px;">
+                        <thead class="border-b border-gray-300 bg-white text-slate-600">
+                            <tr>
+                                <th class="py-3 pl-0 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-tooltip-company">
+                                        Company
+                                        <span id="new-reactivated-tooltip-company" class="metric-header-tooltip__content" role="tooltip">Company account active during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-tooltip-activation">
+                                        Activation stage
+                                        <span id="new-reactivated-tooltip-activation" class="metric-header-tooltip__content" role="tooltip">Activation progress based on users, breadth, pages, and engaged time</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-tooltip-started">
+                                        Started
+                                        <span id="new-reactivated-tooltip-started" class="metric-header-tooltip__content" role="tooltip">How long ago the company was first seen or reactivated</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-tooltip-active-users">
+                                        Active users
+                                        <span id="new-reactivated-tooltip-active-users" class="metric-header-tooltip__content" role="tooltip">Number of users who used this company account during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-tooltip-engaged">
+                                        Engaged
+                                        <span id="new-reactivated-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent by this company during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-tooltip-matrix">
+                                        Area adoption
+                                        <span id="new-reactivated-tooltip-matrix" class="metric-header-tooltip__content" role="tooltip">Average adoption by product area during the selected period. Filled cells show relative engagement intensity.</span>
+                                    </span>
+                                    <div class="companies-matrix-heading">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-area-tooltip-core">
+                                            Core
+                                            <span id="new-reactivated-area-tooltip-core" class="metric-header-tooltip__content" role="tooltip">Core product</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-area-tooltip-billing">
+                                            Billing
+                                            <span id="new-reactivated-area-tooltip-billing" class="metric-header-tooltip__content" role="tooltip">Billing</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-area-tooltip-developer">
+                                            Dev
+                                            <span id="new-reactivated-area-tooltip-developer" class="metric-header-tooltip__content" role="tooltip">Developer</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-area-tooltip-administration">
+                                            Admin
+                                            <span id="new-reactivated-area-tooltip-administration" class="metric-header-tooltip__content" role="tooltip">Administration</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-area-tooltip-reporting">
+                                            Reports
+                                            <span id="new-reactivated-area-tooltip-reporting" class="metric-header-tooltip__content" role="tooltip">Reporting</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-area-tooltip-integrations">
+                                            Integr.
+                                            <span id="new-reactivated-area-tooltip-integrations" class="metric-header-tooltip__content" role="tooltip">Integrations</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-area-tooltip-export">
+                                            Export
+                                            <span id="new-reactivated-area-tooltip-export" class="metric-header-tooltip__content" role="tooltip">Export</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-area-tooltip-permissions">
+                                            Perm.
+                                            <span id="new-reactivated-area-tooltip-permissions" class="metric-header-tooltip__content" role="tooltip">Team permissions</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-area-tooltip-settings">
+                                            Settings
+                                            <span id="new-reactivated-area-tooltip-settings" class="metric-header-tooltip__content" role="tooltip">Settings</span>
+                                        </span>
+                                    </div>
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="new-reactivated-table-body" class="text-slate-700"></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <div class="mt-6 grid gap-6 xl:grid-cols-2">
+                <section class="companies-chart-card">
+                    <div class="px-6 py-5">
+                        <h2 class="text-lg font-semibold uppercase text-gray-600">Product area adoption over time</h2>
+                        <p class="mt-1 text-sm text-slate-500">Adoption across all active companies.</p>
+                    </div>
+
+                    <div class="px-6 pb-5">
+                        <div id="product-area-adoption-chart" class="h-[360px] w-full"></div>
+                    </div>
+                </section>
+
+                <section class="companies-chart-card">
+                    <div class="px-6 py-5">
+                        <h2 class="text-lg font-semibold uppercase text-gray-600">New-company adoption ramp</h2>
+                        <p class="mt-1 text-sm text-slate-500">What new and reactivated companies adopt after joining or returning.</p>
+                    </div>
+
+                    <div class="px-6 pb-5">
+                        <div id="new-company-adoption-ramp-chart" class="h-[360px] w-full"></div>
+                    </div>
+                </section>
+            </div>
+
+            <section
+                class="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
+                style="
+                    --pages-value-bar-max-width: 72px;
+                    --pages-split-cell-gap: 0.125rem;
+                    --pages-split-change-width: 96px;
+                    --pages-change-axis: 18px;
+                    --pages-change-positive-track: 36px;
+                    --pages-change-negative-track: 17px;
+                ">
+                <div class="px-6 py-5">
+                    <h2 class="text-lg font-semibold uppercase text-gray-600">Potential churn / at-risk companies</h2>
+                </div>
+
+                <div class="overflow-x-auto px-6 pb-4">
+                    <table class="companies-secondary-table w-full table-auto text-left" style="--companies-secondary-min-width: 1240px;">
+                        <thead class="border-b border-gray-300 bg-white text-slate-600">
+                            <tr>
+                                <th class="py-3 pl-0 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-tooltip-company">
+                                        Company
+                                        <span id="at-risk-tooltip-company" class="metric-header-tooltip__content" role="tooltip">Company account active during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-tooltip-risk-reason">
+                                        Risk reason
+                                        <span id="at-risk-tooltip-risk-reason" class="metric-header-tooltip__content" role="tooltip">Primary signal indicating potential churn or declining adoption</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-tooltip-active-users">
+                                        Active users
+                                        <span id="at-risk-tooltip-active-users" class="metric-header-tooltip__content" role="tooltip">Number of users who used this company account during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-tooltip-engaged">
+                                        Engaged
+                                        <span id="at-risk-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent by this company during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-tooltip-matrix">
+                                        Area adoption
+                                        <span id="at-risk-tooltip-matrix" class="metric-header-tooltip__content" role="tooltip">Product areas used during the selected period. Filled cells show relative engagement intensity.</span>
+                                    </span>
+                                    <div class="companies-matrix-heading">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-area-tooltip-core">
+                                            Core
+                                            <span id="at-risk-area-tooltip-core" class="metric-header-tooltip__content" role="tooltip">Core product</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-area-tooltip-billing">
+                                            Billing
+                                            <span id="at-risk-area-tooltip-billing" class="metric-header-tooltip__content" role="tooltip">Billing</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-area-tooltip-developer">
+                                            Dev
+                                            <span id="at-risk-area-tooltip-developer" class="metric-header-tooltip__content" role="tooltip">Developer</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-area-tooltip-administration">
+                                            Admin
+                                            <span id="at-risk-area-tooltip-administration" class="metric-header-tooltip__content" role="tooltip">Administration</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-area-tooltip-reporting">
+                                            Reports
+                                            <span id="at-risk-area-tooltip-reporting" class="metric-header-tooltip__content" role="tooltip">Reporting</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-area-tooltip-integrations">
+                                            Integr.
+                                            <span id="at-risk-area-tooltip-integrations" class="metric-header-tooltip__content" role="tooltip">Integrations</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-area-tooltip-export">
+                                            Export
+                                            <span id="at-risk-area-tooltip-export" class="metric-header-tooltip__content" role="tooltip">Export</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-area-tooltip-permissions">
+                                            Perm.
+                                            <span id="at-risk-area-tooltip-permissions" class="metric-header-tooltip__content" role="tooltip">Team permissions</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-area-tooltip-settings">
+                                            Settings
+                                            <span id="at-risk-area-tooltip-settings" class="metric-header-tooltip__content" role="tooltip">Settings</span>
+                                        </span>
+                                    </div>
+                                </th>
+                                <th class="py-3 font-normal">
+                                    <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="at-risk-tooltip-action">
+                                        Suggested action
+                                        <span id="at-risk-tooltip-action" class="metric-header-tooltip__content" role="tooltip">Recommended follow-up based on the risk signal</span>
+                                    </span>
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="at-risk-table-body" class="text-slate-700"></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div class="px-6 py-5">
+                    <h2 class="text-lg font-semibold uppercase text-gray-600">Expansion opportunities</h2>
+                </div>
+
+                <div class="companies-expansion-table-shell px-6 pb-4">
+                    <table class="companies-secondary-table companies-expansion-table w-full table-fixed text-left" style="--companies-secondary-min-width: 0px;">
+                        <colgroup>
+                            <col class="companies-expansion-table__company">
+                            <col class="companies-expansion-table__priority">
+                            <col class="companies-expansion-table__reason">
+                            <col class="companies-expansion-table__active">
+                            <col class="companies-expansion-table__engaged">
+                            <col class="companies-expansion-table__interaction">
+                            <col class="companies-expansion-table__adoption">
+                            <col class="companies-expansion-table__action">
+                        </colgroup>
+                        <thead class="border-b border-gray-300 bg-white text-slate-600">
+                            <tr>
+                                <th class="py-3 pl-0 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-company">
+                                        Company
+                                        <span id="expansion-tooltip-company" class="metric-header-tooltip__content" role="tooltip">Company account active during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-priority">
+                                        Expansion priority
+                                        <span id="expansion-tooltip-priority" class="metric-header-tooltip__content" role="tooltip">Relative expansion potential based on account usage and adoption signals</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-reason">
+                                        Reason
+                                        <span id="expansion-tooltip-reason" class="metric-header-tooltip__content" role="tooltip">Evidence supporting the expansion opportunity</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-active-users">
+                                        Active users
+                                        <span id="expansion-tooltip-active-users" class="metric-header-tooltip__content" role="tooltip">Number of users who used this company account during the selected period</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-engaged-user">
+                                        Engaged / user
+                                        <span id="expansion-tooltip-engaged-user" class="metric-header-tooltip__content" role="tooltip">Average active time per user</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-interaction">
+                                        Interaction
+                                        <span id="expansion-tooltip-interaction" class="metric-header-tooltip__content" role="tooltip">Share of visits with at least one click</span>
+                                    </span>
+                                </th>
+                                <th class="py-3 pr-6 font-normal">
+                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-matrix">
+                                        Area adoption
+                                        <span id="expansion-tooltip-matrix" class="metric-header-tooltip__content" role="tooltip">Product areas used during the selected period. Filled cells show relative engagement intensity.</span>
+                                    </span>
+                                    <div class="companies-matrix-heading">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-area-tooltip-core">
+                                            Core
+                                            <span id="expansion-area-tooltip-core" class="metric-header-tooltip__content" role="tooltip">Core product</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-area-tooltip-billing">
+                                            Billing
+                                            <span id="expansion-area-tooltip-billing" class="metric-header-tooltip__content" role="tooltip">Billing</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-area-tooltip-developer">
+                                            Dev
+                                            <span id="expansion-area-tooltip-developer" class="metric-header-tooltip__content" role="tooltip">Developer</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-area-tooltip-administration">
+                                            Admin
+                                            <span id="expansion-area-tooltip-administration" class="metric-header-tooltip__content" role="tooltip">Administration</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-area-tooltip-reporting">
+                                            Reports
+                                            <span id="expansion-area-tooltip-reporting" class="metric-header-tooltip__content" role="tooltip">Reporting</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-area-tooltip-integrations">
+                                            Integr.
+                                            <span id="expansion-area-tooltip-integrations" class="metric-header-tooltip__content" role="tooltip">Integrations</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-area-tooltip-export">
+                                            Export
+                                            <span id="expansion-area-tooltip-export" class="metric-header-tooltip__content" role="tooltip">Export</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-area-tooltip-permissions">
+                                            Perm.
+                                            <span id="expansion-area-tooltip-permissions" class="metric-header-tooltip__content" role="tooltip">Team permissions</span>
+                                        </span>
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-area-tooltip-settings">
+                                            Settings
+                                            <span id="expansion-area-tooltip-settings" class="metric-header-tooltip__content" role="tooltip">Settings</span>
+                                        </span>
+                                    </div>
+                                </th>
+                                <th class="py-3 font-normal">
+                                    <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="expansion-tooltip-action">
+                                        Suggested action
+                                        <span id="expansion-tooltip-action" class="metric-header-tooltip__content" role="tooltip">Recommended follow-up to expand product adoption</span>
+                                    </span>
+                                </th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="expansion-table-body" class="text-slate-700"></tbody>
+                    </table>
+                </div>
+            </section>
+            {% endif %}
+        </main>
+
+  {% if not analytics_is_empty %}
+  <script id="companies-overview-data" type="application/json">{{ companies_overview_payload_json }}</script>
+  <script src="{% static 'echarts/lib/echarts.min.js' %}"></script>
+  <script src="{% static 'js/vendor/vega.min.js' %}"></script>
+  <script src="{% static 'js/vendor/vega-embed.min.js' %}"></script>
+  <script src="{% static 'js/shared/analytics-status-colors.js' %}"></script>
+  <script src="{% static 'js/shared/product-area-colors.js' %}"></script>
+  <script src="{% static 'js/companies/django-companies-data.js' %}?v=20260709-3"></script>
+  <script src="{% static 'js/companies/companies-analytics.js' %}?v=20260709-3"></script>
+  {% endif %}
+{% endblock %}

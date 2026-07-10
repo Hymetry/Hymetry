@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 from django.utils import timezone
 
 from apps.tracker.constants import LEGEND_PAGE_COLORS
-from apps.tracker.models import BubbleCache, Page, Event, Session
+from apps.tracker.models import BubbleCache, Event, Session
+from apps.tracker.url_titles import apply_titles_to_entries, get_latest_analytics_titles
 
 
 class BubbleCacheManager:
@@ -28,6 +29,10 @@ class BubbleCacheManager:
         minute_groups = defaultdict(list)
         for event_data in events_by_minute:
             minute_groups[event_data['minute']].append(event_data)
+        title_map = get_latest_analytics_titles(
+            session.visitor.project_id,
+            [event_data.get('url', '') for event_data in events_by_minute],
+        )
         
         bubbles_created = 0
         bubbles_updated = 0
@@ -35,7 +40,7 @@ class BubbleCacheManager:
 
         for minute, page_events in minute_groups.items():
             dominant_page_data = max(page_events, key=lambda x: x['event_count'])
-            dominant_page = Page.objects.get(id=dominant_page_data['page__id'])
+            dominant_url = dominant_page_data['url']
             # Calculate v for this minute
             v = (
                     dominant_page_data['click_count'] * 10 +
@@ -58,17 +63,16 @@ class BubbleCacheManager:
             # Find additional pages visited this minute
             additional_pages = []
             for page_data in page_events:
-                if page_data['page__id'] != dominant_page_data['page__id'] and page_data['event_count'] > 0:
-                    title = page_data['page___title'] or page_data['page__original_title']
-                    additional_pages.append(title)
-            dominant_title = dominant_page.title
+                if page_data['url'] != dominant_url and page_data['event_count'] > 0:
+                    additional_pages.append(title_map.get(page_data['url'], page_data['url']))
+            dominant_title = title_map.get(dominant_url, dominant_url)
             tooltip = f"{dominant_title} ({event_breakdown})"
             if additional_pages:
                 tooltip += f". Additional page{'s' if len(additional_pages) > 1 else ''} this minute: {', '.join(additional_pages)}"
             
             # Check if cache entry already exists
             existing_cache = BubbleCache.objects.filter(
-                page=dominant_page,
+                url=dominant_url,
                 session=session,
                 timestamp=minute
             ).first()
@@ -96,8 +100,8 @@ class BubbleCacheManager:
             else:
                 # Create new cache entry
                 BubbleCache.objects.create(
-                    page=dominant_page,
                     session=session,
+                    url=dominant_url,
                     timestamp=minute,
                     size=d,
                     clicks=dominant_page_data['click_count'],
@@ -140,14 +144,13 @@ class BubbleCacheManager:
             events.sort(key=lambda x: x['timestamp'])
 
             # Calculate time spent on each page in this minute
-            page_time = defaultdict(lambda: {'seconds': 0, 'events': [], 'page_id': None, 'page___title': None,
-                                             'page__original_title': None})
+            page_time = defaultdict(lambda: {'seconds': 0, 'events': []})
 
             current_page = None
             current_page_start = None
 
             for i, event in enumerate(events):
-                event_page = event['page__id']
+                event_page = event['url']
                 event_time = event['timestamp']
 
                 # If this is a page transition or first event
@@ -160,9 +163,6 @@ class BubbleCacheManager:
                     # Start new page
                     current_page = event_page
                     current_page_start = event_time
-                    page_time[current_page]['page_id'] = event_page
-                    page_time[current_page]['page___title'] = event['page___title']
-                    page_time[current_page]['page__original_title'] = event['page__original_title']
 
                 # Add event to current page
                 page_time[current_page]['events'].append(event)
@@ -198,9 +198,7 @@ class BubbleCacheManager:
 
             # Create dominant page data
             dominant_page_data = {
-                'page__id': page_time[dominant_page]['page_id'],
-                'page___title': page_time[dominant_page]['page___title'],
-                'page__original_title': page_time[dominant_page]['page__original_title'],
+                'url': dominant_page,
                 'seconds_spent': int(page_time[dominant_page]['seconds']),
                 'click_count': click_count,
                 'input_count': input_count,
@@ -278,7 +276,7 @@ class BubbleCacheManager:
         events_start = time.time()
         start_datetime = timezone.make_aware(datetime.combine(cutoff_date, datetime.min.time()))
 
-        all_events_data = (
+        all_events_data = list(
             Event.objects
             .filter(
                 session__in=sessions,
@@ -288,15 +286,14 @@ class BubbleCacheManager:
             )
             .values(
                 'timestamp',
-                'page__id',
-                'page___title',
-                'page__original_title',
+                'url',
                 'session__session_id',
                 'event_type',
                 'data'
             )
             .order_by('session__session_id', 'timestamp')
         )
+        title_map = get_latest_analytics_titles(project_id, [event.get('url', '') for event in all_events_data])
 
         events_time = time.time() - events_start
 
@@ -348,7 +345,8 @@ class BubbleCacheManager:
                 event_breakdown = ", ".join(breakdown_parts) if breakdown_parts else "no events"
 
                 # Get page title
-                dominant_title = dominant_page_data['page___title'] or dominant_page_data['page__original_title']
+                dominant_url = dominant_page_data['url']
+                dominant_title = title_map.get(dominant_url, dominant_url)
 
                 # Build tooltip with time information
                 seconds_spent = dominant_page_data['seconds_spent']
@@ -356,7 +354,7 @@ class BubbleCacheManager:
 
                 # Check if cache entry already exists
                 existing_cache = BubbleCache.objects.filter(
-                    page_id=dominant_page_data['page__id'],
+                    url=dominant_url,
                     session=session,
                     timestamp=minute
                 ).first()
@@ -381,8 +379,8 @@ class BubbleCacheManager:
                 else:
                     # Create new cache entry
                     cache_entries.append(BubbleCache(
-                        page_id=dominant_page_data['page__id'],
                         session=session,
+                        url=dominant_url,
                         timestamp=minute,
                         size=d,
                         clicks=dominant_page_data['click_count'],
@@ -416,16 +414,23 @@ class BubbleCacheManager:
         }
 
     @staticmethod
-    def get_cached_bubbles_for_sessions(session_ids):
+    def get_cached_bubbles_for_sessions(session_ids, project_id):
         """
         Get cached bubble data for multiple sessions.
         Returns cached entries grouped by session.
         """
-        cached_entries = BubbleCache.objects.filter(
-            session__session_id__in=session_ids
-        ).select_related('page').values(
-            'timestamp', 'page___title', 'page__original_title', 'size', 'session__session_id',
-            'seconds_spent', 'clicks', 'mouse_moves', 'key_strokes'
+        cached_entries = list(
+            BubbleCache.objects.filter(
+                session__session_id__in=session_ids
+            ).values(
+                'timestamp', 'url', 'size', 'session__session_id',
+                'seconds_spent', 'clicks', 'mouse_moves', 'key_strokes'
+            )
+        )
+        cached_entries = apply_titles_to_entries(
+            project_id,
+            cached_entries,
+            prefer_recording_titles=True,
         )
 
         # Group by session
@@ -447,7 +452,7 @@ class BubbleCacheManager:
         # Calculate page dominance by counting the number of minutes each page was dominant
         page_dominance_minutes = defaultdict(int)
         for entry in cached_entries:
-            page_title = entry['page___title'] or entry['page__original_title']
+            page_title = entry.get('page_title')
             if page_title:
                 # Each cache entry represents one minute of dominance
                 page_dominance_minutes[page_title] += 1

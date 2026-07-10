@@ -1,247 +1,383 @@
 {% extends 'base.html' %}
 {% load static %}
 
-{% block title %}All Projects{% endblock %}
+{% block title %}All projects{% endblock %}
 
 {% block nav %}
- <nav class="fixed top-0 left-0 z-10 right-0 bg-white border-b border-gray-200 shadow-sm w-full h-12 pl-8 pr-2 flex items-center justify-between">
-            <!-- Left Section: Logo and Menu Items -->
-            <div class="flex items-center h-full">
-                <!-- Logo -->
-                <a href="/"><img src="{% static 'svg/logo.svg' %}" /></a>
-                <!-- Menu Items -->
-                <div class="flex items-center h-full ml-[88px] space-x-2">
-                    
-                     <!-- Dropdown Menu Component -->
-                <div class="h-full relative inline-block text-left" id="project-dropdown-container">
-                    <!-- Button to toggle the dropdown -->
-                    <div class="flex items-center h-full mr-2 px-3 bg-gray-100 font-medium">
-                        <button
-                            type="button"
-                            class="inline-flex w-full justify-center text-sky-800 duration-150 hover:bg-slate-100 rounded-md p-1 pl-2 font-medium gap-1"
-                            data-dropdown-toggle="#project-popup">
-                            All projects
-                            <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                height="20px"
-                                viewBox="0 -960 960 960"
-                                width="20px"
-                                fill="currentColor">
-                                <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
-                            </svg>
-                        </button>
-                    </div>
-
-                    <!-- Dropdown menu, hidden by default -->
-                    <div
-                        id="project-popup"
-                        data-dropdown-menu
-                        class="absolute left-0 z-10 mt-2 w-48 origin-top-left rounded-md bg-white shadow-lg border border-slate-200 focus:outline-none duration-200"
-                        role="menu"
-                        tabindex="-1">
-                        <div class="py-1" role="none">
-                            {% for membership in memberships %}
-                            <a
-                                href="{% url 'recordings' membership.project.id %}"
-                                class="block px-4 py-3 hover:bg-gray-100"
-                                data-project-id="{{ membership.project.id }}"
-                                role="menuitem"
-                                tabindex="-1"
-                                >{{ membership.project.name }}</a>
-                            {% endfor %}
-                            <a
-                                href="{% url 'projects:project_list' %}"
-                                class="rounded text-slate-50 block px-4 py-3 bg-slate-700"
-                                role="menuitem"
-                                tabindex="-1"
-                                >See all projects</a
-                            >
-                        </div>
-                    </div>
-                </div>
-                </div>
-            </div>
-
-            <!-- Right Section: Profile Menu -->
-            <div class="flex items-center h-full">
-                
-
-                <a
-                                            href="{% url 'users:user_profile' %}"
-                    class="flex items-center text-sky-800 duration-150 hover:bg-slate-100 rounded-md py-2 px-4 font-medium gap-1">
-                    <span>Profile</span>
-                </a>
-            </div>
-        </nav>
+  {% if user.is_authenticated %}
+    {% include 'projects/partials/project_top_nav.html' %}
+  {% else %}
+    <nav class="fixed top-0 left-0 z-10 right-0 bg-white border-b border-gray-200 shadow-sm w-full h-12 pl-8 pr-2 flex items-center">
+      <div class="flex items-center h-full">
+        <a href="/"><img src="{% static 'svg/logo.svg' %}" alt="Hymetry" /></a>
+      </div>
+    </nav>
+  {% endif %}
 {% endblock %}
+
 {% block content %}
-<div class="flex h-[calc(100vh-4rem)] mt-16">
+  <div class="flex min-h-[calc(100vh-4rem)] mt-16{% if hosted_demo_url %} pb-28{% endif %}">
     <div class="container mx-auto p-4 sm:p-6 lg:p-8">
-        <!-- Main Flex Container -->
-        <div class="flex flex-row gap-8 lg:gap-12">
-            <div class="hidden lg:block w-1/4 xl:w-1/5">
-                <img src="{% static 'svg/projects.svg' %}" />
-            </div>
+      <div class="flex flex-row gap-8 lg:gap-12">
+        <div class="hidden lg:block w-1/4 xl:w-1/5">
+          <img src="{% static 'svg/projects.svg' %}" alt="" />
+        </div>
 
-            <!-- Right Column: Content Cards -->
-            <div class="w-full lg:flex-1 max-w-xl">
-                <header class="mb-8">
-                    <h1 class="text-3xl font-bold text-slate-900">All projects</h1>
-                </header>
+        <div class="w-full lg:flex-1" style="max-width: 760px">
+          <header class="mb-8">
+            <h1 class="text-3xl font-bold text-slate-900">All projects</h1>
+            <p class="mt-2 text-sm font-medium text-gray-950">
+              Manage the workspaces and projects you have access to.
+            </p>
+          </header>
 
-                <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
-                   {% if request.user.is_superuser %}
-                    <div class="flex justify-between items-center mb-8">
-                        <button
-                            data-modal-trigger
-                            aria-controls="create-project"
-                            class="flex items-center justify-center gap-2 font-medium text-white border border-slate-200 duration-150 bg-sky-600 hover:bg-sky-700 rounded px-3 py-2">
-                            <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                height="24px"
-                                viewBox="0 -960 960 960"
-                                width="24px"
-                                fill="currentColor">
-                                <path d="M450-450H220v-60h230v-230h60v230h230v60H510v230h-60v-230Z" />
-                            </svg>
-                            Create new project
-                        </button>
-                    </div>
-                    {% endif %}
-                    <div
-                        class="grid grid-cols-10 gap-4 font-medium text-slate-500 pb-2 mb-1 border-b border-slate-200">
-                        <div class="col-span-7">Name</div>
-                        <div class="col-span-2">Your role</div>
-                        <div class="col-span-1"></div>
-                    </div>
+          {% if user.is_authenticated %}
+            {% for card in workspace_cards %}
+              <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+                <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+                  <h2 class="text-xl font-semibold text-slate-900">{{ card.workspace.name }}</h2>
+                  <p class="text-sm font-medium text-slate-500">Your role: {{ card.role_label }}</p>
+                </div>
 
-                    {% for membership in memberships %}
-                    <div class="grid grid-cols-10 gap-4 items-center">
-                        <div class="col-span-7">
-                            <a
-                                href="{% url 'project_detail' membership.project.pk %}"
-                                class="flex items-center -ml-3 text-sky-800 duration-150 hover:bg-slate-100 rounded-md p-3 font-medium gap-1">
-                                {{ membership.project.name }}
-                            </a>
-                        </div>
-                        <div class="col-span-3">
-                            {% if membership.is_owner %}owner{% else %}member{% endif %}
-                        </div>
-                    </div>
+                <div class="flex flex-wrap items-center gap-3 mb-8">
+                  {% if card.can_create_project %}
+                    <button
+                      type="button"
+                      data-modal-trigger
+                      aria-controls="create-project-{{ card.workspace.public_id }}"
+                      class="inline-flex items-center justify-center gap-2 font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                        <path d="M450-450H220v-60h230v-230h60v230h230v60H510v230h-60v-230Z" />
+                      </svg>
+                      Create project
+                    </button>
+                  {% endif %}
+                  {% if card.can_invite_members %}
+                    <a href="{% url 'w:workspace_team' workspace_slug=card.workspace.slug %}" class="inline-flex items-center justify-center font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-2">
+                      Manage members
+                    </a>
+                  {% endif %}
+                  {% if card.can_view_workspace_details %}
+                    <a href="{% url 'w:workspace_details' workspace_slug=card.workspace.slug %}" class="inline-flex items-center justify-center font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-2">
+                      Workspace details
+                    </a>
+                  {% endif %}
+                </div>
+
+                <table class="w-full border-collapse text-left">
+                  <thead class="border-b border-slate-200 text-slate-500">
+                    <tr>
+                      <th class="pb-2 font-medium" style="width: 50%">Project name</th>
+                      <th class="pb-2 text-left font-medium" style="width: 50%">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for project_row in card.projects %}
+                      <tr>
+                        <td colspan="2" style="padding: 0">
+                          <a href="{% url 'w:project_pages' workspace_slug=project_row.project.workspace.slug project_id=project_row.project.pk %}" class="grid items-center -mx-3 rounded-md p-3 duration-150 hover:bg-slate-100" style="grid-template-columns: 50% 50%">
+                            <span class="font-medium text-sky-800">{{ project_row.project.name }}</span>
+                            <span class="text-left whitespace-nowrap">
+                              <span class="inline-flex items-center rounded-full px-2 py-1 text-xs font-medium {{ project_row.status_class }}">
+                                {{ project_row.status_label }}
+                              </span>
+                            </span>
+                          </a>
+                        </td>
+                      </tr>
                     {% empty %}
-                    <div class="grid grid-cols-10 gap-4 items-center py-4">
-                        <div class="col-span-10 text-center text-slate-500">
-                            No projects yet. Create your first project to get started.
-                        </div>
-                    </div>
+                      <tr>
+                        <td colspan="2" class="py-4 text-slate-500">No projects yet.</td>
+                      </tr>
                     {% endfor %}
-                </section>
-            </div>
-        </div>
-    </div>
-</div>
+                  </tbody>
+                </table>
+              </section>
 
-<!-- Create Project Modal -->
-<div id="create-project" data-modal-target class="hidden">
-    <div class="flex items-start justify-center fixed inset-0 z-50">
-        <div
-            data-modal-close
-            data-modal-overlay
-            tabindex="-1"
-            data-class-in="opacity-50"
-            data-class-out="opacity-0"
-            class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
-
-        <div
-            data-modal-wrapper
-            data-class-in="opacity-100 translate-y-0"
-            data-class-out="opacity-0 translate-y-5"
-            class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
-            <form method="post" action="{% url 'projects:project_create' %}">
-                {% csrf_token %}
-                <div class="bg-white px-6 py-4">
-                    <button
-                        type="button"
-                        data-modal-close
-                        class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
-                        <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            height="24px"
-                            viewBox="0 -960 960 960"
-                            width="24px"
-                            fill="currentColor">
-                            <path
-                                d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
-                        </svg>
-                    </button>
-                    <div class="flex items-start">
-                        <div
-                            class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
-                            <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                height="24px"
-                                viewBox="0 -960 960 960"
-                                width="24px"
-                                fill="currentColor">
-                                <path
-                                    d="M172.31-140Q142-140 121-161q-21-21-21-51.31v-415.38Q100-658 121-679q21-21 51.31-21H340v-67.69Q340-798 361-819q21-21 51.31-21h135.38Q578-840 599-819q21 21 21 51.31V-700h167.69Q818-700 839-679q21 21 21 51.31v415.38Q860-182 839-161q-21 21-51.31 21H172.31Zm0-60h615.38q4.62 0 8.46-3.85 3.85-3.84 3.85-8.46v-415.38q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H172.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46v415.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85ZM400-700h160v-67.69q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H412.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46V-700ZM160-200v-440 440Z" />
+              {% if card.can_create_project %}
+                <div id="create-project-{{ card.workspace.public_id }}" data-modal-target class="hidden">
+                  <div class="flex items-start justify-center fixed inset-0 z-50">
+                    <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+                    <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+                      <form method="post" action="{% url 'projects:project_create' %}" data-create-project-form data-existing-project-names="{{ card.project_names_json }}">
+                        {% csrf_token %}
+                        <input type="hidden" name="workspace_id" value="{{ card.workspace.public_id }}" />
+                        <div class="bg-white px-6 py-4">
+                          <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                              <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
                             </svg>
-                        </div>
-                        <div class="w-full mt-2 ml-4">
-                            <h3 class="text-base font-semibold leading-6">Create new project</h3>
-                            <div class="mt-6">
-                                <input
-                                    type="text"
-                                    name="name"
-                                    placeholder="Enter project name"
-                                    class="appearance-none border border-slate-300 rounded w-full p-3 text-gray-700 leading-tight"
-                                    data-modal-input-focus
-                                    autofocus 
-                                    required />
-                                <input type="hidden" name="timezone" id="detected-timezone" value="UTC" />
+                          </button>
+                          <div class="flex items-start">
+                            <div class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
+                              <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                                <path d="M172.31-140Q142-140 121-161q-21-21-21-51.31v-415.38Q100-658 121-679q21-21 51.31-21H340v-67.69Q340-798 361-819q21-21 51.31-21h135.38Q578-840 599-819q21 21 21 51.31V-700h167.69Q818-700 839-679q21 21 21 51.31v415.38Q860-182 839-161q-21 21-51.31 21H172.31Zm0-60h615.38q4.62 0 8.46-3.85 3.85-3.84 3.85-8.46v-415.38q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H172.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46v415.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85ZM400-700h160v-67.69q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H412.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46V-700ZM160-200v-440 440Z" />
+                              </svg>
                             </div>
+                            <div class="w-full mt-2 ml-4">
+                              <h3 class="text-base font-semibold leading-6">Create project</h3>
+                              <div class="mt-6">
+                                <div>
+                                  <label for="project-name-{{ card.workspace.public_id }}" class="block font-bold text-slate-950">Project name</label>
+                                  <p class="mt-1 text-sm font-normal leading-relaxed text-gray-950">Use a name your team will recognize. You can create separate projects for separate products, apps, or environments.</p>
+                                  <input id="project-name-{{ card.workspace.public_id }}" type="text" name="name" placeholder="E.g. Acme CRM" maxlength="255" aria-required="true" class="mt-2 appearance-none border border-slate-300 rounded w-full p-3 text-gray-700 leading-tight focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500" data-modal-input-focus />
+                                  <div data-project-name-error class="mt-2 hidden text-sm text-red-600"></div>
+                                </div>
+                                <div class="mt-6">
+                                  <label for="product-url-{{ card.workspace.public_id }}" class="block font-bold text-slate-950">Product URL</label>
+                                  <p class="mt-1 text-sm font-normal leading-relaxed text-gray-950">Optional. Public, localhost, IP and internal product hosts are supported.</p>
+                                  <input id="product-url-{{ card.workspace.public_id }}" type="text" name="product_url" value="{{ card.workspace.website_url }}" placeholder="E.g. app.acme.com or localhost:3000" inputmode="url" class="mt-2 appearance-none border border-slate-300 rounded w-full p-3 text-gray-700 leading-tight focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500" />
+                                  <div data-product-url-error class="mt-2 hidden text-sm text-red-600"></div>
+                                </div>
+                                <input type="hidden" name="timezone" class="detected-timezone" value="UTC" />
+                              </div>
+                            </div>
+                          </div>
                         </div>
+                        <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+                          <button type="submit" class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">Create project</button>
+                          <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-100 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-200 rounded px-3 py-3">Cancel</button>
+                        </div>
+                      </form>
                     </div>
+                  </div>
                 </div>
+              {% endif %}
+            {% empty %}
+              <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+                <p class="text-slate-500">No workspaces yet. Create your first workspace to get started.</p>
+              </section>
+            {% endfor %}
 
-                <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
-                    <button
-                        type="submit"
-                        class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">
-                        Create project
-                    </button>
-                    <button
-                        type="button"
-                        data-modal-close
-                        class="flex items-center gap-2 bg-slate-100 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-200 rounded px-3 py-3">
-                        Cancel
-                    </button>
-                </div>
-            </form>
+            {% if can_create_workspace %}
+              <button
+                type="button"
+                data-modal-trigger
+                aria-controls="create-workspace"
+                class="inline-flex items-center text-sky-800 duration-150 hover:underline py-2 font-medium gap-1">
+                Create new workspace
+              </button>
+            {% endif %}
+          {% endif %}
         </div>
+      </div>
     </div>
-</div>
+  </div>
 
-<script>
-// Detect user timezone when the page loads
-document.addEventListener('DOMContentLoaded', function() {
-    const detectedTimezoneInput = document.getElementById('detected-timezone');
-    if (detectedTimezoneInput) {
-        try {
-            // Get user's timezone
-            const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-            
-            // Use the detected timezone directly (no conversion needed)
-            const finalTimezone = userTimezone;
-            detectedTimezoneInput.value = finalTimezone;
-            
-        } catch (error) {
-            console.error('Error detecting timezone:', error);
-            // Fallback to UTC if detection fails
-            detectedTimezoneInput.value = 'UTC';
+  {% if can_create_workspace %}
+    <div id="create-workspace" data-modal-target class="hidden">
+      <div class="flex items-start justify-center fixed inset-0 z-50">
+        <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+        <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+          <form method="post" action="{% url 'workspaces:workspace_create' %}" id="create-workspace-form">
+            {% csrf_token %}
+            <div class="bg-white px-6 py-4">
+              <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                  <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                </svg>
+              </button>
+              <div class="flex items-start">
+                <div class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
+                  <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                    <path d="M172.31-140Q142-140 121-161q-21-21-21-51.31v-415.38Q100-658 121-679q21-21 51.31-21H340v-67.69Q340-798 361-819q21-21 51.31-21h135.38Q578-840 599-819q21 21 21 51.31V-700h167.69Q818-700 839-679q21 21 21 51.31v415.38Q860-182 839-161q-21 21-51.31 21H172.31Zm0-60h615.38q4.62 0 8.46-3.85 3.85-3.84 3.85-8.46v-415.38q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H172.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46v415.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85ZM400-700h160v-67.69q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H412.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46V-700ZM160-200v-440 440Z" />
+                  </svg>
+                </div>
+                <div class="w-full mt-2 ml-4">
+                  <h3 class="text-base font-semibold leading-6">Create new workspace</h3>
+                  <div class="mt-6">
+                    <div>
+                      <label for="workspace-name" class="block font-bold text-slate-950">Workspace name</label>
+                      <p class="mt-1 text-sm font-normal leading-relaxed text-gray-950">This is where your team, projects, and settings will live.</p>
+                      <input id="workspace-name" type="text" name="name" placeholder="E.g. Acme Inc." class="mt-2 appearance-none border border-slate-300 rounded w-full p-3 text-gray-700 leading-tight focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500" data-modal-input-focus required />
+                    </div>
+                    <div class="mt-6">
+                      <label for="workspace-website" class="block font-bold text-slate-950">Website</label>
+                      <p class="mt-1 text-sm font-normal leading-relaxed text-gray-950">Optional. Used to help your team recognize this workspace.</p>
+                      <input id="workspace-website" type="text" name="website_url" inputmode="url" placeholder="E.g. acme.com" maxlength="255" class="mt-2 appearance-none border border-slate-300 rounded w-full p-3 text-gray-700 leading-tight focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500" />
+                      <div id="workspace-website-error" class="mt-2 hidden text-sm text-red-600"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+              <button type="submit" class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">Create workspace</button>
+              <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        const domainLabelPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i
+
+        function showFieldError(errorElement, message) {
+          if (!errorElement) {
+            return
+          }
+          errorElement.textContent = message
+          errorElement.classList.remove('hidden')
         }
-    }
-});
-</script>
 
-{% endblock %} 
+        function clearFieldError(errorElement) {
+          if (!errorElement) {
+            return
+          }
+          errorElement.textContent = ''
+          errorElement.classList.add('hidden')
+        }
+
+        function isValidDomainOrUrl(value) {
+          const rawValue = String(value || '').trim()
+          if (!rawValue) {
+            return false
+          }
+
+          try {
+            const url = new URL(rawValue.includes('://') ? rawValue : `https://${rawValue}`)
+            const hostname = url.hostname.replace(/\.$/, '').toLowerCase()
+            const labels = hostname.split('.').filter(Boolean)
+            const isIpAddress = hostname.includes(':') || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)
+
+            return (
+              (isIpAddress || labels.length >= 1) &&
+              hostname.length <= 253 &&
+              (isIpAddress || labels.every((label) => domainLabelPattern.test(label)))
+            )
+          } catch (error) {
+            return false
+          }
+        }
+
+        function existingProjectNames(form) {
+          try {
+            return JSON.parse(form.dataset.existingProjectNames || '[]')
+          } catch (error) {
+            return []
+          }
+        }
+
+        function clearCreateProjectErrors(form) {
+          clearFieldError(form.querySelector('[data-project-name-error]'))
+          clearFieldError(form.querySelector('[data-product-url-error]'))
+        }
+
+        document.querySelectorAll('[data-modal-trigger][aria-controls^="create-project-"]').forEach(function(trigger) {
+          trigger.addEventListener('click', function() {
+            const modal = document.getElementById(trigger.getAttribute('aria-controls'))
+            const form = modal ? modal.querySelector('[data-create-project-form]') : null
+            if (form) {
+              clearCreateProjectErrors(form)
+            }
+          })
+        })
+
+        document.querySelectorAll('[data-create-project-form]').forEach(function(form) {
+          const nameInput = form.querySelector('input[name="name"]')
+          const productUrlInput = form.querySelector('input[name="product_url"]')
+          const nameError = form.querySelector('[data-project-name-error]')
+          const productUrlError = form.querySelector('[data-product-url-error]')
+
+          if (nameInput) {
+            nameInput.addEventListener('input', function() {
+              clearFieldError(nameError)
+            })
+          }
+
+          if (productUrlInput) {
+            productUrlInput.addEventListener('input', function() {
+              clearFieldError(productUrlError)
+            })
+          }
+
+          form.addEventListener('submit', function(event) {
+            const projectName = nameInput ? nameInput.value.trim() : ''
+            const existingNames = existingProjectNames(form)
+
+            clearCreateProjectErrors(form)
+
+            if (!projectName) {
+              event.preventDefault()
+              showFieldError(nameError, 'Enter a project name.')
+              if (nameInput) {
+                nameInput.focus()
+              }
+              return
+            }
+
+            if (existingNames.includes(projectName.toLowerCase())) {
+              event.preventDefault()
+              showFieldError(nameError, 'A project with this name already exists in this workspace.')
+              if (nameInput) {
+                nameInput.focus()
+              }
+              return
+            }
+
+            if (productUrlInput && productUrlInput.value.trim() && !isValidDomainOrUrl(productUrlInput.value)) {
+              event.preventDefault()
+              showFieldError(productUrlError, 'Enter a valid product URL.')
+              if (productUrlInput) {
+                productUrlInput.focus()
+              }
+            }
+          })
+        })
+
+        const createWorkspaceForm = document.getElementById('create-workspace-form')
+        const workspaceWebsiteInput = document.getElementById('workspace-website')
+        const workspaceWebsiteError = document.getElementById('workspace-website-error')
+
+        document.querySelectorAll('[aria-controls="create-workspace"]').forEach(function(trigger) {
+          trigger.addEventListener('click', function() {
+            clearFieldError(workspaceWebsiteError)
+          })
+        })
+
+        if (workspaceWebsiteInput) {
+          workspaceWebsiteInput.addEventListener('input', function() {
+            clearFieldError(workspaceWebsiteError)
+          })
+        }
+
+        if (createWorkspaceForm && workspaceWebsiteInput) {
+          createWorkspaceForm.addEventListener('submit', function(event) {
+            clearFieldError(workspaceWebsiteError)
+            if (workspaceWebsiteInput.value.trim() && !isValidDomainOrUrl(workspaceWebsiteInput.value)) {
+              event.preventDefault()
+              showFieldError(workspaceWebsiteError, 'Enter a valid website URL.')
+              workspaceWebsiteInput.focus()
+            }
+          })
+        }
+
+        document.querySelectorAll('.detected-timezone').forEach(function(input) {
+          try {
+            input.value = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          } catch (error) {
+            input.value = 'UTC';
+          }
+        });
+      });
+    </script>
+  {% endif %}
+
+  {% if hosted_demo_url %}
+    <div id="demo-project-panel" class="fixed inset-x-0 bottom-0 z-20 border-t border-slate-200 bg-white/95 backdrop-blur">
+      <div class="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
+        <div>
+          <p class="text-sm font-semibold text-slate-900">Hosted demo</p>
+          <p class="text-sm text-slate-600">The demo opens on the hosted Hymetry domain.</p>
+        </div>
+        <div class="flex items-center gap-3">
+          <a href="{{ hosted_demo_url }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-2 rounded-md bg-sky-600 px-4 py-2 font-medium text-white duration-150 hover:bg-sky-700">
+            Open hosted demo ↗
+          </a>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}

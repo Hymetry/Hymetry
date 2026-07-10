@@ -1,0 +1,37 @@
+<section
+  id="page-metric-dynamics-section"
+  class="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
+  data-page-metric-dynamics-section
+  data-page-metric-dynamics-show-peers="{% if page_metric_dynamics_show_peers %}true{% else %}false{% endif %}">
+  <div class="metric-dynamics-section-header px-6 py-5">
+    <div>
+      <h2 class="text-lg font-semibold uppercase text-gray-600">Page metric dynamics</h2>
+      <p class="mt-1 text-sm text-slate-500">Blue line is this page. Dashed lines show current trend vs peer benchmark. Enable peers to see individual peer traces.</p>
+    </div>
+    <label class="metric-dynamics-toggle shrink-0" for="page-metric-dynamics-show-peers">
+      <span>Show peers</span>
+      <input
+        id="page-metric-dynamics-show-peers"
+        class="metric-dynamics-toggle__input"
+        type="checkbox"
+        name="show_peers"
+        value="1"
+        data-page-metric-dynamics-show-peers
+        {% if page_metric_dynamics_show_peers %}checked{% endif %}
+        hx-get="{{ page_metric_dynamics_url }}?range={{ pages_range_key }}&show_peers={% if page_metric_dynamics_show_peers %}0{% else %}1{% endif %}"
+        hx-target="#page-metric-dynamics-section"
+        hx-swap="outerHTML"
+        hx-indicator="#page-metric-dynamics-loading" />
+      <span class="metric-dynamics-toggle__switch" aria-hidden="true"></span>
+    </label>
+  </div>
+
+  <div class="metric-dynamics-grid-shell" data-page-metric-dynamics-shell>
+    <div id="page-metric-dynamics-grid" class="grid gap-px bg-slate-200 md:grid-cols-2 xl:grid-cols-4" data-metric-dynamics-grid></div>
+    <div id="page-metric-dynamics-loading" class="metric-dynamics-loading-overlay htmx-indicator" aria-hidden="true">
+      <div class="metric-dynamics-loading-indicator">
+        <span class="metric-dynamics-loading-spinner" aria-hidden="true"></span>
+      </div>
+    </div>
+  </div>
+</section>

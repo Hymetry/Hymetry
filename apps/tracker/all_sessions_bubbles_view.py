@@ -1,8 +1,10 @@
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone as datetime_timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.shortcuts import render
 
+from apps.projects.demo import DEMO_PROJECT_DISPLAY_NAME
 from apps.tracker.bubble_cache_manager import BubbleCacheManager
 from apps.tracker.constants import LEGEND_PAGE_COLORS
 from apps.tracker.models import Session
@@ -11,9 +13,10 @@ from apps.tracker.models import Session
 class AllSessionsBubblesView:
     """Handles the display of all sessions with bubble visualization."""
 
-    def __init__(self, request, project_id):
+    def __init__(self, request, project_id, *, is_demo_view=False):
         self.request = request
         self.project_id = project_id
+        self.is_demo_view = is_demo_view
         self.selected_date = self._parse_selected_date()
         self.page = self._parse_page_number()
         self.rows_per_page = getattr(settings, 'ROWS_PER_PAGE', 100)
@@ -26,17 +29,29 @@ class AllSessionsBubblesView:
 
     def _get_user_projects(self):
         """Get all projects the user is a member of."""
-        return self.request.user.projectmembership_set.values_list('project', flat=True)
+        if not getattr(self.request.user, 'is_authenticated', False):
+            return []
+        from apps.projects.access import active_workspace_memberships
+        from apps.projects.models import Project
+
+        workspace_ids = active_workspace_memberships().filter(user=self.request.user).values_list('workspace_id', flat=True)
+        return Project.active.filter(workspace_id__in=workspace_ids).values_list('id', flat=True)
 
     def _get_user_projects_with_details(self):
         """Get all projects the user is a member of with full details."""
-        return self.request.user.projectmembership_set.select_related('project').all()
+        if not getattr(self.request.user, 'is_authenticated', False):
+            return []
+        from apps.projects.access import active_workspace_memberships
+        from apps.projects.models import Project
+
+        workspace_ids = active_workspace_memberships().filter(user=self.request.user).values_list('workspace_id', flat=True)
+        return Project.active.filter(workspace_id__in=workspace_ids).select_related('workspace').order_by('name')
 
     def _get_project_timezone(self):
         """Get the timezone for the current project."""
         from apps.projects.models import Project
         try:
-            project = Project.objects.get(id=self.project_id)
+            project = Project.active.get(id=self.project_id)
             return project.timezone
         except Project.DoesNotExist:
             return 'UTC'  # Fallback to UTC if project not found
@@ -59,6 +74,22 @@ class AllSessionsBubblesView:
         except (TypeError, ValueError):
             return 1
 
+    def _project_zoneinfo(self):
+        try:
+            return ZoneInfo(self.project_timezone or 'UTC')
+        except ZoneInfoNotFoundError:
+            return ZoneInfo('UTC')
+
+    def _local_day_bounds_utc(self, start_day, end_day=None):
+        """Return UTC bounds for inclusive local date range."""
+        end_day = end_day or start_day
+        project_tz = self._project_zoneinfo()
+        start_bound = datetime.combine(start_day, time.min, tzinfo=project_tz).astimezone(datetime_timezone.utc)
+        end_bound = datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=project_tz).astimezone(
+            datetime_timezone.utc
+        )
+        return start_bound, end_bound
+
     def _build_day_navigator(self):
         """Build the day navigator with session counts for the last 30 days, only counting sessions with cached bubble data."""
         end_day = date.today()
@@ -79,25 +110,26 @@ class AllSessionsBubblesView:
             project_ids = ','.join(str(pid) for pid in project_filter)
             project_clause = f"IN ({project_ids})"
 
-        # Optimized raw SQL query with project timezone-aware date filtering
+        start_bound, end_bound = self._local_day_bounds_utc(start_day, end_day)
+
         with connection.cursor() as cursor:
-            cursor.execute(f""" 
-                SELECT 
-                    DATE(s.start_time AT TIME ZONE %s) as day,
-                    COUNT(DISTINCT s.session_id) as count
-                FROM tracker_bubblecache bc
-                INNER JOIN tracker_session s ON bc.session_id = s.session_id
+            cursor.execute(f"""
+                SELECT
+                    DATE(s.start_time AT TIME ZONE %s) AS day,
+                    COUNT(*) AS count
+                FROM tracker_session s
                 INNER JOIN tracker_visitor v ON s.visitor_id = v.visitor_id
-                WHERE DATE(s.start_time AT TIME ZONE %s) BETWEEN %s AND %s
+                WHERE s.start_time >= %s
+                  AND s.start_time < %s
                   AND v.project_id {project_clause}
                   AND EXISTS (
-                      SELECT 1 FROM tracker_event e 
-                      WHERE e.session_id = s.session_id 
+                      SELECT 1 FROM tracker_bubblecache bc
+                      WHERE bc.session_id = s.session_id
                       LIMIT 1
                   )
                 GROUP BY DATE(s.start_time AT TIME ZONE %s)
                 ORDER BY day
-            """, [self.project_timezone, self.project_timezone, start_day, end_day, self.project_timezone])
+            """, [self.project_timezone, start_bound, end_bound, self.project_timezone])
 
             # Convert to dictionary for faster lookup
             day_counts = {row[0]: row[1] for row in cursor.fetchall()}
@@ -167,23 +199,25 @@ class AllSessionsBubblesView:
             project_ids = ','.join(str(pid) for pid in project_filter)
             project_clause = f"IN ({project_ids})"
 
+        start_bound, end_bound = self._local_day_bounds_utc(self.selected_date)
+
         with connection.cursor() as cursor:
             cursor.execute(f"""
-                SELECT DISTINCT 
+                SELECT
                     s.session_id, 
                     s.start_time AT TIME ZONE %s as start_time
-                FROM tracker_bubblecache bc
-                INNER JOIN tracker_session s ON bc.session_id = s.session_id
+                FROM tracker_session s
                 INNER JOIN tracker_visitor v ON s.visitor_id = v.visitor_id
-                WHERE DATE(s.start_time AT TIME ZONE %s) = %s
+                WHERE s.start_time >= %s
+                  AND s.start_time < %s
                   AND v.project_id {project_clause}
                   AND EXISTS (
-                      SELECT 1 FROM tracker_event e 
-                      WHERE e.session_id = s.session_id 
+                      SELECT 1 FROM tracker_bubblecache bc
+                      WHERE bc.session_id = s.session_id
                       LIMIT 1
                   )
                 ORDER BY start_time DESC
-            """, [self.project_timezone, self.project_timezone, self.selected_date])
+            """, [self.project_timezone, start_bound, end_bound])
 
             session_ids = [row[0] for row in cursor.fetchall()]
 
@@ -215,20 +249,22 @@ class AllSessionsBubblesView:
             project_ids = ','.join(str(pid) for pid in project_filter)
             project_clause = f"IN ({project_ids})"
 
+        start_bound, end_bound = self._local_day_bounds_utc(self.selected_date)
+
         with connection.cursor() as cursor:
             cursor.execute(f"""
-                SELECT COUNT(DISTINCT s.session_id) as total_sessions
-                FROM tracker_bubblecache bc
-                INNER JOIN tracker_session s ON bc.session_id = s.session_id
+                SELECT COUNT(*) as total_sessions
+                FROM tracker_session s
                 INNER JOIN tracker_visitor v ON s.visitor_id = v.visitor_id
-                WHERE DATE(s.start_time AT TIME ZONE 'UTC' AT TIME ZONE %s) = %s
+                WHERE s.start_time >= %s
+                  AND s.start_time < %s
                   AND v.project_id {project_clause}
                   AND EXISTS (
-                      SELECT 1 FROM tracker_event e 
-                      WHERE e.session_id = s.session_id 
+                      SELECT 1 FROM tracker_bubblecache bc
+                      WHERE bc.session_id = s.session_id
                       LIMIT 1
                   )
-            """, [self.project_timezone, self.selected_date])
+            """, [start_bound, end_bound])
 
             total_sessions_for_day = cursor.fetchone()[0]
 
@@ -237,7 +273,7 @@ class AllSessionsBubblesView:
 
     def _get_cached_bubbles_for_sessions(self, session_ids):
         """Get cached bubble data for sessions."""
-        return BubbleCacheManager.get_cached_bubbles_for_sessions(session_ids)
+        return BubbleCacheManager.get_cached_bubbles_for_sessions(session_ids, self.selected_project_id)
 
     def _calculate_legend_from_cache(self, cached_entries):
         """Calculate legend from cached data."""
@@ -277,7 +313,7 @@ class AllSessionsBubblesView:
                             })
 
                 # Add the actual bubble
-                page_title = entry['page___title'] or entry['page__original_title']
+                page_title = entry['page_title']
                 if title_to_color.get(page_title) is None:
                     color = LEGEND_PAGE_COLORS[len(LEGEND_PAGE_COLORS) - 1]
                 else:
@@ -288,7 +324,7 @@ class AllSessionsBubblesView:
                     'page_idx': 1,  # Simplified approach
                     'size': entry['size'],
                     'color': color,
-                    'breakdown': entry['page___title'] or entry['page__original_title'],
+                    'breakdown': entry['page_title'],
                     'is_gap': False,
                     'clicks': entry.get('clicks', 0),
                     'mouse_moves': entry.get('mouse_moves', 0),
@@ -359,12 +395,12 @@ class AllSessionsBubblesView:
 
     def render(self):
         """Main method to render the all sessions bubbles view. Only uses cached bubble data."""
-        # Get empty sessions statistics for debugging
-        empty_stats = self._get_empty_sessions_stats()
-        if empty_stats['empty_sessions'] > 0:
-            print(
-                f"📊 Session filtering: {empty_stats['sessions_with_events']} valid, {empty_stats['empty_sessions']} empty")
-            print(f"   Empty sessions: {empty_stats['empty_percentage']:.1f}%")
+        if getattr(settings, 'TRACKER_RECORDINGS_DEBUG_EMPTY_STATS', False):
+            empty_stats = self._get_empty_sessions_stats()
+            if empty_stats['empty_sessions'] > 0:
+                print(
+                    f"Session filtering: {empty_stats['sessions_with_events']} valid, {empty_stats['empty_sessions']} empty")
+                print(f"   Empty sessions: {empty_stats['empty_percentage']:.1f}%")
 
         # Get pagination info
         total_sessions_for_day, total_pages = self._get_total_sessions_and_pages()
@@ -401,7 +437,7 @@ class AllSessionsBubblesView:
         if not sessions:
             # Get the selected project for navigation
             from apps.projects.models import Project
-            selected_project = Project.objects.get(id=self.selected_project_id) if self.selected_project_id else None
+            selected_project = Project.active.get(id=self.selected_project_id) if self.selected_project_id else None
 
             return render(self.request, 'tracker/recordings.html', {
                 'session_data': [],
@@ -420,6 +456,9 @@ class AllSessionsBubblesView:
                 'total_pages': 0,
                 'rows_per_page': self.rows_per_page,
                 'project_timezone': self.project_timezone,
+                'is_demo_view': self.is_demo_view,
+                'demo_project_id': self.selected_project_id if self.is_demo_view else None,
+                'demo_project_display_name': DEMO_PROJECT_DISPLAY_NAME,
             })
 
         # Use only cached bubble data (do not calculate in-memory)
@@ -427,7 +466,10 @@ class AllSessionsBubblesView:
 
         # Get session IDs and cached bubble data
         all_session_ids = [session.session_id for session in all_sessions_for_day]
-        all_session_cache, all_cached_entries = BubbleCacheManager.get_cached_bubbles_for_sessions(all_session_ids)
+        all_session_cache, all_cached_entries = BubbleCacheManager.get_cached_bubbles_for_sessions(
+            all_session_ids,
+            self.selected_project_id,
+        )
 
         # Calculate legend from all cached data
         overall_legend_pages = self._calculate_legend_from_cache(all_cached_entries)
@@ -444,7 +486,7 @@ class AllSessionsBubblesView:
 
         # Get the selected project for navigation
         from apps.projects.models import Project
-        selected_project = Project.objects.get(id=self.selected_project_id) if self.selected_project_id else None
+        selected_project = Project.active.get(id=self.selected_project_id) if self.selected_project_id else None
 
         return render(self.request, 'tracker/recordings.html', {
             'session_data': session_data,
@@ -463,4 +505,7 @@ class AllSessionsBubblesView:
             'next_date_label': next_date_label,
             'selected_project': selected_project,
             'project_timezone': self.project_timezone,
+            'is_demo_view': self.is_demo_view,
+            'demo_project_id': self.selected_project_id if self.is_demo_view else None,
+            'demo_project_display_name': DEMO_PROJECT_DISPLAY_NAME,
         })

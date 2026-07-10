@@ -19,8 +19,10 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY --chown=appuser:appuser . /app
 
 RUN mkdir -p /app/static/css \
-    && npm --prefix /app/frontend/tailwind install \
-    && npm --prefix /app/frontend/tailwind run build:prod
+    && npm --prefix /app/frontend/tailwind ci \
+    && npm --prefix /app/frontend/tailwind run build:prod \
+    && npm --prefix /app/frontend/tracker_script ci \
+    && npm --prefix /app/frontend/tracker_script run build_dev
 
 RUN mkdir -p /app/staticfiles /app/media \
     && chown -R appuser:appuser /app/staticfiles /app/media

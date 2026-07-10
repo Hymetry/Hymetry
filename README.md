@@ -1,130 +1,80 @@
-# Hymetry
+# Hymetry OSS
 
-[Hymetry](https://www.hymetry.com/) is session recording software for SaaS apps.
+Hymetry is a self-hosted product analytics and session replay application. The OSS edition includes Pages, Companies, Users and session analytics, page-structure naming with AI, and screen recording.
 
-It helps you capture sessions, replay user interactions, and understand how people use your product.
+The hosted demo remains available from **All projects** and opens on the hosted Hymetry domain in a new tab. Demo data is not installed into the OSS database.
 
 ## Deployment options
 
-Choose the setup that fits your needs:
+- **Docker Compose** — self-host on a server or local machine.
+- **Render** — managed deployment from `render.yaml`.
+- **Heroku** — container deployment from `app.json` and `heroku.yml`.
 
-- **Render** — recommended managed deployment
-- **Heroku** — simple if you already use Heroku
-- **Docker Compose** — self-hosted deployment on your own server or cloud VM
+## Docker Compose quick start
 
----
+1. Copy `.env.example` to `.env`.
+2. Replace `SECRET_KEY` with a long random value and keep it stable: it protects sessions and encrypts workspace OpenAI credentials.
+3. Start the stack:
 
-## Render (recommended)
+   ```console
+   docker compose up -d --build
+   ```
 
-Deploy Hymetry to Render in one click:
+4. Open `http://localhost/account/setup/admin/`.
+5. Enter an administrator email and a strong password.
+
+The setup endpoint is sealed after the first administrator is created. Hymetry has no public signup, email delivery, or email password-reset flow. If an administrator loses access, use Django's local command from the application container:
+
+```console
+python manage.py changepassword admin@example.com
+```
+
+Data is persisted in Docker volumes for PostgreSQL, Redis, static files, and media. The `init` service applies the consolidated fresh-install migrations, seeds initial configuration once, and creates idempotent Celery schedules.
+
+## Render
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/hymetry/hymetry)
 
-### Quick start
-
-1. Click the **Deploy to Render** button.
-2. Create the blueprint and wait for all services to become healthy.
-3. Open the **hymetry-web** service:
-
-<img width="454" height="172" alt="Render services list with hymetry-web highlighted" src="https://github.com/user-attachments/assets/9cc2b769-a056-495c-b044-56e3fc7d8f3e" />
-
-4. Open the URL of your newly created Hymetry instance:
-
-<img width="510" height="236" alt="Render web service page showing the generated Hymetry URL" src="https://github.com/user-attachments/assets/7c08ff35-1147-4628-8dfd-9269987ae9e7" />
-
-5. Set the admin password.
-
-<details>
-<summary>Optional Render settings</summary>
-
-Optionally set `HYMETRY_DOMAIN` and `EDGE_URL` to your Render app URL or custom domain.
-
-Example:
-
-```env
-HYMETRY_DOMAIN=https://example.com
-EDGE_URL=https://edge.example.com
-```
-
-</details>
-
----
+Render generates `SECRET_KEY`. After the first deploy, open `/account/setup/admin/` on the generated service URL and create the administrator. `HYMETRY_DOMAIN` and `EDGE_URL` are optional; when absent, Hymetry learns the public URL from the request.
 
 ## Heroku
 
-Deploy Hymetry to Heroku in one click:
-
 [![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/Hymetry/Hymetry)
 
-### Quick start
+Heroku generates a persistent `SECRET_KEY`. Open `/account/setup/admin/` after deployment to create the administrator. The deployment includes PostgreSQL and Redis add-ons.
 
-1. Click the **Deploy to Heroku** button.
-2. Create your Heroku app.
-3. Wait for build and release to finish.
+## OSS access model
 
-<details>
-<summary>Included add-ons</summary>
+- The first administrator is created only after installation.
+- There is no self-service signup.
+- A superuser can create the first workspace.
+- Any active workspace owner can create additional workspaces; admins, members, and viewers cannot.
+- Workspace owners add local users directly and may assign multiple owners. No invitation email is sent.
+- Project statuses are retained. Commercial workspace plans, trials, billing states, and workspace status badges are not part of OSS.
 
-- Heroku Postgres
-- Heroku Redis
+## Workspace OpenAI key (BYOK)
 
-</details>
+OpenAI BYOK is configured once per workspace in **Workspace settings** and is shared by projects in that workspace. Only owners and superusers can save, validate, replace, or remove it.
 
-<details>
-<summary>Optional Heroku settings</summary>
+The key is encrypted at rest. By default the encryption material is derived from the persistent `SECRET_KEY`. For explicit rotation, set `OPENAI_KEY_ENCRYPTION_KEYS` to a comma-separated list of Fernet keys with the current key first and older decryption keys after it. There is no global `OPENAI_API_KEY` fallback.
 
-Optionally set `HYMETRY_DOMAIN` and `EDGE_URL` to your app URL or custom domain.
+Without a valid workspace key, AI page naming is skipped; ingestion, analytics, recording, and manual page rules continue to work.
 
-Example:
+## Configuration
 
-```env
-HYMETRY_DOMAIN=https://example.com
-EDGE_URL=https://edge.example.com
-```
+Important environment variables are documented in `.env.example`:
 
-</details>
+- `DATABASE_URL`, `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`
+- `HYMETRY_DOMAIN` and `EDGE_URL` for explicit public URLs
+- `HOSTED_DEMO_URL` for the external demo link
+- `SECRET_KEY` and optional `OPENAI_KEY_ENCRYPTION_KEYS` for persistent encryption
 
----
+Tracking URLs keep host and path but discard query parameters and fragments before storage. Localhost, IP addresses, and internal single-label hosts are supported for self-hosted projects.
 
-## Self-hosted with Docker Compose
+## Development database
 
-Use `docker-compose.yml` to run the full stack on your own server or cloud VM:
+This branch is still under development and intentionally contains a fresh consolidated migration set. Existing OSS databases are not supported: create a new database rather than attempting to upgrade an older schema.
 
-- web
-- Celery worker + beat in one container
-- Postgres
-- Redis
-- Caddy
+## Support and license
 
-### Quick start
-
-1. Create your env file.
-   - Copy `.env.example` to `.env` and edit it if needed.
-2. Build and start services.
-   - `docker compose up -d --build`
-3. Check service status.
-   - `docker compose ps`
-4. Open the app.
-   - `http://localhost`
-
-<details>
-<summary>Docker Compose notes</summary>
-
-- Data is persisted with Docker volumes: `postgres_data`, `redis_data`, `staticfiles`, `media`
-- The `init` service runs bootstrap tasks before app services start.
-- Default Postgres host mapping is `127.0.0.1:5433`.
-- Django uses `DATABASE_URL`; Postgres container initialization uses `POSTGRES_*` from `.env`.
-
-</details>
-
----
-
-## Support policy
-
-Open-source version is self-hosted and community-supported. We provide docs and accept issues, but hosted version is recommended for production teams that need reliability, backups, scaling and support.
-
----
-
-## License
-
-AGPL. Check [AGPL terms.md](https://github.com/Hymetry/Hymetry/blob/main/AGPL%20terms.md) 
+The self-hosted edition is community-supported. The software is licensed under GNU AGPLv3 or later; see `AGPL terms.md` and `LICENSE`.

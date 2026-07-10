@@ -1,0 +1,65 @@
+<aside class="w-56 shrink-0 border-r border-slate-200 bg-slate-100 px-6 py-8">
+  <h1 class="mb-6 text-3xl font-light text-slate-400">Settings</h1>
+
+  <nav class="space-y-6">
+    <div>
+      <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Workspace</p>
+      <div class="space-y-1">
+        {% if active_settings_section == 'workspace_details' %}
+          <div class="-mx-3 block bg-slate-200 pl-6 pr-3 py-3 font-medium text-slate-900 rounded-md">
+            Details
+          </div>
+        {% else %}
+          <a
+            href="{% url 'w:workspace_details' workspace_slug=workspace.slug %}{% if project %}?project={{ project.id }}{% endif %}"
+            class="-mx-3 block pl-6 pr-3 py-3 font-medium text-slate-900 rounded-md hover:bg-slate-200">
+            Details
+          </a>
+        {% endif %}
+
+        {% if active_settings_section == 'workspace_team' %}
+          <div class="-mx-3 block bg-slate-200 pl-6 pr-3 py-3 font-medium text-slate-900 rounded-md">
+            Team
+          </div>
+        {% else %}
+          <a
+            href="{% url 'w:workspace_team' workspace_slug=workspace.slug %}{% if project %}?project={{ project.id }}{% endif %}"
+            class="-mx-3 block pl-6 pr-3 py-3 font-medium text-slate-900 rounded-md hover:bg-slate-200">
+            Team
+          </a>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if project %}
+      <div>
+        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Project</p>
+        <div class="space-y-1">
+          {% if active_settings_section == 'project_settings' %}
+            <div class="-mx-3 block bg-slate-200 pl-6 pr-3 py-3 font-medium text-slate-900 rounded-md">
+              Setup
+            </div>
+          {% else %}
+            <a
+              href="{% url 'w:project_settings' workspace_slug=project.workspace.slug project_id=project.id %}"
+              class="-mx-3 block pl-6 pr-3 py-3 font-medium text-slate-900 rounded-md hover:bg-slate-200">
+              Setup
+            </a>
+          {% endif %}
+
+          {% if active_settings_section == 'product_areas' %}
+            <div class="-mx-3 block bg-slate-200 pl-6 pr-3 py-3 font-medium text-slate-900 rounded-md">
+              Product areas
+            </div>
+          {% else %}
+            <a
+              href="{% url 'w:project_product_areas' workspace_slug=project.workspace.slug project_id=project.id %}"
+              class="-mx-3 block pl-6 pr-3 py-3 font-medium text-slate-900 rounded-md hover:bg-slate-200">
+              Product areas
+            </a>
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
+  </nav>
+</aside>

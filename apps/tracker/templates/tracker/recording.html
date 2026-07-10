@@ -4,11 +4,11 @@
 {% block title %}Session Recording - {{ session.session_id }}{% endblock %}
 
 {% block extra_js %}
-  <link rel="stylesheet" href="{% static '/css/tracker/lib-player-styles.css' %}" />
+  <link rel="stylesheet" href="{% static 'css/tracker/lib-player-styles.css' %}" />
   <link rel="stylesheet" href="{% static 'css/output.css' %}" />
-  <script src="{% static '/js/tracker/lib-player.js' %}"></script>
-  <script src="{% static '/js/labella.min.js' %}"></script>
-  <script src="{% static '/js/dragscroll.js' %}"></script>
+  <script src="{% static 'js/tracker/lib-player.js' %}"></script>
+  <script src="{% static 'js/labella.min.js' %}"></script>
+  <script src="{% static 'js/dragscroll.js' %}"></script>
 
         <style>
             #timeline {
@@ -165,7 +165,7 @@
         if (history.length > 1 && document.referrer.startsWith(window.location.origin)) {
           history.back();
         } else {
-          window.location.href = "{% url 'recordings' project_id=project_id %}";
+          window.location.href = "{% if is_demo_view %}{% url 'demo_recordings' %}{% else %}{% url 'w:recordings' workspace_slug=project.workspace.slug project_id=project_id %}{% endif %}";
         }
       }
       
@@ -209,7 +209,7 @@
       let consolidatedData = null;
       
       try {
-        const response = await fetch("{% url 'get_consolidated_data' project_id=project_id session_id=session_id %}");
+        const response = await fetch("{% if is_demo_view %}{% url 'demo_get_consolidated_data' session_id=session_id %}{% else %}{% url 'w:get_consolidated_data' workspace_slug=project.workspace.slug project_id=project_id session_id=session_id %}{% endif %}");
         const result = await response.json();
         
         if (!response.ok) {
@@ -401,6 +401,7 @@
               const el = document.createElement("div");
               el.className = "page-label";
               el.textContent = g.title;
+              el.title = g.title;
               el.style.maxWidth = "280px";
               el.style.whiteSpace = "nowrap";
               el.style.overflow = "hidden";
@@ -700,9 +701,6 @@
           width: initialSize.width,
           height: initialSize.height,
           mouseTail: true,
-          iframe: {
-            sandbox: 'allow-same-origin allow-scripts allow-forms allow-popups'
-          },
           // Disable default controls
           showController: false,
           autoPlay: false

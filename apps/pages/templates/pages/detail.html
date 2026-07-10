@@ -1,0 +1,359 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Page details - {{ project.name }}{% endblock %}
+
+{% block extra_js %}
+  <link rel="stylesheet" href="{% static 'css/pages/overview.css' %}" type="text/css" />
+{% endblock %}
+
+{% block nav %}
+  {% if is_demo_view %}
+    {% include 'projects/partials/demo_project_top_nav.html' with active_demo_section='pages' %}
+  {% else %}
+    {% include 'projects/partials/project_top_nav.html' with active_project_section='pages' %}
+  {% endif %}
+{% endblock %}
+
+{% block body_classes %}
+  class="text-sm h-full bg-slate-50" data-pages-view="detail" data-project-id="{{ project.id }}" data-page-rule-id="{{ page_rule_id }}" data-pages-overview-url="{{ pages_overview_url }}?range={{ pages_range_key }}" data-page-detail-table-url="{{ page_detail_table_url }}" data-pages-detail-base-url="{{ pages_detail_base_url }}" data-company-detail-base-url="{{ company_detail_base_url }}" data-user-detail-base-url="{{ user_detail_base_url }}" data-pages-range-key="{{ pages_range_key }}"
+{% endblock %}
+
+{% block content %}
+  <main class="w-full px-6 pb-12 pt-20 lg:px-12 xl:px-20">
+    {% if analytics_is_empty %}
+      <header class="mb-8">
+        <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div class="min-w-0">
+            <h1 class="break-words text-3xl font-bold text-slate-900">{{ page_detail_title }}</h1>
+            <p class="mt-2 max-w-3xl text-slate-600">See how this page is used over time and how it compares with related pages.</p>
+          </div>
+
+          {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='page-period-selector' analytics_period_selector_class='pages-period-selector inline-flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white' analytics_range_options=pages_range_options analytics_range_key=pages_range_key %}
+        </div>
+      </header>
+
+      {% include 'partials/analytics_empty_state.html' %}
+    {% else %}
+    <section id="page-detail-loading" class="hidden space-y-6" aria-label="Loading page details">
+      <div class="rounded-xl border border-slate-200 bg-white px-6 py-5 shadow-sm">
+        <div class="h-4 w-56 animate-pulse rounded bg-slate-200"></div>
+        <div class="mt-4 h-8 w-72 animate-pulse rounded bg-slate-200"></div>
+        <div class="mt-3 h-4 w-96 max-w-full animate-pulse rounded bg-slate-100"></div>
+      </div>
+    </section>
+
+    <section id="page-not-found" class="hidden rounded-xl border border-slate-200 bg-white px-8 py-10 text-center shadow-sm">
+      <h1 class="text-2xl font-semibold text-slate-900">Page details not found</h1>
+      <p class="mx-auto mt-2 max-w-xl text-slate-500">No page activity details were found for this page in the selected period.</p>
+      <a
+        href="{{ pages_overview_url }}?range={{ pages_range_key }}"
+        data-back-to-pages
+        class="mt-6 inline-flex items-center rounded-md border border-slate-200 px-4 py-2 font-medium text-sky-800 duration-150 hover:bg-slate-50">
+        Back to Pages
+      </a>
+    </section>
+
+    <div id="page-detail-content" class="hidden">
+      <header class="mb-8">
+        <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div class="min-w-0">
+            <h1 id="detail-title" class="flex flex-wrap items-baseline gap-x-0 gap-y-1 break-words text-3xl font-bold text-slate-900">
+              <span id="page-detail-page-selector" class="page-detail-page-selector page-detail-title-selector">
+                <button
+                  id="page-detail-page-selector-button"
+                  type="button"
+                  class="page-detail-page-selector__button"
+                  aria-haspopup="listbox"
+                  aria-expanded="false"
+                  aria-controls="page-detail-page-selector-results">
+                  <span id="detail-title-page-name" class="min-w-0 truncate"></span>
+                  <span class="page-detail-page-selector__chevron" aria-hidden="true">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 -960 960 960"
+                      focusable="false">
+                      <path d="M480-354.23 645.77-520 603-561.77l-123 123-123-123L314.23-520 480-354.23Zm.07 254.23q-78.84 0-148.21-29.92t-120.68-81.21q-51.31-51.29-81.25-120.63Q100-401.1 100-479.93q0-78.84 29.92-148.21t81.21-120.68q51.29-51.31 120.63-81.25Q401.1-860 479.93-860q78.84 0 148.21 29.92t120.68 81.21q51.31 51.29 81.25 120.63Q860-558.9 860-480.07q0 78.84-29.92 148.21t-81.21 120.68q-51.29 51.31-120.63 81.25Q558.9-100 480.07-100Z" />
+                    </svg>
+                  </span>
+                </button>
+                <span id="page-detail-page-selector-results" class="page-search__dropdown" hidden>
+                  <label class="page-detail-page-selector__search">
+                    <span class="sr-only">Go to page</span>
+                    <input
+                      id="page-detail-page-selector-input"
+                      class="page-search__input"
+                      type="search"
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-haspopup="listbox"
+                      aria-expanded="false"
+                      aria-controls="page-detail-page-selector-listbox"
+                      autocomplete="off"
+                      placeholder="Go to page&hellip;" />
+                  </label>
+                  <span id="page-detail-page-selector-listbox" role="listbox"></span>
+                </span>
+              </span>
+            </h1>
+            <p id="detail-subtitle" class="mt-2 max-w-3xl text-slate-600"></p>
+          </div>
+
+          <div id="page-period-selector" class="pages-period-selector inline-flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white" aria-label="Period"></div>
+        </div>
+      </header>
+
+      {% include 'pages/partials/detail_metric_dynamics.html' with page_metric_dynamics_show_peers=False %}
+
+      <section id="related-pages-card" class="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div class="px-6 py-5">
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Related pages in this product area</h2>
+          <p class="mt-1 text-sm text-slate-500">Compare this page with nearby pages in the same product area.</p>
+        </div>
+
+        <div class="detail-metrics-scroll overflow-x-auto px-6 pb-4">
+          <table class="pages-detail-metrics-table pages-detail-metrics-table--related w-full table-auto text-left" style="--pages-detail-table-min-width: var(--related-pages-table-min-width, 1120px);">
+            <thead class="border-b border-gray-300 bg-white text-slate-600">
+              <tr>
+                <th class="py-3 pl-0 pr-6 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="related-pages-tooltip-page">
+                    Page
+                    <span id="related-pages-tooltip-page" class="metric-header-tooltip__content" role="tooltip">Page in the same product area</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="related-pages-tooltip-companies">
+                    Companies
+                    <span id="related-pages-tooltip-companies" class="metric-header-tooltip__content" role="tooltip">Number of companies that used this page during the selected period</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="related-pages-tooltip-adoption">
+                    Adoption
+                    <span id="related-pages-tooltip-adoption" class="metric-header-tooltip__content" role="tooltip">Share of active companies that used this page during the selected period</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="related-pages-tooltip-users">
+                    Users
+                    <span id="related-pages-tooltip-users" class="metric-header-tooltip__content" role="tooltip">Number of users who used this page during the selected period</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="related-pages-tooltip-visits">
+                    Visits
+                    <span id="related-pages-tooltip-visits" class="metric-header-tooltip__content" role="tooltip">Number of page visits during the selected period</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="related-pages-tooltip-engaged">
+                    Engaged
+                    <span id="related-pages-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent on this page</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="related-pages-tooltip-interaction">
+                    Interaction
+                    <span id="related-pages-tooltip-interaction" class="metric-header-tooltip__content" role="tooltip">Share of visits with at least one click</span>
+                  </span>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="related-pages-table-body" class="text-slate-700"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div class="px-6 py-5">
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Page flow</h2>
+          <p class="mt-1 text-sm text-slate-500">Entry, exit, and adjacent page paths for this page.</p>
+        </div>
+
+        <div id="page-flow-summary" class="grid gap-px bg-slate-200 md:grid-cols-2 xl:grid-cols-4"></div>
+
+        <div class="px-6 py-5">
+          <div id="page-flow-chart" class="h-[400px] w-full"></div>
+        </div>
+      </section>
+
+      <section class="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div class="px-6 py-5">
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Top companies using this page</h2>
+          <p class="mt-1 text-sm text-slate-500">Accounts where this page is active, with reach and engagement by company.</p>
+        </div>
+
+        <div class="detail-metrics-scroll page-companies-table-scroll-shell overflow-x-auto px-6 pb-4" data-page-companies-table-scroll data-sticky-table-header data-sticky-table-header-id="companies-sticky-header">
+          <table class="pages-detail-metrics-table w-full table-auto text-left" style="--pages-detail-table-min-width: 1120px;">
+            <thead class="border-b border-gray-300 bg-white text-slate-600">
+              <tr>
+                <th class="py-3 pl-0 pr-6 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-detail-sort-button" data-page-companies-sort="company" aria-describedby="companies-tooltip-company">Company</button>
+                    <span id="companies-tooltip-company" class="metric-header-tooltip__content" role="tooltip">Company that used this page during the selected period</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-detail-sort-button" data-page-companies-sort="users" aria-describedby="companies-tooltip-users">Users</button>
+                    <span id="companies-tooltip-users" class="metric-header-tooltip__content" role="tooltip">Number of users who used this page during the selected period</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-detail-sort-button" data-page-companies-sort="page_penetration" aria-describedby="companies-tooltip-penetration">Page penetration</button>
+                    <span id="companies-tooltip-penetration" class="metric-header-tooltip__content" role="tooltip">Share of active users from adopted companies who used this page</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-detail-sort-button" data-page-companies-sort="visits" aria-describedby="companies-tooltip-visits">Visits</button>
+                    <span id="companies-tooltip-visits" class="metric-header-tooltip__content" role="tooltip">Number of page visits during the selected period</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-detail-sort-button" data-page-companies-sort="engaged" aria-describedby="companies-tooltip-engaged">Engaged</button>
+                    <span id="companies-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent on this page</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-detail-sort-button" data-page-companies-sort="avg_user" aria-describedby="companies-tooltip-avg-user">Avg / user</button>
+                    <span id="companies-tooltip-avg-user" class="metric-header-tooltip__content" role="tooltip">Average active time per user</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip metric-header-tooltip--end">
+                    <button type="button" class="page-detail-sort-button" data-page-companies-sort="interaction" aria-describedby="companies-tooltip-interaction">Interaction</button>
+                    <span id="companies-tooltip-interaction" class="metric-header-tooltip__content" role="tooltip">Share of visits with at least one click</span>
+                  </span>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="companies-table-body" class="text-slate-700"></tbody>
+          </table>
+          <div class="page-companies-table-loading-overlay" data-page-companies-table-loading hidden aria-hidden="true">
+            <div class="page-companies-table-loader"></div>
+          </div>
+        </div>
+        <div class="page-companies-pagination mt-4 mb-6 flex flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between" data-page-companies-pagination hidden></div>
+      </section>
+
+      <section class="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div class="px-6 py-5">
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Page champions</h2>
+          <p class="mt-1 text-sm text-slate-500">Users with the deepest engagement on this page during the selected period.</p>
+        </div>
+
+        <div class="detail-metrics-scroll page-champions-table-scroll-shell overflow-x-auto px-6 pb-4" data-page-champions-table-scroll data-sticky-table-header data-sticky-table-header-id="page-champions-sticky-header">
+          <table class="pages-detail-metrics-table w-full table-auto text-left" style="--pages-detail-table-min-width: 920px;">
+            <thead class="border-b border-gray-300 bg-white text-slate-600">
+              <tr>
+                <th class="py-3 pl-0 pr-6 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-detail-sort-button" data-page-champions-sort="user" aria-describedby="page-champions-tooltip-user">User</button>
+                    <span id="page-champions-tooltip-user" class="metric-header-tooltip__content" role="tooltip">User who used this page during the selected period</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-detail-sort-button" data-page-champions-sort="company" aria-describedby="page-champions-tooltip-company">Company</button>
+                    <span id="page-champions-tooltip-company" class="metric-header-tooltip__content" role="tooltip">Company the user belongs to</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-detail-sort-button" data-page-champions-sort="engaged" aria-describedby="page-champions-tooltip-engaged">Engaged</button>
+                    <span id="page-champions-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent on this page</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-detail-sort-button" data-page-champions-sort="visits" aria-describedby="page-champions-tooltip-visits">Visits</button>
+                    <span id="page-champions-tooltip-visits" class="metric-header-tooltip__content" role="tooltip">Number of page visits during the selected period</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-detail-sort-button" data-page-champions-sort="avg_visit" aria-describedby="page-champions-tooltip-avg-visit">Avg / visit</button>
+                    <span id="page-champions-tooltip-avg-visit" class="metric-header-tooltip__content" role="tooltip">Average active time per page visit</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip metric-header-tooltip--end">
+                    <button type="button" class="page-detail-sort-button" data-page-champions-sort="clicks" aria-describedby="page-champions-tooltip-clicks">Clicks</button>
+                    <span id="page-champions-tooltip-clicks" class="metric-header-tooltip__content" role="tooltip">Number of clicks on this page during the selected period</span>
+                  </span>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="page-champions-table-body" class="text-slate-700"></tbody>
+          </table>
+          <div class="page-champions-table-loading-overlay" data-page-champions-table-loading hidden aria-hidden="true">
+            <div class="page-champions-table-loader"></div>
+          </div>
+        </div>
+        <div class="page-champions-pagination mt-4 mb-6 flex flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between" data-page-champions-pagination hidden></div>
+      </section>
+
+      <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div class="px-6 py-5">
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Top actions on this page</h2>
+          <p class="mt-1 text-sm text-slate-500">Most clicked elements on this page during the selected period.</p>
+        </div>
+
+        <div class="detail-metrics-scroll overflow-x-auto px-6 pb-4">
+          <table class="pages-detail-metrics-table w-full table-auto text-left" style="--pages-detail-table-min-width: 880px;">
+            <thead class="border-b border-gray-300 bg-white text-slate-600">
+              <tr>
+                <th class="py-3 pl-0 pr-6 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="page-actions-tooltip-action">
+                    Action
+                    <span id="page-actions-tooltip-action" class="metric-header-tooltip__content" role="tooltip">Clicked element or interaction recorded on this page</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="page-actions-tooltip-clicks">
+                    Clicks
+                    <span id="page-actions-tooltip-clicks" class="metric-header-tooltip__content" role="tooltip">Number of clicks on this action during the selected period</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="page-actions-tooltip-visits-pct">
+                    % visits
+                    <span id="page-actions-tooltip-visits-pct" class="metric-header-tooltip__content" role="tooltip">Share of page visits that included this action</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="page-actions-tooltip-users">
+                    Users
+                    <span id="page-actions-tooltip-users" class="metric-header-tooltip__content" role="tooltip">Number of users who clicked this action during the selected period</span>
+                  </span>
+                </th>
+                <th class="py-3 pr-6 font-normal">
+                  <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="page-actions-tooltip-companies">
+                    Companies
+                    <span id="page-actions-tooltip-companies" class="metric-header-tooltip__content" role="tooltip">Number of companies with users who clicked this action during the selected period</span>
+                  </span>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="page-actions-table-body" class="text-slate-700"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+    {% endif %}
+  </main>
+
+  {% if not analytics_is_empty %}
+  <script src="{% static 'echarts/lib/echarts.min.js' %}"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script id="pages-detail-data" type="application/json">{{ pages_detail_payload_json }}</script>
+  <script src="{% static 'js/pages/page-details-helpers.js' %}"></script>
+  <script src="{% static 'js/shared/metric-dynamics.js' %}"></script>
+  <script src="{% static 'js/pages/django-pages-data.js' %}?v=20260709-3"></script>
+  <script src="{% static 'js/pages/pages-analytics.js' %}?v=20260709-3"></script>
+  {% endif %}
+{% endblock %}

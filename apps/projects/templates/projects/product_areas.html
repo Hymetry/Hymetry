@@ -1,0 +1,336 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Product areas - {{ project.name }}{% endblock %}
+
+{% block extra_js %}
+  <style>
+    .product-areas-content {
+      max-width: 72rem;
+    }
+
+    @media (min-width: 1536px) {
+      .product-areas-content {
+        max-width: min(100%, calc(100vw - 24rem), 100rem);
+      }
+
+      .product-areas-illustration {
+        display: none;
+      }
+    }
+
+    @media (min-width: 2560px) {
+      .product-areas-illustration {
+        display: block;
+      }
+    }
+
+    .product-areas-table {
+      min-width: 1040px;
+      table-layout: fixed;
+    }
+
+    .product-areas-table tbody tr {
+      transition: background-color 0.15s ease-in-out;
+    }
+
+    .product-areas-table tbody tr:hover,
+    .product-areas-table tbody tr:focus-within {
+      background: var(--color-slate-50);
+    }
+
+    .product-areas-table-area {
+      width: 18%;
+    }
+
+    .product-areas-table-page {
+      width: 21%;
+    }
+
+    .product-areas-table-pattern {
+      width: 22%;
+    }
+
+    .product-areas-table-examples {
+      width: 29%;
+    }
+
+    .product-areas-table-volume {
+      width: 10%;
+    }
+  </style>
+{% endblock %}
+
+{% block nav %}
+  {% include 'projects/partials/project_top_nav.html' with active_project_section='settings' %}
+{% endblock %}
+
+{% block body_classes %}
+  class="text-sm h-full bg-slate-50"
+{% endblock %}
+
+{% block content %}
+  <div class="flex min-h-screen pt-12">
+    {% include 'projects/partials/settings_sidebar.html' with active_settings_section='product_areas' %}
+
+    <div class="flex-1 p-8 3xl:pl-20 4xl:pl-28">
+      <div class="flex flex-row items-start gap-8 lg:gap-12">
+        <div class="product-areas-content w-full lg:flex-1 max-w-6xl">
+          <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <h1 class="text-3xl font-bold text-slate-900">Product areas</h1>
+
+            {% if has_observed_pages %}
+              <button
+                data-modal-trigger
+                aria-controls="modify-page-structure"
+                class="flex items-center gap-2 font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path
+                    d="M11.25 20.75V15.25H12.75V17.25H20.75V18.75H12.75V20.75H11.25ZM3.25 18.75V17.25H8.75V18.75H3.25ZM7.25 14.75V12.75H3.25V11.25H7.25V9.25H8.75V14.75H7.25ZM11.25 12.75V11.25H20.75V12.75H11.25ZM15.25 8.75V3.25H16.75V5.25H20.75V6.75H16.75V8.75H15.25ZM3.25 6.75V5.25H12.75V6.75H3.25Z"
+                    fill="#0F172A" />
+                </svg>
+                Modify page structure
+              </button>
+            {% endif %}
+          </div>
+
+          {% if messages %}
+            {% for message in messages %}
+              {% if 'product-areas' in message.tags %}
+                <div class="mb-6 rounded-lg border p-4 {% if 'error' in message.tags %}border-red-200 bg-red-100 text-red-800{% elif 'warning' in message.tags %}border-amber-200 bg-amber-100 text-amber-800{% else %}border-cyan-200 bg-cyan-100 text-sky-800{% endif %}" role="alert">
+                  {{ message }}
+                </div>
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+
+          {% if has_rules %}
+            <section class="overflow-hidden rounded-xl border border-slate-200 bg-white">
+              <div class="overflow-x-auto px-6 py-2">
+                <table class="product-areas-table w-full text-left">
+                  <colgroup>
+                    <col class="product-areas-table-area" />
+                    <col class="product-areas-table-page" />
+                    <col class="product-areas-table-pattern" />
+                    <col class="product-areas-table-examples" />
+                    <col class="product-areas-table-volume" />
+                  </colgroup>
+                  <thead class="border-b border-gray-300 text-gray-700">
+                    <tr>
+                      <th class="pt-4 pb-2 pr-6 font-normal">Product area</th>
+                      <th class="pt-4 pb-2 pr-6 font-normal">Page name</th>
+                      <th class="pt-4 pb-2 pr-6 font-normal">Pattern</th>
+                      <th class="pt-4 pb-2 pr-6 font-normal">Examples matched</th>
+                      <th class="pt-4 pb-2 text-right font-normal">Volume, 7d</th>
+                    </tr>
+                  </thead>
+
+                  <tbody class="text-gray-950">
+                    {% for row in product_area_rows %}
+                      <tr class="align-top">
+                        <td class="py-2 pr-6">{{ row.product_area }}</td>
+                        <td class="py-2 pr-6">{{ row.page_name }}</td>
+                        <td class="py-2 pr-6 break-all">{{ row.pattern }}</td>
+                        <td class="py-2 pr-6">
+                          {% if row.examples %}
+                            {% for example in row.examples %}
+                              <div class="break-all">{{ example }}</div>
+                            {% endfor %}
+                          {% else %}
+                            <span class="text-slate-400">No matched pages yet.</span>
+                          {% endif %}
+                        </td>
+                        <td class="py-3 text-right whitespace-nowrap">{{ row.volume_7d_display }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          {% else %}
+            <section>
+              <h2 class="text-lg font-semibold text-slate-900">No product areas yet</h2>
+              <p class="mt-3 max-w-2xl text-slate-600">
+                We will start showing your page structure here as soon as rules are generated from observed traffic.
+                {% if has_observed_pages %}
+                  You can still add guidance now, and we will use it the next time the structure is reviewed.
+                {% else %}
+                  Once we observe some pages, you will be able to guide how they should be organized here.
+                {% endif %}
+              </p>
+            </section>
+          {% endif %}
+
+          {% if total_pages > 1 %}
+            <div class="mt-6 mb-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                {% if page_obj.number > 2 %}
+                  <a href="?page=1" class="font-medium text-sky-700 hover:text-sky-800">
+                    Go to first page
+                  </a>
+                {% endif %}
+              </div>
+
+              <nav class="flex items-center justify-between gap-6 sm:justify-end" aria-label="Product areas navigation">
+                {% if page_obj.has_previous %}
+                  <a
+                    href="?page={{ page_obj.previous_page_number }}"
+                    aria-label="Go to previous page"
+                    class="inline-flex items-center text-sky-700 duration-150 hover:text-sky-800">
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      height="20px"
+                      viewBox="0 -960 960 960"
+                      width="20px"
+                      fill="currentColor"
+                      aria-hidden="true">
+                      <path d="m504-480 184 184-42 42-226-226 226-226 42 42-184 184Z" />
+                    </svg>
+                  </a>
+                {% endif %}
+
+                <span class="text-slate-700">
+                  Page {{ page_obj.number }}/{{ total_pages }}
+                </span>
+
+                {% if page_obj.has_next %}
+                  <a
+                    href="?page={{ page_obj.next_page_number }}"
+                    class="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-4 py-3 font-medium text-sky-700 duration-150 hover:bg-slate-100">
+                    Continue to next page
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      height="20px"
+                      viewBox="0 -960 960 960"
+                      width="20px"
+                      fill="currentColor"
+                      aria-hidden="true">
+                      <path d="m504-480-184-184 42-42 226 226-226 226-42-42 184-184Z" />
+                    </svg>
+                  </a>
+                {% endif %}
+              </nav>
+            </div>
+          {% endif %}
+
+          <details class="group w-full rounded-lg border border-slate-200 bg-slate-50{% if total_pages <= 1 %} mt-4{% endif %}">
+            <summary class="flex cursor-pointer items-center justify-between gap-x-3 px-6 py-3 text-sky-800 list-none [&::-webkit-details-marker]:hidden">
+              <span>How we try to reflect your website structure</span>
+              <svg
+                class="h-5 w-5 text-gray-500 transition-transform duration-200 group-open:rotate-180"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </summary>
+
+            <div class="px-6 pb-6 pt-0 leading-8 text-gray-950">
+              <div class="pt-6">
+                <p>
+                  We do not want you to spend time manually creating pages, updating them when new ones appear, or cleaning up outdated ones. We believe this should be automated.
+                </p>
+
+                <p class="mt-6">
+                  That is why we regularly analyze the pages your users visit and update the structure when needed. At the same time, we keep changes conservative. We avoid sudden renames and only split or merge pages when there is a strong reason.
+                </p>
+
+                <p class="mt-6">
+                  {% if has_observed_pages %}
+                    If there is something important we should recognize better, click <span class="font-semibold">Modify page structure</span>. We will include your guidance in the next review.
+                  {% else %}
+                    Once we observe some pages, you will be able to guide how they should be organized here.
+                  {% endif %}
+                </p>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <div class="product-areas-illustration hidden 2xl:block w-1/5 min-w-32 shrink-0 pt-2">
+          <img src="{% static 'svg/product-areas.svg' %}" alt="" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if has_observed_pages %}
+    <div id="modify-page-structure" data-modal-target class="hidden">
+      <div class="flex items-start justify-center fixed inset-0 z-50">
+        <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+
+        <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-2xl mt-8">
+          <form action="{% url 'w:update_page_structure_guidance' workspace_slug=project.workspace.slug project_id=project.id %}" method="POST" id="modify-page-structure-form">
+            {% csrf_token %}
+            <input type="hidden" name="page" value="{{ page_obj.number }}">
+
+            <div class="bg-white px-6 py-4">
+              <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                  <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                </svg>
+              </button>
+              <div class="flex items-start">
+                <div class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
+                  <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                    <path d="M200-200h50.46l409.46-409.46-50.46-50.46L200-250.46V-200Zm-60 60v-135.38l527.62-527.39q9.07-8.24 20.03-12.73 10.97-4.5 23-4.5t23.3 4.27q11.28 4.27 19.97 13.58l48.85 49.46q9.31 8.69 13.27 20 3.96 11.31 3.96 22.62 0 12.07-4.12 23.03-4.12 10.97-13.11 20.04L275.38-140H140Zm620.38-570.15-50.23-50.23 50.23 50.23Zm-126.13 75.9-24.79-25.67 50.46 50.46-25.67-24.79Z" />
+                  </svg>
+                </div>
+                <div class="w-full mt-2 ml-4">
+                  <h3 class="text-base font-semibold leading-6">Modify page structure</h3>
+                  <div class="mt-6">
+                    <p class="mb-6 text-slate-700">
+                      We create your page structure automatically, so you usually do not need to manage it yourself. We review it every day and try to keep up with changes on your website.
+                    </p>
+                    <p class="mb-4 text-slate-700">
+                      If there is something you want us to recognize better, you can guide the AI here. Limit: 500 characters.
+                    </p>
+                    <div class="relative">
+                      <textarea
+                        rows="6"
+                        id="page-structure-guidance"
+                        name="page_structure_guidance"
+                        maxlength="500"
+                        placeholder="Describe the patterns or product-area rules you want us to follow."
+                        class="block w-full shadow-sm appearance-none border rounded py-3 px-3 pr-10 text-gray-700 leading-tight focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500"
+                        data-modal-input-focus
+                        autofocus>{{ project.page_structure_guidance }}</textarea>
+                    </div>
+                    <div class="mt-2 text-sm text-slate-500">
+                      <span id="page-structure-guidance-count">{{ project.page_structure_guidance|length }}</span>/500 characters
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+              <button type="submit" class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">Save changes</button>
+              <button type="button" data-modal-close class="flex items-center gap-2 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-4 py-3">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
+  <script>
+    const pageStructureGuidanceTextarea = document.getElementById('page-structure-guidance')
+    const pageStructureGuidanceCount = document.getElementById('page-structure-guidance-count')
+
+    function updateGuidanceCounter() {
+      if (!pageStructureGuidanceTextarea || !pageStructureGuidanceCount) {
+        return
+      }
+
+      pageStructureGuidanceCount.textContent = pageStructureGuidanceTextarea.value.length
+    }
+
+    if (pageStructureGuidanceTextarea) {
+      updateGuidanceCounter()
+      pageStructureGuidanceTextarea.addEventListener('input', updateGuidanceCounter)
+    }
+  </script>
+{% endblock %}

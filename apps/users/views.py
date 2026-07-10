@@ -1,47 +1,72 @@
 import json
 
-from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.shortcuts import render, redirect
 from django.contrib.auth import login
-from apps.projects.views import check_if_any_superuser_exists
-from apps.users.forms import ProfileNameForm, ProfilePasswordForm
-from django.contrib import messages
+from django.contrib.auth.views import LoginView
+
+from apps.users.forms import EmailAuthenticationForm, ProfileNameForm, ProfilePasswordForm
+from apps.users.services import (
+    InitialAdminAlreadyConfigured,
+    create_initial_admin,
+    initial_admin_is_required,
+)
+from django.core.exceptions import ValidationError
+from django.views.decorators.http import require_http_methods
 
 
-def create_admin_account(request):
-    if request.method != 'POST':
-        messages.error(request, 'Invalid request method')
-        return redirect('index')
+class InitialSetupAwareLoginView(LoginView):
+    template_name = 'users/sign_in.html'
+    authentication_form = EmailAuthenticationForm
+    redirect_authenticated_user = True
 
-    email = request.POST.get('email')
-    password = request.POST.get('password')
+    def dispatch(self, request, *args, **kwargs):
+        if initial_admin_is_required():
+            return redirect('users:initial_admin_setup')
+        return super().dispatch(request, *args, **kwargs)
 
-    if not (email and len(password) > 7):
-        messages.error(request, 'Email and Password (min length is 8) fields are required')
-        return redirect('index')
 
-    if check_if_any_superuser_exists():
-        messages.error(request, 'Superuser exists')
-        return redirect('index')
+@require_http_methods(['GET', 'POST'])
+def initial_admin_setup(request):
+    if not initial_admin_is_required():
+        return redirect('project_list' if request.user.is_authenticated else 'sign_in')
 
-    # Create user
-    User = get_user_model()
+    context = {
+        'submitted_email': '',
+        'terms_checked': False,
+        'form_errors': [],
+    }
+    if request.method == 'POST':
+        email = str(request.POST.get('email', '') or '')
+        password = str(request.POST.get('password', '') or '')
+        password_confirm = str(request.POST.get('password_confirm', '') or '')
+        terms_checked = request.POST.get('terms') == 'on'
+        form_errors = []
 
-    try:
-        user = User.objects.create_superuser(
-            username=email,
-            email=email,
-            password=password
-        )
-        # Autologin the user
-        login(request, user, backend='django.contrib.auth.backends.ModelBackend')
-        return redirect('project_list')
-    except Exception as e:
-        messages.error(request, e)
-        print(f"Error creating admin account: {e}")
-        return redirect('index')
+        if not terms_checked:
+            form_errors.append('Accept the license terms to continue.')
+        if password != password_confirm:
+            form_errors.append('The passwords do not match.')
+
+        if not form_errors:
+            try:
+                user = create_initial_admin(email=email, password=password)
+            except InitialAdminAlreadyConfigured:
+                return redirect('sign_in')
+            except ValidationError as exc:
+                form_errors.extend(exc.messages)
+            else:
+                login(request, user, backend='django.contrib.auth.backends.ModelBackend')
+                return redirect('projects:project_list')
+
+        context.update({
+            'submitted_email': email,
+            'terms_checked': terms_checked,
+            'form_errors': form_errors,
+        })
+
+    return render(request, 'users/superadmin_password.html', context)
 
 
 @login_required

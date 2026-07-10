@@ -1,0 +1,198 @@
+{% if tracking_script %}
+  <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+    <div class="flex flex-col gap-3">
+      <div class="flex items-center justify-between gap-4">
+        <h2 class="text-lg font-semibold text-gray-950">INSTALL HYMETRY</h2>
+        {% if project.first_production_event_at %}
+          <span class="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2 py-1 text-xs font-medium text-sky-700">
+            First production event received
+          </span>
+        {% else %}
+          <span class="inline-flex items-center rounded-full border border-yellow-200 bg-yellow-100 px-2 py-1 text-xs font-medium text-yellow-800">
+            Waiting for first production event
+          </span>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if messages %}
+      {% for message in messages %}
+        {% if 'tracking' in message.tags %}
+          {% if 'success' in message.tags %}
+            <div class="my-4 bg-cyan-100 border border-cyan-200 text-sky-800 rounded-lg p-4" role="alert" tabindex="-1" aria-labelledby="hs-soft-color-info-label">
+              {{ message }}
+            </div>
+          {% elif 'error' in message.tags %}
+            <div class="my-4 bg-yellow-100 border border-yellow-200 text-yellow-800 rounded-lg p-4" role="alert" tabindex="-1" aria-labelledby="hs-soft-color-warning-label">
+              {{ message }}
+            </div>
+          {% else %}
+            <div class="my-4 bg-sky-100 border border-sky-200 text-sky-800 rounded-lg p-4" role="alert">
+              {{ message }}
+            </div>
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+
+    <div class="mt-4 pt-4">
+      <div class="flex flex-wrap items-center gap-2">
+        <h3 class="text-base font-semibold text-gray-950">
+          1. Install Hymetry with identification
+        </h3>
+      </div>
+      <p class="mt-2 text-gray-950">
+        Add this snippet to every page of your product <span class="font-bold">before the closing &lt;/head&gt;</span> tag.
+      </p>
+      <div
+        class="my-4 bg-cyan-100 border border-cyan-200 text-primary-800 rounded-lg p-4"
+        role="alert"
+        tabindex="-1"
+        aria-labelledby="hs-soft-color-info-label">
+        <p>
+          <span class="font-bold">USER_ID</span> and
+          <span class="font-bold">COMPANY_ID</span> are required for meaningful B2B analytics.
+        </p>
+        <p class="mt-3">
+          User = the signed-in person using your product.<br />
+          Company = your customer's account or organization.
+        </p>
+        <p class="mt-3">
+          Use stable internal IDs from your database. Add names and emails as traits to make reports easier to read.
+        </p>
+      </div>
+      <div class="mt-3 text-gray-950">
+        <p class="font-bold">Example:</p>
+        <p class="mt-1">USER_ID = your app's user ID, such as user_123</p>
+        <p>
+          COMPANY_ID = your app's company/account/customer ID, such as company_456
+        </p>
+      </div>
+      <div class="relative mt-8">
+        <pre id="script-to-copy" class="overflow-x-auto rounded bg-slate-50 border border-slate-100 p-4 text-xs leading-relaxed text-slate-800 whitespace-pre-wrap"><code>{{ tracking_script }}</code></pre>
+        <div class="absolute right-2 top-2">
+          <button
+            id="copyBtn"
+            type="button"
+            class="flex items-center gap-2 font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5 transition-colors"
+            aria-pressed="false">
+            <span id="copyBtnIcon" class="flex">
+              <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                <path d="M362.31-260Q332-260 311-281q-21-21-21-51.31v-455.38Q290-818 311-839q21-21 51.31-21h335.38Q728-860 749-839q21 21 21 51.31v455.38Q770-302 749-281q-21 21-51.31 21H362.31Zm0-60h335.38q4.62 0 8.46-3.85 3.85-3.84 3.85-8.46v-455.38q0-4.62-3.85-8.46-3.84-3.85-8.46-3.85H362.31q-4.62 0-8.46 3.85-3.85 3.84-3.85 8.46v455.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85Zm-140 200Q192-120 171-141q-21-21-21-51.31v-515.38h60v515.38q0 4.62 3.85 8.46 3.84 3.85 8.46 3.85h395.38v60H222.31ZM350-320v-480 480Z" />
+              </svg>
+            </span>
+            <span id="copyClipboardLabel">Copy full snippet</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-4 pt-4" data-installation-status-section>
+      <h3 class="text-base font-semibold text-gray-950">2. Verify installation</h3>
+      <div
+        class="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+        style="column-gap: 40px;">
+        <p class="text-gray-950">
+          After installing the script, open your product in a browser and visit a few pages. Hymetry will show the integration status here.
+        </p>
+        <button
+          type="button"
+          class="flex shrink-0 items-center gap-2 font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-70"
+          aria-label="Reload installation status"
+          onclick="window.location.reload()">
+          <span class="flex">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              height="24px"
+              viewBox="0 -960 960 960"
+              width="24px"
+              fill="#5f6368">
+              <path
+                d="M206.69-334.92q-18.15-33.77-27.42-69.73Q170-440.62 170-478q0-129.77 90.31-220.88Q350.62-790 480-790h31.23l-74-74 42.15-42.15L625.54-760 479.38-613.85 437.23-656l74-74H480q-104.23 0-177.12 73.38Q230-583.23 230-478q0 24.85 5.42 49.65 5.43 24.81 16.27 48.43l-45 45ZM480.62-53.85 334.46-200l146.16-146.15L522.77-304l-74 74H480q104.23 0 177.12-73.38Q730-376.77 730-482q0-24.85-5.42-49.65-5.43-24.81-16.27-48.43l45-45q18.15 33.77 27.42 69.73Q790-519.38 790-482q0 129.77-90.31 220.88Q609.38-170 480-170h-31.23l74 74-42.15 42.15Z" />
+            </svg>
+          </span>
+          <span>Reload</span>
+        </button>
+      </div>
+      <div class="installation-status-table-shell mt-4 bg-white">
+        <div class="overflow-x-auto">
+          <table class="w-full border-collapse text-left text-sm">
+            <thead class="border-b border-slate-200 text-gray-950">
+              <tr>
+                <th class="whitespace-nowrap px-4 py-3 font-normal">Status</th>
+                <th class="whitespace-nowrap px-4 py-3 font-normal">Last event</th>
+                <th class="whitespace-nowrap px-4 py-3 font-normal">Analytics</th>
+                <th class="whitespace-nowrap px-4 py-3 font-normal">Session recording</th>
+                <th class="whitespace-nowrap px-4 py-3 font-normal">User ID</th>
+                <th class="whitespace-nowrap px-4 py-3 font-normal">Company ID</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="whitespace-nowrap px-4 py-3">
+                  {% if installation_status.has_no_recent_data %}
+                    <span class="rounded-full border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700">No recent data</span>
+                  {% elif installation_status.requires_setup %}
+                    <span class="rounded-full border border-yellow-200 bg-yellow-100 px-2 py-1 text-xs font-medium text-yellow-800">Setup required</span>
+                  {% elif installation_status.is_active %}
+                    <span class="rounded-full border border-green-600 bg-green-50 px-2 py-1 text-xs font-medium text-green-700">Active</span>
+                  {% else %}
+                    <span class="rounded-full border border-yellow-200 bg-yellow-100 px-2 py-1 text-xs font-medium text-yellow-800">Waiting</span>
+                  {% endif %}
+                </td>
+                <td class="whitespace-nowrap px-4 py-3 font-medium text-gray-950">
+                  {% if installation_status.last_event_at %}
+                    {{ installation_status.last_event_at|timesince }} ago
+                  {% else %}
+                    Not received yet
+                  {% endif %}
+                </td>
+                <td class="whitespace-nowrap px-4 py-3">
+                  {% if installation_status.analytics_active %}
+                    <span class="rounded-full border border-green-600 bg-green-50 px-2 py-1 text-xs font-medium text-green-700">Active</span>
+                  {% else %}
+                    <span class="rounded-full border border-yellow-200 bg-yellow-100 px-2 py-1 text-xs font-medium text-yellow-800">Waiting</span>
+                  {% endif %}
+                </td>
+                <td class="whitespace-nowrap px-4 py-3">
+                  {% if installation_status.recording_enabled %}
+                    {% if installation_status.recording_active %}
+                      <span class="rounded-full border border-green-600 bg-green-50 px-2 py-1 text-xs font-medium text-green-700">Active</span>
+                    {% else %}
+                      <span class="rounded-full border border-yellow-200 bg-yellow-100 px-2 py-1 text-xs font-medium text-yellow-800">Waiting</span>
+                    {% endif %}
+                  {% else %}
+                    <span class="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-600">Disabled</span>
+                  {% endif %}
+                </td>
+                <td class="whitespace-nowrap px-4 py-3">
+                  {% if installation_status.user_id_detected %}
+                    <span class="rounded-full border border-green-600 bg-green-50 px-2 py-1 text-xs font-medium text-green-700">Detected</span>
+                  {% else %}
+                    <span class="rounded-full border border-yellow-200 bg-yellow-100 px-2 py-1 text-xs font-medium text-yellow-800">Not detected</span>
+                  {% endif %}
+                </td>
+                <td class="whitespace-nowrap px-4 py-3">
+                  {% if installation_status.company_id_detected %}
+                    <span class="rounded-full border border-green-600 bg-green-50 px-2 py-1 text-xs font-medium text-green-700">Detected</span>
+                  {% else %}
+                    <span class="rounded-full border border-yellow-200 bg-yellow-100 px-2 py-1 text-xs font-medium text-yellow-800">Not detected</span>
+                  {% endif %}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% if installation_status.is_ready %}
+        <p class="mt-4 rounded-lg p-4 text-sm text-green-900" style="background-color: #f0fdf4;">
+          Your setup is ready. Companies, Users, Pages, and Visits analytics will become more useful as more production data is collected.
+        </p>
+      {% elif installation_status.requires_setup %}
+        <p class="mt-4 rounded-lg border border-yellow-200 bg-yellow-100 p-4 text-sm text-yellow-800">
+          Product URL / allowed domain is missing. Add the product URL in Data collection to finish setup.
+        </p>
+      {% endif %}
+    </div>
+  </section>
+{% endif %}

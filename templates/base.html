@@ -7,121 +7,22 @@
         <link rel="icon" href="{% static 'svg/favicon.svg' %}" sizes="any" type="image/svg+xml" />
         <link rel="preload" href="/static/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
         <link rel="stylesheet" href="{% static 'css/output.css' %}" type="text/css" />
-        <title>{% block title %}Hymetry{% endblock %}</title>
+        <title>{% block title %}Hymetry Alpha App{% endblock %}</title>
 
 {% block extra_js %}{% endblock %}
     </head>
 
     <body {% block body_classes %} class="text-sm h-full bg-slate-50" {% endblock %}>
     {% block nav %}
-        <nav
-            class="fixed top-0 left-0 z-10 right-0 bg-white border-b border-gray-200 shadow-sm w-full h-12 pl-8 pr-2 flex items-center justify-between [view-transition-name:shell]">
-            <!-- Left Section: Logo and Menu Items -->
-            <div class="flex items-center h-full">
-                <!-- Logo -->
-                <a href="/"><img src="{% static 'svg/logo.svg' %}" /></a>
-                <!-- Menu Items -->
-                <div class="flex items-center h-full ml-[88px] space-x-2">
-                    <!-- Dropdown Menu Component -->
-                <div class="relative inline-block text-left mr-6" id="project-dropdown-container">
-                    <!-- Button to toggle the dropdown -->
-                    <div>
-                        <button
-                            type="button"
-                            class="inline-flex w-full justify-center text-sky-800 duration-150 hover:bg-slate-100 rounded-md p-2 pl-4 font-medium gap-1 cursor-pointer"
-                            data-dropdown-toggle="#project-popup">
-                            Select project
-                            <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                height="20px"
-                                viewBox="0 -960 960 960"
-                                width="20px"
-                                fill="currentColor">
-                                <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
-                            </svg>
-                        </button>
-                    </div>
-
-                    <!-- Dropdown menu, hidden by default -->
-                    <div
-                        id="project-popup"
-                        data-dropdown-menu
-                        class="hidden absolute left-0 z-10 mt-2 w-48 left-top-right rounded-md bg-white shadow-lg border border-slate-200 focus:outline-none duration-200"
-                        role="menu"
-                        tabindex="-1">
-                        <div class="py-1" role="none">
-                            {% for membership in user_projects %}
-                                {% if membership.project.id == selected_project.id %}
-                            <p
-                                class="rounded text-slate-50 block px-4 py-3 bg-slate-700"
-                                role="menuitem"
-                                tabindex="-1"
-                                >
-                                {{ membership.project.name }}
-                            </p>
-                                {% else %}
-                            <a
-                                href="{% url 'recordings' membership.project.id %}"
-                                class="block px-4 py-3 hover:bg-gray-100"
-                                data-project-id="{{ membership.project.id }}"
-                                role="menuitem"
-                                tabindex="-1"
-                                >{{ membership.project.name }}</a>
-                                {% endif %}
-                            {% endfor %}
-                            <a
-                                href="{% url 'projects:project_list' %}"
-                                class="block border-t border-gray-200 px-4 py-3 hover:bg-gray-100"
-                                role="menuitem"
-                                tabindex="-1"
-                                >See all projects</a
-                            >
-                        </div>
-                    </div>
+        {% if user.is_authenticated %}
+            {% include 'projects/partials/project_top_nav.html' %}
+        {% else %}
+            <nav class="fixed top-0 left-0 z-10 right-0 bg-white border-b border-gray-200 shadow-sm w-full h-12 pl-8 pr-2 flex items-center">
+                <div class="flex items-center h-full">
+                    <a href="/"><img src="{% static 'svg/logo.svg' %}" alt="Hymetry" /></a>
                 </div>
-                    <a href="#" class="flex items-center h-full px-3 bg-gray-100 font-medium">
-                        User visits
-                    </a>
-
-                    <!-- Projects Link -->
-                    <a href="{% url 'projects:project_list' %}" class="flex items-center px-4 py-2 text-sky-800 duration-150 hover:bg-slate-100 rounded-md font-medium">
-                        <svg
-                            class="w-6 h-6 mr-2"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                            xmlns="http://www.w3.org/2000/svg">
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
-                        </svg>
-                        Projects
-                    </a>
-
-                    <!-- Settings (Not Selected) -->
-                    {% if selected_project %}
-                    <a
-                        href="{% url 'projects:project_settings' project_id=selected_project.id %}"
-                        class="flex items-center px-4 py-2 text-sky-800 duration-150 hover:bg-slate-100 rounded-md font-medium">
-                        Settings
-                    </a>
-                    {% endif %}
-                </div>
-            </div>
-
-            <!-- Right Section: Profile Menu -->
-            <div class="flex items-center h-full">
-                
-
-                <a
-                    href="{% url 'users:user_profile' %}"
-                    class="flex items-center text-sky-800 duration-150 hover:bg-slate-100 rounded-md py-2 px-4 font-medium gap-1">
-                    <span>Profile</span>
-                </a>
-            </div>
-        </nav>
+            </nav>
+        {% endif %}
     {% endblock %}
 
 {% block content %}

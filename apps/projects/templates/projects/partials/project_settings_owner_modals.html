@@ -1,0 +1,7 @@
+{% include 'projects/partials/project_settings_modal_name.html' %}
+{% include 'projects/partials/project_settings_modal_timezone.html' %}
+{% include 'projects/partials/project_settings_modal_product_url.html' %}
+{% include 'projects/partials/project_settings_modal_tracking.html' %}
+{% if can_delete_project %}
+  {% include 'projects/partials/project_settings_modal_delete.html' %}
+{% endif %}

@@ -3,22 +3,23 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from django import template
+from django.db.models import Count
 from django.utils import timezone
 
-from apps.tracker.models import Page
+from apps.tracker.url_titles import get_latest_analytics_titles
 
 register = template.Library()
 PAGE_COLORS = [
-    "#4269D0",  # blue
-    "#EFB118",  # yellow
-    "#FF725C",  # red
-    "#6CC5B0",  # light-green
-    "#3CA951",  # green
-    "#FF8AB7",  # pink
-    "#A463F2",  # purple
-    "#97BBF5",  # light-blue
-    "#9C6B4E",  # brown
-    "#E5E7EB",  # gray
+    "#4269D0",
+    "#EFB118",
+    "#FF725C",
+    "#6CC5B0",
+    "#3CA951",
+    "#FF8AB7",
+    "#A463F2",
+    "#97BBF5",
+    "#9C6B4E",
+    "#E5E7EB",
 ]
 
 PALETTE_CLASSES = [
@@ -26,7 +27,6 @@ PALETTE_CLASSES = [
     "c-pink", "c-purple", "c-light-blue", "c-brown", "c-gray"
 ]
 
-# Event type mapping based on rrweb's IncrementalSource enum
 EVENT_TYPES = {
     0: 'mutation',
     1: 'mousemove',
@@ -57,69 +57,60 @@ EVENT_TYPES = {
 MAX_PAGES_PER_SESSION_IN_TIMELINE = 10
 
 
+def _get_session_url_order(session):
+    url_counts = list(
+        session.events
+        .exclude(url='')
+        .values('url')
+        .annotate(event_count=Count('id'))
+        .order_by('-event_count', 'url')
+    )
+    urls = [entry['url'] for entry in url_counts]
+    title_map = get_latest_analytics_titles(session.visitor.project_id if session.visitor else None, urls)
+    return url_counts, urls, title_map
+
+
 @register.filter
 def sum_events(pages):
-    """Calculate total events across all pages, supporting pseudo-pages with event_count."""
     total = 0
     for page in pages:
-        if hasattr(page, 'events'):
-            total += page.events.count()
-        elif hasattr(page, 'event_count'):
+        if hasattr(page, 'event_count'):
             total += page.event_count
+        elif isinstance(page, dict) and 'event_count' in page:
+            total += page['event_count']
     return total
 
 
 @register.filter
 def session_timeline(session):
-    """Generate a timeline of page numbers and event counts for each minute."""
-    # Get all events for all pages in the session
-    all_events = []
-    # Get pages that have events in this session
-    pages_with_events = session.events.values('page').distinct()
-    for page_data in pages_with_events:
-        page_id = page_data['page']
-        page = Page.objects.get(id=page_id)
-        events = session.events.filter(page=page).order_by('timestamp')
-        for event in events:
-            all_events.append((event.timestamp, page))
-
+    all_events = list(
+        session.events
+        .exclude(url='')
+        .values_list('timestamp', 'url')
+        .order_by('timestamp')
+    )
     if not all_events:
         return []
 
-    # Find the time range
-    start_time = min(event[0] for event in all_events)
-    end_time = max(event[0] for event in all_events)
+    _, urls, _title_map = _get_session_url_order(session)
+    start_time = min(event[0] for event in all_events).replace(second=0, microsecond=0)
+    end_time = max(event[0] for event in all_events).replace(second=0, microsecond=0)
 
-    # Create a timeline with all minutes
     timeline = []
-    current_time = start_time.replace(second=0, microsecond=0)
-    end_time = end_time.replace(second=0, microsecond=0)
-
-    # Get all pages for this session
-    pages = []
-    for page_data in pages_with_events:
-        page_id = page_data['page']
-        page = Page.objects.get(id=page_id)
-        pages.append(page)
-
+    current_time = start_time
     while current_time <= end_time:
-        # Count events per page for this minute
         page_counts = defaultdict(int)
-        for event_time, page in all_events:
-            event_time = event_time.replace(second=0, microsecond=0)
-            if event_time == current_time:
-                page_counts[page] += 1
+        for event_time, url in all_events:
+            if event_time.replace(second=0, microsecond=0) == current_time:
+                page_counts[url] += 1
 
-        # Find page with most events
         if page_counts:
             max_page = max(page_counts.items(), key=lambda x: x[1])
-            # Get 1-based index of the page
-            page_index = pages.index(max_page[0]) + 1
+            page_index = urls.index(max_page[0]) + 1
             timeline.append((current_time, f"P{page_index}_{max_page[1]}"))
         else:
             timeline.append((current_time, "P0_0"))
 
-        # Move to next minute
         current_time += timezone.timedelta(minutes=1)
 
     return timeline
@@ -130,7 +121,7 @@ def page_color(page_index):
     try:
         idx = int(page_index)
         if idx == 0:
-            return "#BDBDBD"  # grey for others
+            return "#BDBDBD"
         if 1 <= idx <= 10:
             return PAGE_COLORS[idx - 1]
         return "#BDBDBD"
@@ -168,66 +159,55 @@ def page_color_class(page_index):
 @register.filter
 def circle_size(event_count, max_count):
     try:
-        # Ensure both are int
         event_count = int(event_count)
         max_count = int(max_count)
         min_size = 8
         max_size = 28
         if max_count <= 0:
             return min_size
-        # Debug print
-        # print(f"event_count={event_count}, max_count={max_count}")
         size = min_size + (max_size - min_size) * float(event_count) / float(max_count)
         if size < min_size:
             return min_size
         if size > max_size:
             return max_size
         return round(size)
-    except Exception as e:
-        # print(f"circle_size error: {e}")
+    except Exception:
         return 8
 
 
 @register.filter
 def nonzero_bubbles(timeline):
-    """Return only timeline entries with nonzero events (not 'P0_0')."""
     return [item for item in timeline if item[1] != 'P0_0']
 
 
 @register.filter
 def all_bubbles(session):
-    """Return (minute, page_index, event_count) for every page/minute with events."""
-    all_events = []
-    # Get pages that have events in this session
-    pages_with_events = session.events.values('page').distinct()
-    for page_data in pages_with_events:
-        page_id = page_data['page']
-        page = Page.objects.get(id=page_id)
-        events = session.events.filter(page=page).order_by('timestamp')
-        for event in events:
-            all_events.append((event.timestamp, page))
+    all_events = list(
+        session.events
+        .exclude(url='')
+        .values_list('timestamp', 'url')
+        .order_by('timestamp')
+    )
     if not all_events:
         return []
-    start_time = min(event[0] for event in all_events)
-    end_time = max(event[0] for event in all_events)
+
+    _, urls, _title_map = _get_session_url_order(session)
+    start_time = min(event[0] for event in all_events).replace(second=0, microsecond=0)
+    end_time = max(event[0] for event in all_events).replace(second=0, microsecond=0)
+
     timeline = []
-    current_time = start_time.replace(second=0, microsecond=0)
-    end_time = end_time.replace(second=0, microsecond=0)
-
-    # Get all pages for this session
-    pages = []
-    for page_data in pages_with_events:
-        page_id = page_data['page']
-        page = Page.objects.get(id=page_id)
-        pages.append(page)
-
+    current_time = start_time
     while current_time <= end_time:
-        for idx, page in enumerate(pages):
-            count = sum(1 for event_time, p in all_events if
-                        p == page and event_time.replace(second=0, microsecond=0) == current_time)
+        for idx, url in enumerate(urls):
+            count = sum(
+                1
+                for event_time, event_url in all_events
+                if event_url == url and event_time.replace(second=0, microsecond=0) == current_time
+            )
             if count > 0:
                 timeline.append((current_time, idx + 1, count))
         current_time += timezone.timedelta(minutes=1)
+
     return list(timeline)
 
 
@@ -241,60 +221,44 @@ def max_event_count_bubbles(bubbles):
 
 @register.simple_tag
 def bubble_tooltip(session, page_index, minute, max_pages=3, event_count=None):
-    """
-    Returns a tooltip string for the bubble at (page_index, minute), using the provided event_count as the total.
-    Handles both top N pages and the 'others' group, with breakdown by page for 'others'.
-    Always returns a non-empty, meaningful tooltip for every bubble.
-    """
-    from django.db.models import Count
     try:
-        # Get pages that have events in this session, ordered by event count
-        pages_with_events = session.events.values('page').annotate(event_count=Count('id')).order_by('-event_count')
-        pages = []
-        for page_data in pages_with_events:
-            page_id = page_data['page']
-            page = Page.objects.get(id=page_id)
-            pages.append(page)
-
+        url_counts, urls, title_map = _get_session_url_order(session)
         page_index = int(page_index)
         max_pages = int(max_pages)
         local_minute = timezone.localtime(minute)
         timestamp = local_minute.strftime('%Y-%m-%d %H:%M')
         if event_count is not None:
             event_count = int(event_count)
-    except Exception as e:
+    except Exception:
         return f"Invalid input for tooltip (page_index={page_index}, minute={minute}, max_pages={max_pages})"
-    # Special case: page_index == 0 means 'others' group
+
     if page_index == 0:
         if event_count == 0:
             return f"No events for others at {timestamp} (data error)"
-        other_pages = pages[max_pages:]
-        all_events = []
+        other_urls = urls[max_pages:]
         page_event_counts = {}
-        for page in other_pages:
-            events = session.events.filter(
-                page=page,
+        for url in other_urls:
+            count = session.events.filter(
+                url=url,
                 timestamp__year=local_minute.year,
                 timestamp__month=local_minute.month,
                 timestamp__day=local_minute.day,
                 timestamp__hour=local_minute.hour,
                 timestamp__minute=local_minute.minute
-            )
-            count = events.count()
+            ).count()
             if count > 0:
-                page_event_counts[page.title] = count
-                all_events.extend(list(events))
+                page_event_counts[title_map.get(url, url)] = count
         page_breakdown = ", ".join(f"{count} {title}" for title, count in page_event_counts.items())
         return f"{timestamp} {event_count} events: {page_breakdown}"
-    # Top N pages
+
     if page_index > 0 and page_index <= max_pages:
         if event_count == 0:
             return f"No events for this page at {timestamp} (data error)"
-        if page_index > len(pages):
+        if page_index > len(urls):
             return f"No page for index {page_index} at {timestamp}"
-        page = pages[page_index - 1]
+        url = urls[page_index - 1]
         events = session.events.filter(
-            page=page,
+            url=url,
             timestamp__year=local_minute.year,
             timestamp__month=local_minute.month,
             timestamp__day=local_minute.day,
@@ -314,15 +278,13 @@ def bubble_tooltip(session, page_index, minute, max_pages=3, event_count=None):
         breakdown = ", ".join(f"{count} {etype}" for etype, count in type_counts.items())
         if breakdown:
             return f"{timestamp} {event_count} events ({breakdown})"
-        else:
-            return f"{timestamp} {event_count} events"
-    # Fallback for any other case
+        return f"{timestamp} {event_count} events"
+
     return f"No events at {timestamp} (data error)"
 
 
 @register.filter
 def to(start, end):
-    """Return a range from start to end inclusive (for dropdowns)."""
     return range(int(start), int(end) + 1)
 
 
@@ -344,7 +306,6 @@ def mul(value, arg):
 
 @register.filter
 def bubble_breakdown(breakdowns, args):
-    """Look up a breakdown by (minute, page_index) tuple."""
     minute, page_index = args
     return breakdowns.get((minute, page_index), "")
 
@@ -356,7 +317,6 @@ def get_bubble_breakdown(bubble_breakdowns, minute, page_index):
 
 @register.filter
 def seconds_to_minutes(seconds):
-    """Convert seconds to minutes and return as integer."""
     try:
         return int(seconds) // 60
     except (ValueError, TypeError):
@@ -365,24 +325,14 @@ def seconds_to_minutes(seconds):
 
 @register.filter
 def format_in_project_timezone(dt: datetime, project_timezone: str):
-    """Convert a datetime to the project's timezone and format it."""
     if not dt or not project_timezone:
         return dt
 
     try:
-        # Get the timezone object
         tz = ZoneInfo(project_timezone)
-
-        # If the datetime is naive, assume it's UTC
         if timezone.is_naive(dt):
             dt = timezone.make_aware(dt, timezone=ZoneInfo("UTC"))
-
-        # Convert to project timezone
         local_dt = dt.astimezone(tz)
-
-        # Format the datetime (example: "Sep 30, 01:23 pm")
         return local_dt.strftime("%b %d, ") + local_dt.strftime("%I:%M %p").lower()
-
     except (KeyError, ValueError, AttributeError):
-        # Fallback to original datetime formatting
         return dt.strftime("%b %d, ") + dt.strftime("%I:%M %p").lower()

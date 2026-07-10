@@ -89,4 +89,4 @@ class Command(BaseCommand):
                 f"💾 Total entries modified/added: {total_cache_entries}\n"
                 f"⏱️  Total time: {total_time:.3f}s"
             )
-        ) 
+        )

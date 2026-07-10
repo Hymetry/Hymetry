@@ -1,0 +1,210 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Team members - {{ workspace.name }}{% endblock %}
+
+{% block nav %}
+  {% include 'projects/partials/project_top_nav.html' with workspace=workspace active_project_section='settings' %}
+{% endblock %}
+
+{% block content %}
+  <div class="flex min-h-screen pt-12">
+    {% include 'projects/partials/settings_sidebar.html' with active_settings_section='workspace_team' %}
+
+    <div class="flex-1 p-8 lg:px-12 xl:px-20 2xl:px-28 3xl:pl-36 4xl:pl-44">
+      <div class="flex flex-row gap-8 lg:gap-12 items-start">
+        <div class="w-full lg:flex-1 max-w-240">
+          <header class="mb-8">
+            <h1 class="text-3xl font-bold text-slate-900">Team members</h1>
+          </header>
+
+          <section class="overflow-hidden bg-white border border-slate-200 rounded-xl shadow-sm mb-6">
+            <div class="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 class="text-lg font-semibold text-slate-600 uppercase">TEAM MEMBERS</h2>
+                <p class="mt-1 text-sm text-gray-950">Members can access all projects in this workspace.</p>
+              </div>
+              {% if can_add_owner or can_add_admin or can_add_member or can_add_viewer %}
+                <button type="button" data-modal-trigger aria-controls="add-team-members" class="inline-flex items-center gap-2 font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                  <svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor">
+                    <path d="M450-450H200v-60h250v-250h60v250h250v60H510v250h-60v-250Z" />
+                  </svg>
+                  Add member
+                </button>
+              {% endif %}
+            </div>
+
+            <div class="px-6 pb-6">
+              <div class="min-w-[760px]">
+                <div class="grid grid-cols-10 gap-4 font-medium text-slate-500 pb-2 border-b border-slate-200">
+                  <div class="col-span-3">Name</div>
+                  <div class="col-span-4">Email</div>
+                  <div class="col-span-1">Role</div>
+                  <div class="col-span-1">State</div>
+                  <div class="col-span-1"></div>
+                </div>
+
+                <div class="divide-y divide-slate-200">
+                  {% for member in team_members %}
+                    <div class="grid grid-cols-10 gap-4 py-3 items-center">
+                      <div class="col-span-3 {% if member.role == 'owner' %}font-medium{% endif %}">
+                        {% if member.name %}{{ member.name }}{% else %}&mdash;{% endif %}
+                      </div>
+                      <div class="col-span-4 break-words">{{ member.email }}</div>
+                      <div class="col-span-1">{{ member.role }}</div>
+                      <div class="col-span-1">
+                        {% if member.status == 'active' %}
+                          <span class="bg-green-100 text-green-800 font-medium px-2 py-1 rounded-full">active</span>
+                        {% endif %}
+                      </div>
+                      <div class="col-span-1 relative">
+                        {% if member.kind == 'member' and member.has_actions %}
+                          <button type="button" class="font-medium text-slate-600 duration-150 hover:bg-slate-100 rounded px-2 py-1.5" data-dropdown-toggle="#team-{{ member.kind }}-{{ member.id }}-menu" aria-label="Open member actions">
+                            &hellip;
+                          </button>
+                          <div id="team-{{ member.kind }}-{{ member.id }}-menu" data-dropdown-menu class="hidden absolute z-10 mt-2 w-40 right-0 rounded-md bg-white shadow-lg ring-1 ring-black/5 focus:outline-none duration-200" role="menu" tabindex="-1">
+                            {% if member.can_change_role %}
+                              <div class="py-1" role="none">
+                                <button type="button" data-modal-trigger aria-controls="change-user-role-{{ member.id }}" class="w-full text-left px-4 py-3 hover:bg-gray-100" role="menuitem" tabindex="-1">
+                                  Change user role
+                                </button>
+                              </div>
+                            {% endif %}
+                            {% if member.can_remove %}
+                              <form method="post" action="{% url 'w:remove_workspace_member' workspace_slug=workspace.slug membership_id=member.id %}{% if project %}?project={{ project.id }}{% endif %}" class="py-1{% if member.can_change_role %} border-t border-slate-100{% endif %}" role="none">
+                                {% csrf_token %}
+                                <button type="submit" class="w-full text-left px-4 py-3 hover:bg-gray-100" role="menuitem" tabindex="-1">Remove</button>
+                              </form>
+                            {% endif %}
+                          </div>
+                        {% endif %}
+                      </div>
+                    </div>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+
+            <div class="ml-6 mr-6 mb-6 border-l-4 border-sky-400 bg-slate-50 p-4">
+              <p class="text-gray-950">
+                Team members are workspace-level. All active members can access all projects in this workspace.
+              </p>
+            </div>
+          </section>
+        </div>
+
+        <div class="hidden xl:block w-1/5 min-w-24 shrink-0 pt-2">
+          <img src="{% static 'svg/team.svg' %}" alt="" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if can_add_owner or can_add_admin or can_add_member or can_add_viewer %}
+    <div id="add-team-members" data-modal-target class="hidden">
+      <div class="flex items-start justify-center fixed inset-0 z-50">
+        <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+        <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+          <form method="post" action="{% url 'w:workspace_add_member' workspace_slug=workspace.slug %}{% if project %}?project={{ project.id }}{% endif %}">
+            {% csrf_token %}
+            <div class="bg-white px-6 py-4">
+              <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                  <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                </svg>
+              </button>
+              <div class="flex items-start">
+                <div class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-green-600 bg-green-100">
+                  <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                    <path d="M172.31-180Q142-180 121-201q-21-21-21-51.31v-455.38Q100-738 121-759q21-21 51.31-21h615.38Q818-780 839-759q21 21 21 51.31v455.38Q860-222 839-201q-21 21-51.31 21H172.31ZM480-457.69 160-662.31v410q0 5.39 3.46 8.85t8.85 3.46h615.38q5.39 0 8.85-3.46t3.46-8.85v-410L480-457.69Zm0-62.31 313.85-200h-627.7L480-520ZM160-662.31V-720v467.69q0 5.39 3.46 8.85t8.85 3.46H160v-422.31Z" />
+                  </svg>
+                </div>
+                <div class="w-full mt-2 ml-4">
+                  <h3 class="text-base font-semibold">Add workspace member</h3>
+                  <div class="mt-6">
+                    <label for="member-email" class="block mb-2 font-medium text-gray-950">Email</label>
+                    <input id="member-email" name="email" type="email" autocomplete="off" class="block w-full appearance-none border border-slate-300 rounded py-3 px-3 text-gray-700 leading-tight" data-modal-input-focus required />
+                    <label for="temporary-password" class="block mt-4 mb-2 font-medium text-gray-950">Temporary password</label>
+                    <input id="temporary-password" name="temporary_password" type="password" autocomplete="new-password" minlength="{{ password_min_length }}" maxlength="{{ password_max_length }}" class="block w-full appearance-none border border-slate-300 rounded py-3 px-3 text-gray-700 leading-tight" />
+                    <p class="mt-1 text-sm text-slate-500">Required only when this email does not already have a local account.</p>
+                    <div class="mt-4">
+                      <label for="invite-user-role" class="block mb-2 font-medium text-gray-950">User role</label>
+                      <div class="relative" style="position: relative;">
+                        <select id="invite-user-role" name="role" class="block w-full appearance-none border border-slate-300 rounded py-3 pl-3 pr-10 text-gray-700 leading-tight bg-white" style="appearance: none; -webkit-appearance: none; -moz-appearance: none;">
+                          {% if can_add_owner %}<option value="owner">Owner</option>{% endif %}
+                          {% if can_add_admin %}<option value="admin"{% if not can_add_member %} selected{% endif %}>Admin</option>{% endif %}
+                          {% if can_add_member %}<option value="member" selected>Member</option>{% endif %}
+                          {% if can_add_viewer %}<option value="viewer"{% if not can_add_admin and not can_add_member %} selected{% endif %}>Viewer</option>{% endif %}
+                        </select>
+                        <svg class="text-slate-500" style="pointer-events: none; position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); color: #64748b;" xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor">
+                          <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
+                        </svg>
+                      </div>
+                    </div>
+                    {% if messages %}{% for message in messages %}{% if 'workspace-add-member' in message.tags %}<div class="mt-3 text-sm {% if 'error' in message.tags %}text-red-600{% else %}text-green-700{% endif %}">{{ message }}</div>{% endif %}{% endfor %}{% endif %}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+              <button type="submit" class="flex items-center gap-2 bg-green-600 font-medium text-white duration-150 hover:bg-green-700 rounded px-6 py-3">
+                Add member
+              </button>
+              <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
+  {% for member in team_members %}
+    {% if member.kind == 'member' and member.can_change_role %}
+      <div id="change-user-role-{{ member.id }}" data-modal-target class="hidden">
+        <div class="flex items-start justify-center fixed inset-0 z-50">
+          <div data-modal-close data-modal-overlay tabindex="-1" data-class-in="opacity-50" data-class-out="opacity-0" class="opacity-0 fixed inset-0 w-full z-40 transition-opacity duration-300 bg-black select-none"></div>
+          <div data-modal-wrapper data-class-in="opacity-100 translate-y-0" data-class-out="opacity-0 translate-y-5" class="opacity-0 translate-y-5 z-50 w-full transition-all duration-300 transform flex flex-col overflow-hidden rounded-lg bg-white shadow-xl my-8 max-w-lg mt-52">
+            <form method="post" action="{% url 'w:update_workspace_member_role' workspace_slug=workspace.slug membership_id=member.id %}{% if project %}?project={{ project.id }}{% endif %}">
+              {% csrf_token %}
+              <div class="bg-white px-6 py-4">
+                <button type="button" data-modal-close class="absolute top-2 right-2 text-gray-400 bg-transparent hover:bg-slate-100 hover:text-slate-800 rounded w-12 h-12 ml-auto inline-flex justify-center items-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                    <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+                  </svg>
+                </button>
+                <div class="flex items-start">
+                  <div class="mx-auto flex size-10 shrink-0 items-center justify-center rounded-full text-blue-500 bg-blue-100">
+                    <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
+                      <path d="M200-200h50.46l409.46-409.46-50.46-50.46L200-250.46V-200Zm-60 60v-135.38l527.62-527.39q9.07-8.24 20.03-12.73 10.97-4.5 23-4.5t23.3 4.27q11.28 4.27 19.97 13.58l48.85 49.46q9.31 8.69 13.27 20 3.96 11.31 3.96 22.62 0 12.07-4.12 23.03-4.12 10.97-13.11 20.04L275.38-140H140Zm620.38-570.15-50.23-50.23 50.23 50.23Zm-126.13 75.9-24.79-25.67 50.46 50.46-25.67-24.79Z" />
+                    </svg>
+                  </div>
+                  <div class="w-full mt-2 ml-4">
+                    <h3 class="text-base font-semibold leading-6">Change user role</h3>
+                    <div class="mt-6">
+                      <p class="mb-2">Select a new role for this user</p>
+                      <div class="relative" style="position: relative;">
+                        <select name="role" class="shadow-sm appearance-none border rounded w-full py-3 pl-3 pr-10 text-gray-700 leading-tight bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500" style="appearance: none; -webkit-appearance: none; -moz-appearance: none;" data-modal-input-focus autofocus>
+                          {% for role_option in member.role_options %}
+                            <option value="{{ role_option.value }}"{% if role_option.selected %} selected{% endif %}>{{ role_option.label }}</option>
+                          {% endfor %}
+                        </select>
+                        <svg class="text-slate-500" style="pointer-events: none; position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); color: #64748b;" xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor">
+                          <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
+                        </svg>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="bg-gray-50 px-6 py-3 flex flex-row-reverse gap-3">
+                <button type="submit" class="flex items-center gap-2 bg-sky-600 font-medium text-white duration-150 hover:bg-sky-700 rounded px-6 py-3">Save changes</button>
+                <button type="button" data-modal-close class="flex items-center gap-2 bg-slate-50 font-medium text-slate-600 border border-slate-300 duration-150 hover:bg-slate-100 rounded px-3 py-3">Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    {% endif %}
+  {% endfor %}
+
+{% endblock %}

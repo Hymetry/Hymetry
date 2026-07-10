@@ -1,7 +1,17 @@
 from django import forms
-from django.contrib.auth.forms import PasswordChangeForm
+from django.contrib.auth.forms import AuthenticationForm, PasswordChangeForm
 
 from apps.projects.models import Project
+
+
+class EmailAuthenticationForm(AuthenticationForm):
+    username = forms.EmailField(
+        label='Email',
+        widget=forms.EmailInput(attrs={'autocomplete': 'email', 'autofocus': True}),
+    )
+
+    def clean_username(self):
+        return str(self.cleaned_data['username']).strip().lower()
 
 
 class ProjectForm(forms.ModelForm):

@@ -1,0 +1,73 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Project setup - {{ project.name }}{% endblock %}
+
+{% block extra_js %}
+  <style>
+    .tracking-mode-radio {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 1.25rem;
+      height: 1.25rem;
+      margin-top: 0.125rem;
+      flex-shrink: 0;
+      border: 1.5px solid #94a3b8;
+      border-radius: 9999px;
+      background: #ffffff;
+      background-clip: content-box;
+      padding: 0.1875rem;
+      cursor: pointer;
+      transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+    }
+
+    .tracking-mode-radio:checked {
+      border-color: #2563eb;
+      background-color: #2563eb;
+    }
+
+    .tracking-mode-radio:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 4px rgba(147, 197, 253, 0.45);
+    }
+  </style>
+{% endblock %}
+
+{% block nav %}
+  {% include 'projects/partials/project_top_nav.html' with active_project_section='settings' %}
+{% endblock %}
+
+{% block body_classes %}
+  class="text-sm h-full bg-slate-50"
+{% endblock %}
+
+{% block content %}
+  <div class="flex min-h-screen pt-12">
+    {% include 'projects/partials/settings_sidebar.html' with active_settings_section='project_settings' %}
+
+    <div class="flex-1 p-8 lg:px-12 xl:px-20 2xl:px-28 3xl:pl-36 4xl:pl-44">
+      <div class="flex flex-row items-start gap-8 lg:gap-12">
+        <div class="w-full lg:flex-1 max-w-240">
+          <header class="mb-8 flex flex-wrap items-center justify-between gap-3">
+            <h1 class="text-3xl font-bold text-slate-900">Project setup</h1>
+            <span class="inline-flex items-center rounded-full px-3 py-1.5 text-sm font-medium {{ project_status_class }}">
+              {{ project_status_label }}
+            </span>
+          </header>
+
+          {% include 'projects/partials/project_settings_sections.html' %}
+        </div>
+
+        <div class="hidden xl:block w-1/5 min-w-24 shrink-0 pt-2">
+          <img src="{% static 'svg/settings.svg' %}" alt="" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% include 'projects/partials/project_settings_modals.html' %}
+
+  <script>
+    {% include 'projects/partials/project_settings_scripts.js' %}
+  </script>
+{% endblock %}

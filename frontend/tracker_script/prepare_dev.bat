@@ -1,1 +1,1 @@
-npm run minify_dev
+npm run build_dev

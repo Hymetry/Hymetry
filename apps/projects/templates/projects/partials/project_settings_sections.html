@@ -1,0 +1,222 @@
+<section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+  <h2 class="text-lg font-semibold text-slate-600 uppercase">GENERAL</h2>
+
+  <div class="mt-4 space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+      <p>Project name: {{ project.name }}</p>
+      {% if can_edit_project_settings %}
+        <button
+          data-modal-trigger
+          aria-controls="change-project-name"
+          class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+          Change name
+        </button>
+      {% endif %}
+    </div>
+    <div class="flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <p>Time zone: {{ project.timezone }}</p>
+        <p class="mt-1 text-sm text-gray-950">
+          Defines when days start and end for this project's reports.
+        </p>
+      </div>
+      {% if can_edit_project_settings %}
+        <button
+          type="button"
+          data-modal-trigger
+          aria-controls="change-project-timezone"
+          class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+          Change time zone
+        </button>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+  <h2 class="text-lg font-semibold text-gray-950">DATA COLLECTION</h2>
+
+  <div class="mt-6 space-y-3">
+    <div class="flex flex-col gap-4 rounded-lg border border-slate-200 bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <p class="text-xs font-medium uppercase tracking-wider text-slate-500">
+          Product URL / Allowed domain
+        </p>
+        <p id="allowedDomainValue" class="mt-1 font-medium text-gray-950">
+          {{ allowed_domain_summary }}
+        </p>
+        <p id="allowedDomainHelper" class="mt-1 text-gray-950">
+          {{ allowed_domain_helper }}
+        </p>
+      </div>
+      {% if can_edit_project_settings %}
+        <button
+          type="button"
+          data-modal-trigger
+          aria-controls="change-allowed-domain"
+          class="font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5 transition-colors">
+          Change
+        </button>
+      {% endif %}
+    </div>
+
+    <div class="rounded-lg border border-slate-200 bg-slate-50 p-4">
+      <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p class="text-xs font-medium uppercase tracking-wider text-slate-500">
+            Tracking mode
+          </p>
+          <p id="trackingSummaryValue" class="mt-1 font-medium text-gray-950">
+            {{ tracking_mode_summary }}
+          </p>
+          <p id="trackingSummaryHelper" class="mt-1 text-gray-950">
+            {{ tracking_mode_helper }}
+          </p>
+        </div>
+        {% if can_edit_project_settings %}
+          <button
+            type="button"
+            data-modal-trigger
+            aria-controls="change-tracking"
+            class="font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5 transition-colors">
+            Change
+          </button>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if show_privacy_settings %}
+    <details class="group w-full rounded-lg border border-slate-200 bg-slate-50">
+      <summary class="flex cursor-pointer items-center justify-between gap-x-3 px-6 py-3 text-sky-800 list-none [&::-webkit-details-marker]:hidden">
+        <span>Privacy settings</span>
+        <svg
+          class="h-5 w-5 text-gray-500 transition-transform duration-200 group-open:rotate-180"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor">
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M19 9l-7 7-7-7" />
+        </svg>
+      </summary>
+
+      <div class="px-6 pb-6 pt-0">
+        <section class="pt-6">
+          <h2 class="text-xl font-semibold text-gray-950">Recording privacy</h2>
+          <p class="mt-3">
+            We take privacy seriously. By default, Hymetry detects and masks common sensitive patterns (like emails, passwords, phone numbers, and credit-card-like numbers) on our servers as soon as event data arrives from the client before it's written to persistent storage. For example, if a user types
+            <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em] text-slate-800">email@example.com</code>, we store
+            <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em] text-slate-800">email@*******.com</code>.
+          </p>
+
+          <h3 class="mt-6 text-lg font-medium text-gray-950">
+            Control what's captured
+          </h3>
+          <p class="mt-2">
+            You can easily decide what we record by adding these CSS classes to your markup:
+          </p>
+
+          <div class="mt-4 overflow-hidden rounded-lg border border-slate-200">
+            <table class="min-w-full border-collapse text-left text-sm text-gray-950">
+              <thead class="bg-slate-50">
+                <tr>
+                  <th scope="col" class="w-1/4 px-4 py-2 font-medium text-gray-950">
+                    Class
+                  </th>
+                  <th scope="col" class="px-4 py-2 font-medium text-gray-950">
+                    Effect
+                  </th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-200">
+                <tr>
+                  <td class="px-4 py-2 align-top">
+                    <code class="whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-sm text-slate-800">.rr-block</code>
+                  </td>
+                  <td class="px-4 py-2">
+                    The element and its children are not recorded. During replay, a placeholder with the same dimensions is shown.
+                  </td>
+                </tr>
+                <tr>
+                  <td class="px-4 py-2 align-top">
+                    <code class="whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-sm text-slate-800">.rr-ignore</code>
+                  </td>
+                  <td class="px-4 py-2">
+                    Input events inside this element are not recorded (typed characters, changes, selections).
+                  </td>
+                </tr>
+                <tr>
+                  <td class="px-4 py-2 align-top">
+                    <code class="whitespace-nowrap rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-sm text-slate-800">.rr-mask</code>
+                  </td>
+                  <td class="px-4 py-2">
+                    All text content of this element and its descendants is replaced with masking characters in the recording and replay.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3 class="mt-6 text-lg font-medium text-gray-950">Examples</h3>
+          <pre class="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-slate-50 p-4 text-xs leading-relaxed text-slate-800"><code>&lt;!-- Block an entire widget --&gt;
+&lt;div class="rr-block"&gt; ... &lt;/div&gt;
+
+&lt;!-- Ignore keystrokes in a field --&gt;
+&lt;input class="rr-ignore" type="text" placeholder="Type here" /&gt;
+
+&lt;!-- Mask text content --&gt;
+&lt;div class="rr-mask"&gt;
+  &lt;span&gt;Order #847392&lt;/span&gt;
+&lt;/div&gt;</code></pre>
+
+          <h3 class="mt-6 text-lg font-medium text-gray-950">Good practices</h3>
+          <ul class="mt-3 list-disc space-y-1 pl-5">
+            <li>
+              Use
+              <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em]">.rr-block</code>
+              for auth widgets, payment iframes, third-party chats/CRMs, or any component you don't control.
+            </li>
+            <li>
+              Prefer
+              <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em]">.rr-ignore</code>
+              on free-text inputs where the UI context is useful but keystrokes are not.
+            </li>
+            <li>
+              Use
+              <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em]">.rr-mask</code>
+              to hide labels, IDs, or snippets that might occasionally contain sensitive data.
+            </li>
+            <li>
+              Avoid placing PII in HTML attributes (e.g.,
+              <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em]">aria-label</code>,
+              <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em]">data-*</code>). If unavoidable, block the element with
+              <code class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.95em]">.rr-block</code>.
+            </li>
+          </ul>
+        </section>
+      </div>
+    </details>
+    {% endif %}
+  </div>
+</section>
+
+{% include 'projects/partials/project_settings_sections_script_setup.html' %}
+
+{% if can_delete_project %}
+  <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
+    <h2 class="text-lg font-semibold text-slate-600 uppercase">DELETE PROJECT</h2>
+    <p class="mt-4 text-slate-600 leading-relaxed">
+      Delete this project from the workspace.
+    </p>
+    <button
+      type="button"
+      data-modal-trigger
+      aria-controls="delete-project"
+      class="mt-5 font-medium text-red-600 hover:text-red-800 transition-colors">
+      Delete {{ project.name }}
+    </button>
+  </section>
+{% endif %}

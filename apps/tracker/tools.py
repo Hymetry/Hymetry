@@ -2,22 +2,38 @@ import json
 import re
 from collections import defaultdict
 from django.utils import timezone
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlencode, urljoin, urlparse
 
 from apps.tracker.models import Session
 from config.runtime_url_values import runtime_urls
 
 
-def get_session_only(request, session_id):
+def _resolve_allowed_project_ids(request, allowed_project_ids=None):
+    if allowed_project_ids is not None:
+        return list(allowed_project_ids)
+
+    if not getattr(request.user, 'is_authenticated', False):
+        return []
+
+    from apps.projects.access import active_workspace_memberships
+    from apps.projects.models import Project
+
+    workspace_ids = active_workspace_memberships().filter(user=request.user).values_list('workspace_id', flat=True)
+    return list(
+        Project.active.filter(workspace_id__in=workspace_ids).values_list('id', flat=True)
+    )
+
+
+def get_session_only(request, session_id, allowed_project_ids=None):
     """Get authorized session without querying events."""
-    user_projects = request.user.projectmembership_set.values_list('project', flat=True)
+    user_projects = _resolve_allowed_project_ids(request, allowed_project_ids=allowed_project_ids)
     session = Session.objects.select_related('visitor__project').get(
         session_id=session_id,
         visitor__project__in=user_projects
     )
     return session
 
-def replace_urls_with_proxy(events_data):
+def replace_urls_with_proxy(events_data, base_url=None):
     """
     Replace external resource URLs in events data with CloudFlare proxy URLs.
     This function processes the events data and replaces external resource URLs
@@ -26,76 +42,162 @@ def replace_urls_with_proxy(events_data):
     if isinstance(events_data, str):
         events_data = json.loads(events_data)
     domain_url = runtime_urls.get_hymetry_domain()
-    
-    def replace_urls_in_object(obj):
-        """Recursively replace URLs in an object."""
+
+    def get_event_base_url(obj):
+        """Return the recorded page URL from an rrweb Meta event, when available."""
+        if not isinstance(obj, dict) or obj.get('type') != 4:
+            return None
+        data = obj.get('data')
+        if not isinstance(data, dict):
+            return None
+        href = data.get('href')
+        if is_http_url(href):
+            return href
+        return None
+
+    def find_recording_base_url(obj):
+        """Find a recorded page URL so relative asset URLs can be replayed correctly."""
         if isinstance(obj, dict):
-            for key, value in obj.items():
-                if isinstance(value, str):
-                    # Check if it's a direct URL
-                    if is_external_resource_url(value):
-                        obj[key] = create_proxy_url(value)
-                    # Check if it contains any external resource URLs (CSS, HTML, or plain text)
-                    elif contains_external_resource_urls(value):
-                        obj[key] = replace_urls_in_text(value)
-                elif isinstance(value, (dict, list)):
-                    replace_urls_in_object(value)
+            event_base_url = get_event_base_url(obj)
+            if event_base_url:
+                return event_base_url
+            for value in obj.values():
+                found = find_recording_base_url(value)
+                if found:
+                    return found
         elif isinstance(obj, list):
             for item in obj:
-                replace_urls_in_object(item)
+                found = find_recording_base_url(item)
+                if found:
+                    return found
+        return None
     
-    def is_external_resource_url(url):
-        """Check if URL is an external resource that should be proxied."""
+    def replace_urls_in_object(obj, current_base_url=None):
+        """Recursively replace URLs in an object."""
+        if isinstance(obj, dict):
+            current_base_url = get_event_base_url(obj) or current_base_url
+            normalize_replay_resource_attributes(obj, current_base_url)
+            for key, value in obj.items():
+                if isinstance(value, str):
+                    resource_url = get_proxyable_resource_url(value, current_base_url)
+                    if resource_url:
+                        obj[key] = create_proxy_url(resource_url)
+                    else:
+                        obj[key] = replace_urls_in_text(value, current_base_url)
+                elif isinstance(value, (dict, list)):
+                    replace_urls_in_object(value, current_base_url)
+        elif isinstance(obj, list):
+            active_base_url = current_base_url
+            for item in obj:
+                item_base_url = get_event_base_url(item) or active_base_url
+                replace_urls_in_object(item, item_base_url)
+                active_base_url = get_event_base_url(item) or active_base_url
+    
+    def is_http_url(url):
         if not url or not isinstance(url, str):
             return False
-        
-        # Skip data URLs, relative URLs, and our own domain
-        if url.startswith('data:') or url.startswith('blob:') or url.startswith('#'):
-            return False
-        
-        if url.startswith('/'):
-            return False
-        
         try:
             parsed = urlparse(url)
-            # Only proxy http/https URLs
-            if parsed.scheme not in ['http', 'https']:
-                return False
-            
-            # Don't proxy our own domain
-            app_domain = urlparse(domain_url).netloc
-            own_domains = [app_domain, 'localhost', '127.0.0.1']
-            if parsed.netloc in own_domains:
-                return False
-            
-            # Check if it's a resource URL that should be proxied
-            return is_resource_url(url)
-        except:
+            return parsed.scheme in ['http', 'https'] and bool(parsed.netloc)
+        except Exception:
             return False
+
+    def is_relative_url_candidate(candidate):
+        if any(ch.isspace() for ch in candidate):
+            return False
+        if any(ch in candidate for ch in ['<', '>', '"', "'", '{', '}', '(', ')']):
+            return False
+        return (
+            candidate.startswith('/')
+            or candidate.startswith('./')
+            or candidate.startswith('../')
+            or is_resource_url(candidate)
+        )
+
+    def resolve_url(url, current_base_url=None):
+        """Resolve absolute and recorded-page-relative resource URLs."""
+        if not url or not isinstance(url, str):
+            return None
+
+        candidate = url.strip()
+        if not candidate:
+            return None
+
+        lower_candidate = candidate.lower()
+        if (
+            lower_candidate.startswith('data:')
+            or lower_candidate.startswith('blob:')
+            or lower_candidate.startswith('mailto:')
+            or lower_candidate.startswith('tel:')
+            or lower_candidate.startswith('javascript:')
+            or candidate.startswith('#')
+        ):
+            return None
+
+        try:
+            parsed = urlparse(candidate)
+            if parsed.scheme in ['http', 'https'] and parsed.netloc:
+                return candidate
+            if parsed.scheme:
+                return None
+            if current_base_url and is_relative_url_candidate(candidate):
+                return urljoin(current_base_url, candidate)
+        except Exception:
+            return None
+
+        return None
+
+    def get_proxyable_resource_url(url, current_base_url=None):
+        """Return the absolute resource URL that should be proxied, if any."""
+        resolved_url = resolve_url(url, current_base_url)
+        if not resolved_url:
+            return None
+
+        parsed = urlparse(resolved_url)
+        app_domain = urlparse(domain_url).netloc
+        app_host = urlparse(domain_url).hostname
+        own_domains = {app_domain, app_host, 'localhost', '127.0.0.1'}
+        if parsed.netloc in own_domains or parsed.hostname in own_domains:
+            return None
+
+        if is_resource_url(resolved_url):
+            return resolved_url
+
+        return None
+
+    def normalize_replay_resource_attributes(obj, current_base_url=None):
+        """Make captured resource hints act like applied styles during replay."""
+        if not isinstance(obj, dict):
+            return
+
+        tag_name = str(obj.get('tagName') or '').lower()
+        attributes = obj.get('attributes')
+        if tag_name != 'link' or not isinstance(attributes, dict):
+            return
+
+        rel = str(attributes.get('rel') or '').lower()
+        rel_tokens = set(rel.split())
+        as_attr = str(attributes.get('as') or '').lower()
+        href = attributes.get('href')
+
+        if 'preload' in rel_tokens and 'stylesheet' not in rel_tokens and as_attr == 'style' and href:
+            attributes['rel'] = 'stylesheet'
+            attributes.pop('as', None)
+            attributes.pop('onload', None)
     
     def is_resource_url(url):
         """Check if URL is a web resource that should be proxied."""
         if not url:
             return False
         
-        # Resource file extensions to proxy
+        # Keep this list aligned with the asset proxy's passive safe content types.
         resource_extensions = {
             # Stylesheets
-            '.css', '.scss', '.sass', '.less',
-            # JavaScript
-            '.js', '.mjs', '.jsx', '.ts', '.tsx',
-            # Images
-            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico',
+            '.css',
+            # Images that cannot execute script when served from our origin
+            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.avif', '.ico',
             # Fonts
             '.woff', '.woff2', '.ttf', '.otf', '.eot',
-            # Media
-            '.mp4', '.webm', '.ogg', '.mp3', '.wav', '.avi', '.mov',
-            # Documents
-            '.pdf', '.doc', '.docx', '.xls', '.xlsx',
-            # Archives
-            '.zip', '.rar', '.tar', '.gz',
-            # Other common resources
-            '.xml', '.json', '.txt', '.csv'
         }
         
         # Check file extension
@@ -106,12 +208,8 @@ def replace_urls_with_proxy(events_data):
         
         # Check for common resource patterns in URLs
         resource_patterns = [
-            r'\.(css|js|png|jpg|jpeg|gif|svg|woff|woff2|ttf|otf|mp4|webm|pdf)',
-            r'/(css|js|images|img|assets|static|media|fonts)/',
-            r'\.(googleapis\.com|gstatic\.com|cloudflare\.com|jsdelivr\.net|unpkg\.com)',
-            r'\.(cdn|static|assets|media)\.',
-            r'/api/',
-            r'\.(min|bundle|vendor)\.(css|js)',
+            r'\.(css|png|jpg|jpeg|gif|bmp|webp|avif|ico|woff|woff2|ttf|otf|eot)(?:$|[?#])',
+            r'\.(min|bundle|vendor)\.css(?:$|[?#])',
         ]
         
         import re
@@ -123,49 +221,9 @@ def replace_urls_with_proxy(events_data):
     
     def create_proxy_url(original_url):
         """Create an asset proxy URL."""
-        return f"{domain_url}/asset-proxy?url={original_url}"
+        return f"{domain_url}/asset-proxy?{urlencode({'url': original_url})}"
     
-    def contains_external_resource_urls(text):
-        """Check if text contains any external resource URLs."""
-        if not isinstance(text, str):
-            return False
-        # Look for common resource URL patterns
-        url_patterns = [
-            r'url\(["\']?[^"\')\s]+["\']?\)',  # CSS url() declarations
-            r'@import\s+["\'][^"\']+["\']',  # CSS @import statements
-            r'src=["\'][^"\']+["\']',  # HTML src attributes
-            r'href=["\'][^"\']+["\']',  # HTML href attributes
-            r'data-src=["\'][^"\']+["\']',  # HTML data-src attributes
-        ]
-        import re
-        for pattern in url_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            for match in matches:
-                # Extract the URL from the match
-                if pattern == r'url\(["\']?[^"\')\s]+["\']?\)':
-                    # Extract URL from url() declaration
-                    url_match = re.search(r'url\(["\']?([^"\')\s]+)["\']?\)', match)
-                    if url_match:
-                        url = url_match.group(1).strip('"\'')
-                        if is_external_resource_url(url):
-                            return True
-                elif pattern == r'@import\s+["\'][^"\']+["\']':
-                    # Extract URL from @import statement
-                    import_match = re.search(r'@import\s+["\']([^"\']+)["\']', match)
-                    if import_match:
-                        url = import_match.group(1)
-                        if is_external_resource_url(url):
-                            return True
-                elif pattern in [r'src=["\'][^"\']+["\']', r'href=["\'][^"\']+["\']', r'data-src=["\'][^"\']+["\']']:
-                    # Extract URL from HTML attributes
-                    attr_match = re.search(r'["\']([^"\']+)["\']', match)
-                    if attr_match:
-                        url = attr_match.group(1)
-                        if is_external_resource_url(url):
-                            return True
-        return False
-    
-    def replace_urls_in_text(text):
+    def replace_urls_in_text(text, current_base_url=None):
         """Replace resource URLs in any text content with proxy URLs."""
         if not isinstance(text, str):
             return text
@@ -176,46 +234,58 @@ def replace_urls_with_proxy(events_data):
         def replace_css_url(match):
             url_content = match.group(1)
             url_content = url_content.strip('"\'')
-            if is_external_resource_url(url_content):
-                return f'url("{create_proxy_url(url_content)}")'
+            resource_url = get_proxyable_resource_url(url_content, current_base_url)
+            if resource_url:
+                return f'url("{create_proxy_url(resource_url)}")'
             return match.group(0)
         
         # Replace URLs in CSS @import statements
         def replace_css_import(match):
             import_url = match.group(1)
-            if is_external_resource_url(import_url):
-                return f'@import "{create_proxy_url(import_url)}"'
+            resource_url = get_proxyable_resource_url(import_url, current_base_url)
+            if resource_url:
+                return f'@import "{create_proxy_url(resource_url)}"'
+            return match.group(0)
+
+        def replace_css_import_url(match):
+            import_url = match.group(1).strip('"\'')
+            resource_url = get_proxyable_resource_url(import_url, current_base_url)
+            if resource_url:
+                return f'@import url("{create_proxy_url(resource_url)}")'
             return match.group(0)
         
         # Replace URLs in HTML attributes
         def replace_html_url(match):
             attr_name = match.group(1)
             url_content = match.group(2)
-            if is_external_resource_url(url_content):
-                return f'{attr_name}="{create_proxy_url(url_content)}"'
+            resource_url = get_proxyable_resource_url(url_content, current_base_url)
+            if resource_url:
+                return f'{attr_name}="{create_proxy_url(resource_url)}"'
             return match.group(0)
         
         # Apply all replacements
         text = re.sub(r'url\(["\']?([^"\')\s]+)["\']?\)', replace_css_url, text)
         text = re.sub(r'@import\s+["\']([^"\']+)["\']', replace_css_import, text)
+        text = re.sub(r'@import\s+url\(["\']?([^"\')\s]+)["\']?\)', replace_css_import_url, text)
         text = re.sub(r'(src|href|data-src)=["\']([^"\']+)["\']', replace_html_url, text)
         
         return text
     
     # Process the events data
-    replace_urls_in_object(events_data)
+    resolved_base_url = base_url or find_recording_base_url(events_data)
+    replace_urls_in_object(events_data, resolved_base_url)
     
     return events_data
 
 
-def get_session_and_events(request, session_id):
+def get_session_and_events(request, session_id, allowed_project_ids=None):
     """Get session and events data with optimized queries."""
-    user_projects = request.user.projectmembership_set.values_list('project', flat=True)
+    user_projects = _resolve_allowed_project_ids(request, allowed_project_ids=allowed_project_ids)
     session = Session.objects.select_related('visitor__project').get(
         session_id=session_id, 
         visitor__project__in=user_projects
     )
-    events = session.events.select_related('page').order_by('timestamp')
+    events = session.events.order_by('timestamp')
     return session, events
 
 
@@ -251,9 +321,14 @@ def get_timestamp_for_sorting(event_data):
         return 0
 
 
-def get_pages_data(request, session_id):
-    session, events = get_session_and_events(request, session_id)
-    events_data = [event.data for event in events]
+def get_pages_data(request, session_id, allowed_project_ids=None):
+    session, events = get_session_and_events(
+        request,
+        session_id,
+        allowed_project_ids=allowed_project_ids,
+    )
+    event_records = list(events)
+    events_data = [event.data for event in event_records]
 
     # Filter out non-rrweb events and sort by timestamp
     if events_data:
@@ -264,14 +339,19 @@ def get_pages_data(request, session_id):
         events_data.sort(key=get_timestamp_for_sorting)
         
         # Replace external URLs with proxy URLs
-        events_data = replace_urls_with_proxy(events_data)
+        base_url = next((event.url for event in event_records if event.url), None)
+        events_data = replace_urls_with_proxy(events_data, base_url=base_url)
 
     return json.dumps(events_data, indent=2).replace('</', '<\\/')
 
 
-def get_tab_timeline_data(request, session_id):
+def get_tab_timeline_data(request, session_id, allowed_project_ids=None):
     """Get timeline data for multi-tab recording playback."""
-    session, events = get_session_and_events(request, session_id)
+    session, events = get_session_and_events(
+        request,
+        session_id,
+        allowed_project_ids=allowed_project_ids,
+    )
     
     # Group events by tab_id
     tab_events = defaultdict(list)
@@ -305,7 +385,8 @@ def get_tab_timeline_data(request, session_id):
             'data': event_data,
             'timestamp': timestamp,  # Keep absolute timestamp
             'relative_timestamp': relative_timestamp,
-            'db_timestamp': event.timestamp.isoformat()
+            'db_timestamp': event.timestamp.isoformat(),
+            'page_url': event.url,
         })
         
         # Add timeline entry for this tab at this timestamp
@@ -433,7 +514,8 @@ def get_tab_timeline_data(request, session_id):
             duration = 0
         
         # Replace external URLs with proxy URLs in the events data
-        events_data = replace_urls_with_proxy(events_data)
+        base_url = next((event.get('page_url') for event in events_list if event.get('page_url')), None)
+        events_data = replace_urls_with_proxy(events_data, base_url=base_url)
         
         result['tabs'][tab_id] = {
             'events': events_data,
@@ -469,9 +551,22 @@ def update_human_tabs(human_tab_dict, tab_id, gen):
         human_tab_dict[tab_id] =  next(gen)
 
 
-def get_consolidated_timeline_data(request, session_id):
+def _notify_memory_checkpoint(memory_callback, stage, **details):
+    if memory_callback is None:
+        return
+    try:
+        memory_callback(stage, **details)
+    except Exception:
+        pass
+
+
+def get_consolidated_timeline_data(request, session_id, allowed_project_ids=None, memory_callback=None):
     """Get consolidated timeline data for single rrweb player with all tabs combined."""
-    session, events = get_session_and_events(request, session_id)
+    session, events = get_session_and_events(
+        request,
+        session_id,
+        allowed_project_ids=allowed_project_ids,
+    )
     
     # Valid rrweb event types for timeline
     valid_rrweb_types = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14}
@@ -484,10 +579,12 @@ def get_consolidated_timeline_data(request, session_id):
     session_start_time = None
     current_tab = None
     first_tab = None  # Track the first tab separately
+    first_page_url = None
     
 
     # Sort all events by timestamp
     sorted_events = sorted(events, key=lambda e: get_timestamp_for_sorting(e.data))
+    _notify_memory_checkpoint(memory_callback, 'after_db_load', db_event_count=len(sorted_events))
     
     print(f"Processing {len(sorted_events)} events for session {session_id}")
     
@@ -498,6 +595,9 @@ def get_consolidated_timeline_data(request, session_id):
         # Skip invalid rrweb events
         if not is_valid_rrweb_event(event_data, valid_rrweb_types):
             continue
+
+        if first_page_url is None and event.url:
+            first_page_url = event.url
             
         tab_id = event.tab_id or 'unknown'
         timestamp = get_timestamp_for_sorting(event_data)
@@ -564,7 +664,13 @@ def get_consolidated_timeline_data(request, session_id):
     consolidated_events.sort(key=lambda x: x['timestamp'])
 
     # Replace external URLs with proxy URLs in consolidated events
-    consolidated_events = replace_urls_with_proxy(consolidated_events)
+    consolidated_events = replace_urls_with_proxy(consolidated_events, base_url=first_page_url)
+    _notify_memory_checkpoint(
+        memory_callback,
+        'after_consolidate',
+        replay_event_count=len(consolidated_events),
+        tab_switch_count=len(tab_switches),
+    )
     
     print(f"Consolidated {len(consolidated_events)} events, {len(tab_switches)} tab switches")
     print(f"First tab: {first_tab}, Initial tab ID: {first_tab if first_tab else 'unknown'}")

@@ -27,12 +27,12 @@
                             <input
                                 autofocus
                                 type="email"
-                                id="id_login"
-                                name="login"
+                                id="id_username"
+                                name="username"
                                 placeholder="Enter your email"
                                 autocomplete="email"
                                 class="w-full p-3 border border-gray-300 rounded-lg placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
-                                value="{{ form.login.value|default:'' }}"
+                                value="{{ form.username.value|default:'' }}"
                                 required />
                         </div>
                         <div class="py-2">
@@ -80,4 +80,4 @@
             });
         </script>
     </body>
-</html> 
+</html>

@@ -1,0 +1,13 @@
+{% load static %}
+
+<section class="py-16 text-center" aria-live="polite">
+  <div class="mx-auto max-w-xl">
+    <p class="text-lg font-medium text-slate-600">
+      No data were found in the last {{ analytics_empty_period_days|default:30 }} days.
+    </p>
+    <img
+      src="{% static 'svg/no-sessions.svg' %}"
+      alt=""
+      class="mx-auto mt-8 w-72 max-w-full" />
+  </div>
+</section>
