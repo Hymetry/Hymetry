@@ -1085,10 +1085,7 @@
       }
     });
 
-    checkboxes.forEach((checkbox) => {
-      checkbox.addEventListener("change", updateProductAreaFilterLabel);
-    });
-
+    // Checkbox changes remain draft-only; the control reflects them after Apply reloads the page.
     apply?.addEventListener("click", () => {
       updateProductAreaFilterQuery(selectedProductAreaFilterOptions().map((option) => option.key));
     });

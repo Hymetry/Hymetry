@@ -1021,12 +1021,20 @@
     return formatNumber(value);
   }
 
-  function metricDeltaClass(direction) {
-    if (direction === "positive") {
+  function metricDeltaClass(direction, invert = false) {
+    const resolvedDirection = invert
+      ? direction === "positive"
+        ? "negative"
+        : direction === "negative"
+          ? "positive"
+          : direction
+      : direction;
+
+    if (resolvedDirection === "positive") {
       return "text-green-700";
     }
 
-    if (direction === "negative") {
+    if (resolvedDirection === "negative") {
       return "text-red-600";
     }
 
@@ -1329,7 +1337,7 @@
           <div class="min-w-0 text-sm font-medium uppercase text-slate-500">${metricDynamicsTitleMarkup(metric, "company", index)}</div>
           <div class="flex shrink-0 items-center gap-2 text-right font-medium">
             <div class="whitespace-nowrap text-base font-semibold text-slate-900">${escapeHtml(formatValueByType(metric.value, metric.valueType))}</div>
-            <div class="whitespace-nowrap text-sm font-medium ${metricDeltaClass(metric.deltaDirection)}">${escapeHtml(metric.formattedDelta || "-")}</div>
+            <div class="whitespace-nowrap text-sm font-medium ${metricDeltaClass(metric.deltaDirection, metric.key === "atRiskUsers")}">${escapeHtml(metric.formattedDelta || "-")}</div>
           </div>
         </div>
         <div data-company-metric-chart-index="${index}" class="mt-3 h-[92px] w-full"></div>
