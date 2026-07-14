@@ -23,10 +23,8 @@ from django.views.decorators.http import require_http_methods, require_POST
 from apps.pages import company_analytics, company_detail_analytics, services as pages_services, user_analytics, user_detail_analytics
 from apps.pages.table_pagination import paginate_cached_rows
 from apps.pages.tasks import (
-    build_companies_overview_cache_task,
     build_company_detail_cache_task,
     build_user_detail_cache_task,
-    build_users_overview_cache_task,
 )
 from apps.pages.models import RawPageDailyMetric
 from apps.tracker.models import AnalyticsEvent, Event, ProjectPageRule
@@ -282,42 +280,6 @@ def _show_peers(request):
     return str(request.GET.get('show_peers', '')).lower() in {'1', 'true', 'yes', 'on'}
 
 
-def _best_effort_queue_companies_rebuild(project_id, range_key):
-    if not getattr(settings, 'COMPANIES_QUEUE_REBUILDS_ON_REQUEST', getattr(settings, 'PAGES_QUEUE_REBUILDS_ON_REQUEST', True)):
-        return False
-
-    def enqueue():
-        try:
-            build_companies_overview_cache_task.apply_async(
-                args=[project_id, range_key],
-                retry=False,
-                ignore_result=True,
-            )
-        except Exception:
-            return
-
-    threading.Thread(target=enqueue, daemon=True).start()
-    return True
-
-
-def _best_effort_queue_users_rebuild(project_id, range_key):
-    if not getattr(settings, 'USERS_QUEUE_REBUILDS_ON_REQUEST', getattr(settings, 'PAGES_QUEUE_REBUILDS_ON_REQUEST', True)):
-        return False
-
-    def enqueue():
-        try:
-            build_users_overview_cache_task.apply_async(
-                args=[project_id, range_key],
-                retry=False,
-                ignore_result=True,
-            )
-        except Exception:
-            return
-
-    threading.Thread(target=enqueue, daemon=True).start()
-    return True
-
-
 def _best_effort_queue_company_detail_rebuild(project_id, company_id, range_key):
     company_id = str(company_id or '').strip()
     if not company_id:
@@ -567,7 +529,6 @@ def render_project_companies(request, project, *, is_demo_view=False):
     if cache and company_analytics.is_current_companies_payload_schema(cache.get('schema_version')):
         if cache.get('is_stale'):
             cache_status = 'stale'
-            _best_effort_queue_companies_rebuild(project.id, range_key)
         full_payload = cache.get('payload_json') or {}
         payload = _with_companies_overview_table_payload(full_payload, request)
         payload_script_text = mark_safe(pages_services.to_json_script_text(payload))
@@ -576,7 +537,6 @@ def render_project_companies(request, project, *, is_demo_view=False):
         payload = _with_companies_overview_table_payload(full_payload, request)
         payload_script_text = mark_safe(pages_services.to_json_script_text(payload))
         cache_status = 'missing' if not cache else 'stale_schema'
-        _best_effort_queue_companies_rebuild(project.id, range_key)
 
     detail_base_url = reverse('demo_company_detail', kwargs={'company_id': 'detail'}) if is_demo_view else project_route(
         project,
@@ -623,10 +583,7 @@ def _companies_table_response(request, project):
     range_key = _companies_range_key(request)
     cache = company_analytics.get_cached_companies_overview_payload(project.id, range_key=range_key)
     if not cache or not company_analytics.is_current_companies_payload_schema(cache.get('schema_version')):
-        queued = _best_effort_queue_companies_rebuild(project.id, range_key)
-        return _pending_table_response('companies', COMPANIES_TABLE_PAGE_SIZE, queued=queued)
-    if cache.get('is_stale'):
-        _best_effort_queue_companies_rebuild(project.id, range_key)
+        return _pending_table_response('companies', COMPANIES_TABLE_PAGE_SIZE)
     table_payload = _companies_table_payload(cache.get('payload_json') or {}, request)
     return JsonResponse({'table': 'companies', **table_payload}, json_dumps_params={'separators': (',', ':')})
 
@@ -656,7 +613,6 @@ def render_project_users(request, project, *, is_demo_view=False):
         is_current_schema = user_analytics.is_current_users_payload_schema(cache.get('schema_version'))
         if cache.get('is_stale') or not is_current_schema:
             cache_status = 'stale' if is_current_schema else 'stale_schema'
-            _best_effort_queue_users_rebuild(project.id, range_key)
         full_payload = cache.get('payload_json') or {}
         payload = user_analytics.initial_users_overview_payload(full_payload)
         payload_script_text = mark_safe(pages_services.to_json_script_text(payload))
@@ -665,7 +621,6 @@ def render_project_users(request, project, *, is_demo_view=False):
         full_payload = payload
         payload_script_text = mark_safe(pages_services.to_json_script_text(payload))
         cache_status = 'missing'
-        _best_effort_queue_users_rebuild(project.id, range_key)
 
     data_base_url = reverse('demo_users_data') if is_demo_view else project_route(project, 'project_users_data')
     data_url = f"{data_base_url}?{urlencode({'range': range_key})}"
@@ -881,19 +836,15 @@ def _users_overview_data_response(request, project):
     cache = user_analytics.get_cached_users_overview_payload(project.id, range_key=range_key)
 
     if cache:
-        is_current_schema = user_analytics.is_current_users_payload_schema(cache.get('schema_version'))
-        if cache.get('is_stale') or not is_current_schema:
-            _best_effort_queue_users_rebuild(project.id, range_key)
         return JsonResponse(
             user_analytics.deferred_users_overview_payload(cache.get('payload_json')),
             json_dumps_params={'separators': (',', ':')},
         )
 
-    queued = _best_effort_queue_users_rebuild(project.id, range_key)
     return JsonResponse(
         {
             'pending': True,
-            'queued': queued,
+            'queued': False,
             'range_key': range_key,
             'users': [],
             'scatter': [],
@@ -995,8 +946,6 @@ def _users_options_response(request, project):
     cache = user_analytics.get_cached_users_overview_payload(project.id, range_key=range_key)
 
     if cache and user_analytics.is_current_users_payload_schema(cache.get('schema_version')):
-        if cache.get('is_stale'):
-            _best_effort_queue_users_rebuild(project.id, range_key)
         rows, total = _user_selector_rows((cache.get('payload_json') or {}).get('users') or [], query, limit)
         return JsonResponse(
             {
@@ -1010,11 +959,10 @@ def _users_options_response(request, project):
             json_dumps_params={'separators': (',', ':')},
         )
 
-    queued = _best_effort_queue_users_rebuild(project.id, range_key)
     return JsonResponse(
         {
             'pending': True,
-            'queued': queued,
+            'queued': False,
             'query': query,
             'range_key': range_key,
             'results': [],
@@ -1088,10 +1036,7 @@ def _company_detail_payload_bundle(project, company_id, range_key, *, is_demo_vi
     cache = company_analytics.get_cached_companies_overview_payload(project.id, range_key=range_key)
     if cache and company_analytics.is_current_companies_payload_schema(cache.get('schema_version')):
         overview_payload = cache.get('payload_json') or {}
-        if cache.get('is_stale'):
-            _best_effort_queue_companies_rebuild(project.id, range_key)
     else:
-        _best_effort_queue_companies_rebuild(project.id, range_key)
         return {
             'status': 'preparing',
             'selected_range_key': range_key,
@@ -1257,8 +1202,6 @@ def _company_options_response(request, project):
     cache = company_analytics.get_cached_companies_overview_payload(project.id, range_key=range_key)
 
     if cache and company_analytics.is_current_companies_payload_schema(cache.get('schema_version')):
-        if cache.get('is_stale'):
-            _best_effort_queue_companies_rebuild(project.id, range_key)
         rows = _company_detail_selector_rows((cache.get('payload_json') or {}).get('companies') or [])
         results, total = _company_selector_rows(rows, query, limit)
         return JsonResponse(
@@ -1273,11 +1216,10 @@ def _company_options_response(request, project):
             json_dumps_params={'separators': (',', ':')},
         )
 
-    queued = _best_effort_queue_companies_rebuild(project.id, range_key)
     return JsonResponse(
         {
             'pending': True,
-            'queued': queued,
+            'queued': False,
             'query': query,
             'range_key': range_key,
             'results': [],

@@ -689,6 +689,49 @@ class PagesOverviewViewTests(TestCase):
         self.assertNotContains(response, 'users-overview-data')
         self.assertNotContains(response, 'js/users/users-analytics.js')
 
+    @override_settings(
+        COMPANIES_QUEUE_REBUILDS_ON_REQUEST=True,
+        USERS_QUEUE_REBUILDS_ON_REQUEST=True,
+    )
+    @patch('apps.pages.tasks.build_users_overview_cache_task.apply_async')
+    @patch('apps.pages.tasks.build_companies_overview_cache_task.apply_async')
+    def test_overview_cache_misses_do_not_queue_request_rebuilds(
+        self,
+        companies_apply_async,
+        users_apply_async,
+    ):
+        companies_response = self.client.get(
+            reverse('projects:project_companies', kwargs={'project_id': self.project.id})
+        )
+        companies_table_response = self.client.get(
+            reverse('projects:project_companies_table_data', kwargs={'project_id': self.project.id})
+        )
+        companies_options_response = self.client.get(
+            reverse('projects:project_company_options', kwargs={'project_id': self.project.id})
+        )
+        users_response = self.client.get(
+            reverse('projects:project_users', kwargs={'project_id': self.project.id})
+        )
+        users_data_response = self.client.get(
+            reverse('projects:project_users_data', kwargs={'project_id': self.project.id})
+        )
+        users_options_response = self.client.get(
+            reverse('projects:project_user_options', kwargs={'project_id': self.project.id})
+        )
+
+        self.assertEqual(companies_response.status_code, 200)
+        self.assertEqual(companies_table_response.status_code, 202)
+        self.assertFalse(companies_table_response.json()['queued'])
+        self.assertEqual(companies_options_response.status_code, 202)
+        self.assertFalse(companies_options_response.json()['queued'])
+        self.assertEqual(users_response.status_code, 200)
+        self.assertEqual(users_data_response.status_code, 202)
+        self.assertFalse(users_data_response.json()['queued'])
+        self.assertEqual(users_options_response.status_code, 202)
+        self.assertFalse(users_options_response.json()['queued'])
+        companies_apply_async.assert_not_called()
+        users_apply_async.assert_not_called()
+
     def test_users_overview_stale_schema_uses_cached_payload(self):
         generated_at = timezone.now()
         UsersOverviewCache.objects.create(
