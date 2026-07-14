@@ -97,6 +97,14 @@ class PagesOverviewViewTests(TestCase):
         self.assertContains(response, 'js/pages/pages-analytics.js')
         self.assertContains(response, 'data-pages-view="overview"')
         self.assertContains(response, f'data-project-id="{self.project.id}"')
+        self.assertContains(
+            response,
+            f'data-pages-detail-base-url="{self._project_route("project_page_detail", page_rule_id="__PAGE_RULE_ID__")}"',
+        )
+        self.assertNotContains(
+            response,
+            f'data-pages-detail-base-url="{self._project_route("project_pages")}/"',
+        )
         self.assertContains(response, 'Product area summary')
         self.assertContains(response, 'product-area-summary-body')
         self.assertContains(response, 'pages-change-table-body')

@@ -17,9 +17,9 @@
 
 {% block body_classes %}
   {% if is_demo_view %}
-    class="text-sm h-full bg-slate-50" data-pages-view="overview" data-project-id="{{ project.id }}" data-pages-overview-url="{% url 'demo_pages' %}?range={{ pages_range_key }}" data-pages-overview-table-url="{{ pages_overview_table_url }}" data-pages-detail-base-url="/projects/demo/pages/" data-pages-range-key="{{ pages_range_key }}"
+    class="text-sm h-full bg-slate-50" data-pages-view="overview" data-project-id="{{ project.id }}" data-pages-overview-url="{% url 'demo_pages' %}?range={{ pages_range_key }}" data-pages-overview-table-url="{{ pages_overview_table_url }}" data-pages-detail-base-url="{% url 'demo_page_detail' page_rule_id='__PAGE_RULE_ID__' %}" data-pages-range-key="{{ pages_range_key }}"
   {% else %}
-    class="text-sm h-full bg-slate-50" data-pages-view="overview" data-project-id="{{ project.id }}" data-pages-overview-url="{% url 'w:project_pages' workspace_slug=project.workspace.slug project_id=project.id %}?range={{ pages_range_key }}" data-pages-overview-table-url="{{ pages_overview_table_url }}" data-pages-detail-base-url="{% url 'w:project_pages' workspace_slug=project.workspace.slug project_id=project.id %}/" data-pages-range-key="{{ pages_range_key }}"
+    class="text-sm h-full bg-slate-50" data-pages-view="overview" data-project-id="{{ project.id }}" data-pages-overview-url="{% url 'w:project_pages' workspace_slug=project.workspace.slug project_id=project.id %}?range={{ pages_range_key }}" data-pages-overview-table-url="{{ pages_overview_table_url }}" data-pages-detail-base-url="{% url 'w:project_page_detail' workspace_slug=project.workspace.slug project_id=project.id page_rule_id='__PAGE_RULE_ID__' %}" data-pages-range-key="{{ pages_range_key }}"
   {% endif %}
 {% endblock %}
 
