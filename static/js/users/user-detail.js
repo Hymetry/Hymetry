@@ -316,19 +316,19 @@
     (currentData?.underusedPages || []).forEach((row) => productAreaColorResolver.add(row.productAreaName || row.productAreaId, row.productAreaColor));
     (currentData?.peerComparison || []).forEach((row) => {
       (row.productAreaAdoption || []).forEach((cell) => productAreaColorResolver.add(cell.productAreaName || cell.productAreaId, cell.productAreaColor));
-      productAreaColorResolver.add(row.topArea);
+      productAreaColorResolver.add(row.topArea, row.topAreaColor);
     });
     productAreaColorResolver.finalize();
   }
 
-  function areaColor(areaId) {
+  function areaColor(areaId, explicitColor = "") {
     const area = (currentData?.productAreas || provider.PRODUCT_AREAS).find((row) => row.id === areaId || row.name === areaId);
 
     if (productAreaColorResolver) {
-      return productAreaColorResolver.color(area || areaId, area?.color || "");
+      return productAreaColorResolver.color(area || areaId, explicitColor || area?.color || "");
     }
 
-    return tailwindColor(area?.color || "c-blue");
+    return tailwindColor(explicitColor || area?.color || "c-blue");
   }
 
   function parseDisplayDate(value) {
@@ -2861,14 +2861,14 @@
     return (currentData?.productAreas || []).find((area) => area.name === areaName || area.id === areaName) || null;
   }
 
-  function productAreaDot(areaName) {
+  function productAreaDot(areaName, explicitColor = "") {
     const area = productAreaByName(areaName);
 
-    return `<span class="companies-product-dot" style="background:${areaColor(area?.id || areaName)}"></span>`;
+    return `<span class="companies-product-dot" style="background:${escapeHtml(areaColor(area?.id || areaName, explicitColor))}"></span>`;
   }
 
-  function productAreaCell(areaName) {
-    return `<span class="inline-flex items-center gap-2 whitespace-nowrap">${productAreaDot(areaName)}<span>${escapeHtml(areaName || "-")}</span></span>`;
+  function productAreaCell(areaName, explicitColor = "") {
+    return `<span class="inline-flex items-center gap-2 whitespace-nowrap">${productAreaDot(areaName, explicitColor)}<span>${escapeHtml(areaName || "-")}</span></span>`;
   }
 
   function recommendedActionRelatedCell(row) {
@@ -3263,7 +3263,7 @@
         ${renderMetricCell(row, peerComparisonMetrics[0], maxValues, maxDeltaValues.visits)}
         ${renderMetricCell(row, peerComparisonMetrics[1], maxValues, maxDeltaValues.engagedSeconds)}
         <td class="py-3.5 pr-6 align-middle">${adoptionMatrixCellGroup(row, maxMatrixEngaged)}</td>
-        <td class="py-3.5 pr-6 align-middle">${row.topArea ? productAreaCell(row.topArea) : `<span class="text-slate-400">-</span>`}</td>
+        <td class="py-3.5 pr-6 align-middle">${row.topArea ? productAreaCell(row.topArea, row.topAreaColor) : `<span class="text-slate-400">-</span>`}</td>
         <td class="py-3.5 align-middle">${peerComparisonRankCell(row, rankByUserId, totalRankedRows)}</td>
       </tr>
     `).join("");
@@ -4028,7 +4028,7 @@
           <td class="py-3.5 pl-0 pr-6 align-middle font-medium text-slate-900">
             <a class="text-sky-800 hover:text-sky-900" href="${escapeHtml(pageDetailHref(row.pageRuleId))}">${escapeHtml(row.pageName)}</a>
           </td>
-          <td class="py-3.5 pr-6 align-middle">${productAreaCell(row.productArea)}</td>
+          <td class="py-3.5 pr-6 align-middle">${productAreaCell(row.productArea, row.productAreaColor)}</td>
           ${renderMetricCell(row, userPagesMetrics[0], maxValues, maxDeltaValues[userPagesMetrics[0].key])}
           <td class="py-3.5 pr-6 align-middle tabular-nums font-medium text-slate-900">${escapeHtml(helpers.formatPercent(row.shareOfUserTimePct))}</td>
           ${userPagesMetrics.slice(1).map((metric) => renderMetricCell(row, metric, maxValues, maxDeltaValues[metric.key])).join("")}

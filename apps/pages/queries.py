@@ -144,7 +144,7 @@ SELECT
     name,
     slug,
     short_name,
-    (ARRAY['#4269D0', '#6CC5B0', '#EFB118', '#A463F2', '#3CA951', '#97BBF5', '#FF725C', '#FF8AB7', '#9C6B4E', '#64748B'])[1 + abs(hashtext(slug)::bigint) %% 10],
+    '',
     '',
     '',
     '',

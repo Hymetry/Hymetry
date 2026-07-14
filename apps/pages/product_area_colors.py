@@ -1,3 +1,6 @@
+import re
+
+
 VISITS_PRODUCT_AREA_COLOR_PALETTE = (
     '#4269D0',
     '#EFB118',
@@ -10,6 +13,8 @@ VISITS_PRODUCT_AREA_COLOR_PALETTE = (
     '#9C6B4E',
     '#E5E7EB',
 )
+
+SAFE_PRODUCT_AREA_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
 
 KNOWN_PRODUCT_AREA_COLORS = {
     'core product': '#4269D0',
@@ -66,7 +71,7 @@ def product_area_name(area):
 
 
 def explicit_product_area_color(area):
-    return _area_value(
+    color = _area_value(
         area,
         (
             'color',
@@ -75,6 +80,7 @@ def explicit_product_area_color(area):
             'areaColor',
         ),
     )
+    return color if SAFE_PRODUCT_AREA_COLOR_RE.fullmatch(color) else ''
 
 
 def resolve_product_area_color(area, index=0, *, prefer_explicit=False):

@@ -12,7 +12,13 @@ from django.utils import timezone as django_timezone
 
 from apps.pages import queries
 from apps.pages.locks import project_advisory_lock
-from apps.pages.models import PageCompanyDailyMetric, PageDailyMetric, PageUserDailyMetric, RawPageActionDailyMetric
+from apps.pages.models import PageCompanyDailyMetric, PageDailyMetric, PageUserDailyMetric, ProductArea, RawPageActionDailyMetric
+from apps.pages.product_area_colors import (
+    build_product_area_color_lookup,
+    explicit_product_area_color,
+    product_area_color_from_lookup,
+    resolve_product_area_colors,
+)
 from apps.tracker.models import ProjectPageRule
 
 
@@ -20,7 +26,7 @@ DEFAULT_FILTERS_HASH = 'default'
 DEFAULT_SESSION_TIMEOUT_SECONDS = 30 * 60
 DEFAULT_EVENT_GAP_CAP_SECONDS = 30
 DEFAULT_OVERVIEW_RANGE_KEYS = ('last_7_days', 'last_30_days', 'last_90_days', 'last_180_days')
-OVERVIEW_PAYLOAD_SCHEMA_VERSION = 16
+OVERVIEW_PAYLOAD_SCHEMA_VERSION = 17
 CACHE_TTL = timedelta(hours=1)
 POWER_USER_VISITS_PER_WEEK = 9
 POWER_USER_ENGAGED_SECONDS_PER_WEEK = 1500
@@ -1446,16 +1452,135 @@ def _build_series(rows, metric):
     return {'granularity': 'day', 'labels': labels, 'series': series}
 
 
-def _build_treemap(rows, active_companies_total=None):
+def _product_area_identity(item):
+    item = item if isinstance(item, dict) else {'name': item}
+    name = (
+        item.get('product_area_name')
+        or item.get('productAreaName')
+        or item.get('product_area')
+        or item.get('productArea')
+        or item.get('page_group')
+        or item.get('name')
+        or ''
+    )
+    key = (
+        item.get('product_area_key')
+        or item.get('productAreaKey')
+        or item.get('key')
+        or item.get('slug')
+        or item.get('id')
+        or ''
+    )
+    key = str(key or '').strip()
+    name = str(name or '').strip()
+    if not key:
+        key = slugify(name) or 'unassigned'
+    if not name:
+        name = key or 'Unassigned'
+    return key, name
+
+
+def _product_area_payload_item(item, color_lookup=None, index=0):
+    source = dict(item) if isinstance(item, dict) else {'name': item}
+    key, name = _product_area_identity(source)
+    color = product_area_color_from_lookup(
+        color_lookup,
+        {
+            **source,
+            'key': key,
+            'name': name,
+        },
+        index,
+        prefer_explicit=True,
+    )
+    return {
+        **source,
+        'key': key,
+        'name': name,
+        'product_area_key': key,
+        'product_area_name': name,
+        'color': color,
+        'product_area_color': color,
+        'productAreaColor': color,
+    }
+
+
+def _project_product_area_options(project_id, observed_areas=None, *, include_unobserved=False):
+    """Resolve persisted colors without widening an observed-area option list by default."""
+    database_areas = list(
+        ProductArea.objects
+        .filter(project_id=project_id)
+        .values('id', 'slug', 'name', 'short_name', 'color')
+        .order_by('id')
+    )
+    database_by_key = {
+        str(area.get('slug') or '').strip().lower(): area
+        for area in database_areas
+        if str(area.get('slug') or '').strip()
+    }
+    database_by_name = {
+        str(area.get('name') or '').strip().lower(): area
+        for area in database_areas
+        if str(area.get('name') or '').strip()
+    }
+    candidates = []
+    seen_database_ids = set()
+    seen_identities = set()
+
+    def add(area, database_area=None):
+        key, name = _product_area_identity(area)
+        identity = (key.lower(), name.lower())
+        if identity in seen_identities:
+            return
+        seen_identities.add(identity)
+
+        database_area = database_area or database_by_key.get(key.lower()) or database_by_name.get(name.lower())
+        if database_area:
+            seen_database_ids.add(database_area.get('id'))
+        candidates.append({
+            'key': database_area.get('slug') if database_area else key,
+            'name': database_area.get('name') if database_area else name,
+            'shortName': (database_area.get('short_name') or database_area.get('name')) if database_area else name,
+            # A persisted value wins over any serialized or computed color on the observed row.
+            'color': (database_area.get('color') or '') if database_area else explicit_product_area_color(area),
+        })
+
+    for area in observed_areas or []:
+        add(area)
+    if include_unobserved:
+        for database_area in database_areas:
+            if database_area.get('id') not in seen_database_ids:
+                add(database_area, database_area)
+
+    resolved = resolve_product_area_colors(candidates, prefer_explicit=True)
+    color_lookup = build_product_area_color_lookup(resolved, prefer_explicit=True)
+    return [
+        _product_area_payload_item(area, color_lookup, index)
+        for index, area in enumerate(resolved)
+    ]
+
+
+def _build_treemap(rows, active_companies_total=None, color_lookup=None):
     groups = {}
     total = 0
     active_companies_total = _to_int(active_companies_total)
-    for row in rows:
+    for row_index, row in enumerate(rows):
         engaged_seconds = _to_int(row.get('engaged_seconds'))
         if engaged_seconds <= 0:
             continue
 
-        page_group = row.get('page_group') or row.get('product_area_name') or 'Unassigned'
+        product_area_key, product_area_name = _product_area_identity(row)
+        page_group = row.get('page_group') or product_area_name or 'Unassigned'
+        color = product_area_color_from_lookup(
+            color_lookup,
+            {
+                **row,
+                'key': product_area_key,
+                'name': product_area_name,
+            },
+            row_index,
+            prefer_explicit=True,
+        )
         companies_count = _to_int(row.get('companies_count'))
         area_companies_count = _to_int(row.get('area_companies_count'))
         child_adoption_pct = (
@@ -1473,6 +1598,10 @@ def _build_treemap(rows, active_companies_total=None):
             {
                 'name': page_group,
                 'page_group': page_group,
+                'product_area_key': product_area_key,
+                'product_area_name': product_area_name,
+                'color': color,
+                'product_area_color': color,
                 'is_group': True,
                 'value': 0,
                 'engaged_seconds': 0,
@@ -1487,6 +1616,10 @@ def _build_treemap(rows, active_companies_total=None):
             'name': row.get('page_name') or row.get('product_area_name') or page_group,
             'page_rule_id': row.get('page_rule_id') or _page_rule_id(row),
             'page_group': page_group,
+            'product_area_key': product_area_key,
+            'product_area_name': product_area_name,
+            'color': color,
+            'product_area_color': color,
             'value': engaged_seconds,
             'engaged_seconds': engaged_seconds,
             'engaged_label': row.get('engaged_label') or _format_duration(engaged_seconds),
@@ -1524,32 +1657,62 @@ def _build_treemap(rows, active_companies_total=None):
     }
 
 
-def _build_sankey(project_id, timezone_name, start_date, end_date):
+def _build_sankey(project_id, timezone_name, start_date, end_date, color_lookup=None):
     links = queries.fetch_all(queries.SANKEY_SQL, [project_id, timezone_name, start_date, timezone_name, end_date])
     nodes = {}
     payload_links = []
-    for link in links:
+    for index, link in enumerate(links):
         source = link['from_page_name'] or link['from_page_key']
         target = link['to_page_name'] or link['to_page_key']
+        source_area = {
+            'key': link.get('from_product_area_key') or 'unassigned',
+            'name': link.get('from_product_area_name') or link.get('from_product_area_key') or 'Unassigned',
+        }
+        target_area = {
+            'key': link.get('to_product_area_key') or 'unassigned',
+            'name': link.get('to_product_area_name') or link.get('to_product_area_key') or 'Unassigned',
+        }
+        source_color = product_area_color_from_lookup(
+            color_lookup,
+            source_area,
+            index,
+            prefer_explicit=True,
+        )
+        target_color = product_area_color_from_lookup(
+            color_lookup,
+            target_area,
+            index + 1,
+            prefer_explicit=True,
+        )
         nodes[source] = {
             'name': source,
             'page_key': link.get('from_page_key'),
             'product_area_key': link.get('from_product_area_key'),
             'product_area_name': link.get('from_product_area_name'),
+            'color': source_color,
+            'product_area_color': source_color,
         }
         nodes[target] = {
             'name': target,
             'page_key': link.get('to_page_key'),
             'product_area_key': link.get('to_product_area_key'),
             'product_area_name': link.get('to_product_area_name'),
+            'color': target_color,
+            'product_area_color': target_color,
         }
         payload_links.append({
             'source': source,
             'target': target,
             'source_page_key': link.get('from_page_key'),
             'target_page_key': link.get('to_page_key'),
+            'source_product_area_key': source_area['key'],
+            'source_product_area_name': source_area['name'],
             'source_product_area': link.get('from_product_area_name') or link.get('from_product_area_key'),
+            'source_product_area_color': source_color,
+            'target_product_area_key': target_area['key'],
+            'target_product_area_name': target_area['name'],
             'target_product_area': link.get('to_product_area_name') or link.get('to_product_area_key'),
+            'target_product_area_color': target_color,
             'value': _to_int(link['transition_count']),
             'sessions_count': _to_int(link['sessions_count']),
             'companies_count': _to_int(link['companies_count']),
@@ -1654,7 +1817,7 @@ def _build_top_clicked_elements(pages, limit=20):
     return sorted(elements.values(), key=lambda item: item['clicks'], reverse=True)[:limit]
 
 
-def _build_scatter(project_id, start_date, end_date):
+def _build_scatter(project_id, start_date, end_date, color_lookup=None):
     rows = queries.fetch_all(
         queries.SCATTER_SQL,
         [
@@ -1664,14 +1827,25 @@ def _build_scatter(project_id, start_date, end_date):
         ],
     )
     groups = {}
-    for row in rows:
+    for index, row in enumerate(rows):
         active_users = round(_to_float(row['active_users']), 2)
         total_engaged = _to_int(row['total_engaged_seconds'])
+        color = product_area_color_from_lookup(
+            color_lookup,
+            {
+                'key': row.get('product_area_key') or 'unassigned',
+                'name': row.get('product_area_name') or row.get('product_area_key') or 'Unassigned',
+            },
+            index,
+            prefer_explicit=True,
+        )
         group = groups.setdefault(
             row['product_area_key'],
             {
                 'product_area_key': row['product_area_key'],
                 'product_area_name': row['product_area_name'],
+                'color': color,
+                'product_area_color': color,
                 'points': [],
             },
         )
@@ -1691,6 +1865,10 @@ def _build_company_engagement_by_page_group(groups):
     return [
         {
             'page_group': group.get('product_area_name') or group.get('product_area_key') or 'Unassigned',
+            'product_area_key': group.get('product_area_key') or slugify(group.get('product_area_name') or '') or 'unassigned',
+            'product_area_name': group.get('product_area_name') or group.get('product_area_key') or 'Unassigned',
+            'color': group.get('color') or group.get('product_area_color') or '',
+            'product_area_color': group.get('product_area_color') or group.get('color') or '',
             'points': [
                 {
                     'company_id': point.get('company_id'),
@@ -1730,6 +1908,7 @@ def _empty_payload(project, range_key, start_date, end_date, previous_start, pre
         'change_aware_rows': [],
         'page_metrics_rows': [],
         'product_area_summary': [],
+        'productAreas': [],
         'top_pages_by_visits_over_time': {'granularity': 'day', 'labels': [], 'series': []},
         'top_pages_by_engaged_time_over_time': {'granularity': 'day', 'labels': [], 'series': []},
         'engaged_time_treemap': {'total_engaged_seconds': 0, 'nodes': []},
@@ -1749,28 +1928,7 @@ def _empty_time_series():
 def _product_area_filter_identity(item):
     if not isinstance(item, dict):
         return '', ''
-
-    name = (
-        item.get('product_area_name')
-        or item.get('productAreaName')
-        or item.get('product_area')
-        or item.get('page_group')
-        or item.get('name')
-        or ''
-    )
-    key = (
-        item.get('product_area_key')
-        or item.get('productAreaKey')
-        or item.get('key')
-        or ''
-    )
-    key = str(key or '').strip()
-    name = str(name or '').strip()
-    if not key:
-        key = slugify(name) or 'unassigned'
-    if not name:
-        name = key or 'Unassigned'
-    return key, name
+    return _product_area_identity(item)
 
 
 def _normalized_filter_token(value):
@@ -1786,9 +1944,25 @@ def _add_product_area_filter_option(options_by_key, item):
     if existing:
         if existing.get('name') == existing.get('key') and name:
             existing['name'] = name
+        color = explicit_product_area_color(item)
+        if color and not explicit_product_area_color(existing):
+            existing.update({
+                'color': color,
+                'product_area_color': color,
+                'productAreaColor': color,
+            })
         return
 
-    options_by_key[key] = {'key': key, 'name': name or key}
+    color = explicit_product_area_color(item)
+    options_by_key[key] = {
+        'key': key,
+        'name': name or key,
+        'product_area_key': key,
+        'product_area_name': name or key,
+        'color': color,
+        'product_area_color': color,
+        'productAreaColor': color,
+    }
 
 
 def overview_product_area_filter_options(payload):
@@ -1796,11 +1970,13 @@ def overview_product_area_filter_options(payload):
     payload = payload if isinstance(payload, dict) else {}
 
     for section_name in (
+        'productAreas',
         'product_area_summary',
         'page_metrics_rows',
         'change_aware_rows',
         'rows',
         'company_engagement_by_product_area',
+        'company_engagement_by_page_group',
     ):
         rows = payload.get(section_name)
         if not isinstance(rows, list):
@@ -1819,6 +1995,248 @@ def overview_product_area_filter_options(payload):
             _add_product_area_filter_option(options_by_key, node)
 
     return list(options_by_key.values())
+
+
+_PRODUCT_AREA_IDENTITY_FIELDS = (
+    'product_area_key',
+    'productAreaKey',
+    'product_area_name',
+    'productAreaName',
+    'product_area',
+    'productArea',
+    'page_group',
+)
+
+
+def _has_product_area_identity(item, *, allow_name=False):
+    if not isinstance(item, dict):
+        return False
+    if any(str(item.get(field) or '').strip() for field in _PRODUCT_AREA_IDENTITY_FIELDS):
+        return True
+    return allow_name and bool(str(item.get('name') or '').strip())
+
+
+def _overview_product_area_candidates(payload):
+    candidates = []
+    candidate_by_token = {}
+
+    def add(item, *, allow_name=False):
+        if not _has_product_area_identity(item, allow_name=allow_name):
+            return
+
+        key, name = _product_area_identity(item)
+        tokens = {
+            _normalized_filter_token(key),
+            _normalized_filter_token(name),
+        }
+        tokens.discard('')
+        existing_index = next(
+            (candidate_by_token[token] for token in tokens if token in candidate_by_token),
+            None,
+        )
+        explicit_color = explicit_product_area_color(item)
+        if existing_index is not None:
+            candidate = candidates[existing_index]
+            if explicit_color and not explicit_product_area_color(candidate):
+                candidate['color'] = explicit_color
+            for token in tokens:
+                candidate_by_token[token] = existing_index
+            return
+
+        candidate = {
+            'key': key,
+            'name': name,
+            'color': explicit_color,
+        }
+        for field in (
+            'shortName',
+            'short_name',
+            'areaRole',
+            'area_role',
+            'isAdoptionRecommendable',
+            'is_adoption_recommendable',
+        ):
+            if field in item:
+                candidate[field] = item[field]
+        candidate_index = len(candidates)
+        candidates.append(candidate)
+        for token in tokens:
+            candidate_by_token[token] = candidate_index
+
+    for item in payload.get('productAreas') or []:
+        add(item, allow_name=True)
+
+    for section_name in (
+        'product_area_summary',
+        'page_metrics_rows',
+        'change_aware_rows',
+        'rows',
+        'company_engagement_by_product_area',
+        'company_engagement_by_page_group',
+        'top_actions_by_page',
+    ):
+        for item in payload.get(section_name) or []:
+            add(item)
+
+    for section_name in (
+        'top_pages_by_visits_over_time',
+        'top_pages_by_engaged_time_over_time',
+    ):
+        time_series = payload.get(section_name)
+        if isinstance(time_series, dict):
+            for item in time_series.get('series') or []:
+                add(item)
+
+    treemap = payload.get('engaged_time_treemap')
+    if isinstance(treemap, dict):
+        for node in treemap.get('nodes') or []:
+            add(node)
+            if isinstance(node, dict):
+                for child in node.get('children') or []:
+                    add(child)
+
+    sankey = payload.get('sankey')
+    if isinstance(sankey, dict):
+        for node in sankey.get('nodes') or []:
+            add(node)
+        for link in sankey.get('links') or []:
+            if not isinstance(link, dict):
+                continue
+            for prefix in ('source', 'target'):
+                generic_area = link.get(f'{prefix}_product_area')
+                add({
+                    'product_area_key': link.get(f'{prefix}_product_area_key'),
+                    'product_area_name': link.get(f'{prefix}_product_area_name') or generic_area,
+                    'product_area_color': link.get(f'{prefix}_product_area_color'),
+                })
+
+    return candidates
+
+
+def _decorate_overview_product_area_item(item, color_lookup, index=0):
+    if not isinstance(item, dict) or not _has_product_area_identity(item):
+        return item
+
+    key, name = _product_area_identity(item)
+    color = product_area_color_from_lookup(
+        color_lookup,
+        {'key': key, 'name': name},
+        index,
+        prefer_explicit=True,
+    )
+    return {
+        **item,
+        'product_area_key': key,
+        'product_area_name': name,
+        'color': color,
+        'product_area_color': color,
+        'productAreaColor': color,
+    }
+
+
+def _normalize_overview_product_area_colors(payload):
+    resolved_areas = resolve_product_area_colors(
+        _overview_product_area_candidates(payload),
+        prefer_explicit=True,
+    )
+    color_lookup = build_product_area_color_lookup(resolved_areas, prefer_explicit=True)
+    payload['productAreas'] = [
+        _product_area_payload_item(area, color_lookup, index)
+        for index, area in enumerate(resolved_areas)
+    ]
+
+    for section_name in (
+        'product_area_summary',
+        'page_metrics_rows',
+        'change_aware_rows',
+        'rows',
+        'company_engagement_by_product_area',
+        'company_engagement_by_page_group',
+        'top_actions_by_page',
+    ):
+        rows = payload.get(section_name)
+        if isinstance(rows, list):
+            payload[section_name] = [
+                _decorate_overview_product_area_item(item, color_lookup, index)
+                for index, item in enumerate(rows)
+            ]
+
+    for section_name in (
+        'top_pages_by_visits_over_time',
+        'top_pages_by_engaged_time_over_time',
+    ):
+        time_series = payload.get(section_name)
+        if not isinstance(time_series, dict) or not isinstance(time_series.get('series'), list):
+            continue
+        time_series['series'] = [
+            _decorate_overview_product_area_item(item, color_lookup, index)
+            for index, item in enumerate(time_series['series'])
+        ]
+
+    treemap = payload.get('engaged_time_treemap')
+    if isinstance(treemap, dict) and isinstance(treemap.get('nodes'), list):
+        decorated_nodes = []
+        for node_index, node in enumerate(treemap['nodes']):
+            decorated_node = _decorate_overview_product_area_item(node, color_lookup, node_index)
+            if isinstance(decorated_node, dict) and isinstance(decorated_node.get('children'), list):
+                decorated_node['children'] = [
+                    _decorate_overview_product_area_item(child, color_lookup, child_index)
+                    for child_index, child in enumerate(decorated_node['children'])
+                ]
+            decorated_nodes.append(decorated_node)
+        treemap['nodes'] = decorated_nodes
+
+    sankey = payload.get('sankey')
+    if isinstance(sankey, dict):
+        nodes = sankey.get('nodes') if isinstance(sankey.get('nodes'), list) else []
+        decorated_nodes = [
+            _decorate_overview_product_area_item(node, color_lookup, index)
+            for index, node in enumerate(nodes)
+        ]
+        sankey['nodes'] = decorated_nodes
+        node_by_name = {
+            str(node.get('name') or ''): node
+            for node in decorated_nodes
+            if isinstance(node, dict) and str(node.get('name') or '')
+        }
+        decorated_links = []
+        for index, link in enumerate(sankey.get('links') or []):
+            if not isinstance(link, dict):
+                continue
+            decorated_link = dict(link)
+            for prefix, offset in (('source', 0), ('target', 1)):
+                endpoint_node = node_by_name.get(str(link.get(prefix) or '')) or {}
+                generic_area = link.get(f'{prefix}_product_area')
+                endpoint = {
+                    'product_area_key': (
+                        link.get(f'{prefix}_product_area_key')
+                        or endpoint_node.get('product_area_key')
+                    ),
+                    'product_area_name': (
+                        link.get(f'{prefix}_product_area_name')
+                        or generic_area
+                        or endpoint_node.get('product_area_name')
+                    ),
+                }
+                if not _has_product_area_identity(endpoint):
+                    continue
+                key, name = _product_area_identity(endpoint)
+                color = product_area_color_from_lookup(
+                    color_lookup,
+                    {'key': key, 'name': name},
+                    index + offset,
+                    prefer_explicit=True,
+                )
+                decorated_link.update({
+                    f'{prefix}_product_area_key': key,
+                    f'{prefix}_product_area_name': name,
+                    f'{prefix}_product_area': name,
+                    f'{prefix}_product_area_color': color,
+                })
+            decorated_links.append(decorated_link)
+        sankey['links'] = decorated_links
+
+    return payload
 
 
 def resolve_product_area_filter_keys(payload, requested_values):
@@ -1966,7 +2384,11 @@ def _filter_sankey_by_product_area(sankey, selection):
             or node.get('name') in node_names
         )
     ]
-    return {'nodes': nodes, 'links': links}
+    return {
+        **copy.deepcopy(sankey),
+        'nodes': nodes,
+        'links': links,
+    }
 
 
 def _rescale_change_row_bars(rows):
@@ -2201,6 +2623,11 @@ def filter_overview_payload_by_product_areas(payload, selected_keys):
     payload['change_aware_rows'] = change_rows
     payload['page_metrics_rows'] = page_metrics_rows
     payload['product_area_summary'] = product_area_summary
+    payload['productAreas'] = [
+        copy.deepcopy(area)
+        for area in payload.get('productAreas') or []
+        if _matches_product_area_filter(area, selection)
+    ]
     payload['top_pages_by_visits_over_time'] = _filter_time_series_by_product_area(
         payload.get('top_pages_by_visits_over_time'),
         selection,
@@ -2314,7 +2741,7 @@ def normalize_overview_payload(payload):
     if not payload.get('top_clicked_elements'):
         payload['top_clicked_elements'] = _build_top_clicked_elements(top_actions)
 
-    return payload
+    return _normalize_overview_product_area_colors(payload)
 
 
 def _period_days(start_date, end_date):
@@ -3484,7 +3911,31 @@ def hydrate_pages_detail_cache(
     return {'status': 'success', 'items_count': cached_count}
 
 
-def build_pages_overview_cache(project_id, *, range_key='last_30_days', start_date=None, end_date=None):
+def build_pages_overview_cache(
+    project_id,
+    *,
+    range_key='last_30_days',
+    start_date=None,
+    end_date=None,
+    use_lock=True,
+):
+    if use_lock:
+        with project_advisory_lock(project_id, namespace='pages-rebuild') as acquired:
+            if not acquired:
+                return {
+                    'status': 'skipped',
+                    'reason': 'lock_not_acquired',
+                    'project_id': project_id,
+                    'range_key': range_key,
+                }
+            return build_pages_overview_cache(
+                project_id,
+                range_key=range_key,
+                start_date=start_date,
+                end_date=end_date,
+                use_lock=False,
+            )
+
     project = get_project_info(project_id)
     if not project:
         raise ValueError(f'Project {project_id} does not exist.')
@@ -3515,7 +3966,10 @@ def build_pages_overview_cache(project_id, *, range_key='last_30_days', start_da
         grain='product_area',
     )
     previous_rows = _summary_by_display_page(project_id, previous_start, previous_end)
+    product_areas = _project_product_area_options(project_id, product_area_rows)
+    product_area_color_lookup = build_product_area_color_lookup(product_areas, prefer_explicit=True)
     payload = _empty_payload(project, range_key, start_date, end_date, previous_start, previous_end, generated_at, source_max_event_ts)
+    payload['productAreas'] = product_areas
     payload['project'].update({
         'active_companies_total': _to_int(current_counts.get('active_companies_count')),
         'active_users_total': _to_int(current_counts.get('active_users_count')),
@@ -3523,7 +3977,12 @@ def build_pages_overview_cache(project_id, *, range_key='last_30_days', start_da
 
     if rows:
         top_actions = _build_top_actions(project_id, start_date, end_date, previous_start, previous_end)
-        company_engagement = _build_scatter(project_id, start_date, end_date)
+        company_engagement = _build_scatter(
+            project_id,
+            start_date,
+            end_date,
+            product_area_color_lookup,
+        )
         overview_rows = [_strip_for_overview_row(row) for row in rows]
         overview_page_metrics_rows = [_strip_for_overview_row(row) for row in page_metrics_rows]
         payload.update({
@@ -3543,8 +4002,15 @@ def build_pages_overview_cache(project_id, *, range_key='last_30_days', start_da
             'engaged_time_treemap': _build_treemap(
                 page_metrics_rows,
                 active_companies_total=current_counts.get('active_companies_count'),
+                color_lookup=product_area_color_lookup,
             ),
-            'sankey': _build_sankey(project_id, timezone_name, start_date, end_date),
+            'sankey': _build_sankey(
+                project_id,
+                timezone_name,
+                start_date,
+                end_date,
+                product_area_color_lookup,
+            ),
             'top_actions_by_page': top_actions,
             'top_actions_by_page_group': _build_top_actions_by_page_group(top_actions),
             'company_engagement_by_product_area': company_engagement,
@@ -3580,7 +4046,13 @@ def build_pages_overview_cache(project_id, *, range_key='last_30_days', start_da
             expires_at,
         ],
     )
-    hydrate_pages_scatter_tooltips_cache(project_id, range_key=range_key, start_date=start_date, end_date=end_date)
+    hydrate_pages_scatter_tooltips_cache(
+        project_id,
+        range_key=range_key,
+        start_date=start_date,
+        end_date=end_date,
+        use_lock=False,
+    )
     return {
         'status': 'success',
         'project_id': project_id,
@@ -3592,7 +4064,32 @@ def build_pages_overview_cache(project_id, *, range_key='last_30_days', start_da
     }
 
 
-def hydrate_pages_scatter_tooltips_cache(project_id, *, range_key='last_30_days', start_date=None, end_date=None):
+def hydrate_pages_scatter_tooltips_cache(
+    project_id,
+    *,
+    range_key='last_30_days',
+    start_date=None,
+    end_date=None,
+    use_lock=True,
+):
+    if use_lock:
+        with project_advisory_lock(project_id, namespace='pages-rebuild') as acquired:
+            if not acquired:
+                return {
+                    'status': 'skipped',
+                    'reason': 'lock_not_acquired',
+                    'project_id': project_id,
+                    'range_key': range_key,
+                    'items_count': 0,
+                }
+            return hydrate_pages_scatter_tooltips_cache(
+                project_id,
+                range_key=range_key,
+                start_date=start_date,
+                end_date=end_date,
+                use_lock=False,
+            )
+
     project = get_project_info(project_id)
     if not project:
         raise ValueError(f'Project {project_id} does not exist.')

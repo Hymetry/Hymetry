@@ -5,6 +5,7 @@ from django.db.models import Count, Max, Min, Q, Sum
 from django.utils import timezone as django_timezone
 
 from apps.pages import queries, services
+from apps.pages.locks import project_advisory_lock
 from apps.pages.models import PageCompanyDailyMetric, PageDailyMetric, PageUserDailyMetric
 from apps.pages.product_area_colors import (
     build_product_area_color_lookup,
@@ -14,7 +15,7 @@ from apps.pages.product_area_colors import (
 from apps.projects.models import Project
 
 
-COMPANIES_PAYLOAD_SCHEMA_VERSION = 4
+COMPANIES_PAYLOAD_SCHEMA_VERSION = 5
 SCATTER_VISIBLE_LIMIT = 500
 USER_HEALTH_KEYS = ('power', 'healthy', 'light', 'passive', 'dropped')
 
@@ -746,12 +747,35 @@ def build_company_detail_cache(
     generated_at=None,
     expires_at=None,
     bulk_context=None,
+    use_lock=True,
 ):
     from apps.pages import company_detail_analytics
 
     company_id = str(company_id or '').strip()
     if not company_id:
         return {'status': 'skipped', 'reason': 'missing_company_id', 'project_id': project_id, 'range_key': range_key}
+
+    if use_lock:
+        with project_advisory_lock(project_id, namespace='pages-rebuild') as acquired:
+            if not acquired:
+                return {
+                    'status': 'skipped',
+                    'reason': 'lock_not_acquired',
+                    'project_id': project_id,
+                    'range_key': range_key,
+                    'company_id': company_id,
+                }
+            return build_company_detail_cache(
+                project_id,
+                company_id,
+                range_key=range_key,
+                overview_payload=overview_payload,
+                project=project,
+                generated_at=generated_at,
+                expires_at=expires_at,
+                bulk_context=bulk_context,
+                use_lock=False,
+            )
 
     project = project or Project.active.filter(pk=project_id).first()
     if project is None:
@@ -829,7 +853,29 @@ def hydrate_companies_detail_cache(
     project=None,
     generated_at=None,
     expires_at=None,
+    use_lock=True,
 ):
+    if use_lock:
+        with project_advisory_lock(project_id, namespace='pages-rebuild') as acquired:
+            if not acquired:
+                return {
+                    'status': 'skipped',
+                    'reason': 'lock_not_acquired',
+                    'project_id': project_id,
+                    'range_key': range_key,
+                    'items_count': 0,
+                }
+            return hydrate_companies_detail_cache(
+                project_id,
+                range_key=range_key,
+                overview_payload=overview_payload,
+                company_ids=company_ids,
+                project=project,
+                generated_at=generated_at,
+                expires_at=expires_at,
+                use_lock=False,
+            )
+
     project = project or Project.active.filter(pk=project_id).first()
     if project is None:
         raise ValueError(f'Project {project_id} does not exist.')
@@ -871,6 +917,7 @@ def hydrate_companies_detail_cache(
                 generated_at=generated_at,
                 expires_at=expires_at,
                 bulk_context=bulk_context,
+                use_lock=False,
             )
         except Exception as exc:
             errors.append({'company_id': company_id, 'error': str(exc)})
@@ -889,7 +936,22 @@ def hydrate_companies_detail_cache(
     }
 
 
-def build_companies_overview_cache(project_id, *, range_key='last_30_days'):
+def build_companies_overview_cache(project_id, *, range_key='last_30_days', use_lock=True):
+    if use_lock:
+        with project_advisory_lock(project_id, namespace='pages-rebuild') as acquired:
+            if not acquired:
+                return {
+                    'status': 'skipped',
+                    'reason': 'lock_not_acquired',
+                    'project_id': project_id,
+                    'range_key': range_key,
+                }
+            return build_companies_overview_cache(
+                project_id,
+                range_key=range_key,
+                use_lock=False,
+            )
+
     project = Project.active.filter(pk=project_id).first()
     if project is None:
         raise ValueError(f'Project {project_id} does not exist.')
@@ -930,6 +992,7 @@ def build_companies_overview_cache(project_id, *, range_key='last_30_days'):
         project=project,
         generated_at=generated_at,
         expires_at=expires_at,
+        use_lock=False,
     )
     return {
         'status': 'success',
@@ -1015,7 +1078,7 @@ def build_companies_overview_payload(project, *, range_key='last_30_days'):
     previous_active = set(previous.keys())
     active_before_previous = _companies_active_before(project.id, previous_start)
     product_areas = _product_area_options(project.id, start_date, end_date)
-    product_area_color_lookup = build_product_area_color_lookup(product_areas)
+    product_area_color_lookup = build_product_area_color_lookup(product_areas, prefer_explicit=True)
     area_usage = _company_area_usage(project.id, start_date, end_date, product_area_color_lookup)
     user_health_mix = _company_user_health_mix(project.id, start_date, end_date, previous_start, previous_end)
 
@@ -1227,9 +1290,12 @@ def _product_area_options(project_id, start_date, end_date):
         )
         .order_by('-engaged_seconds', 'product_area_name')
     )
-    options = resolve_product_area_colors([_product_area_option(row) for row in rows])
+    options = resolve_product_area_colors(
+        [_product_area_option(row) for row in rows],
+        prefer_explicit=True,
+    )
     if options:
-        return options
+        return services._project_product_area_options(project_id, options)[:len(options)]
 
     fallback_rows = (
         _base_company_queryset(project_id, start_date, end_date)
@@ -1242,7 +1308,11 @@ def _product_area_options(project_id, start_date, end_date):
         )
         .order_by('-engaged_seconds', 'product_area_name')
     )
-    return resolve_product_area_colors([_product_area_option(row) for row in fallback_rows])
+    options = resolve_product_area_colors(
+        [_product_area_option(row) for row in fallback_rows],
+        prefer_explicit=True,
+    )
+    return services._project_product_area_options(project_id, options)[:len(options)]
 
 
 def _health_distribution(status_counts):

@@ -16,6 +16,8 @@ class SchedulePagesAnalyticsTasksCommandTests(TestCase):
         for name in (
             'Pages analytics rolling rebuild',
             'Pages analytics nightly backfill',
+            'Product area colors for not-stable projects',
+            'Product area colors for stable projects',
         ):
             PeriodicTask.objects.create(
                 name=name,
@@ -60,3 +62,31 @@ class SchedulePagesAnalyticsTasksCommandTests(TestCase):
             ['last_7_days', 'last_30_days', 'last_90_days', 'last_180_days'],
         )
         self.assertEqual(nightly_kwargs['exclude_project_ids'], [])
+
+        not_stable_color_task = PeriodicTask.objects.get(name='Product area colors for not-stable projects')
+        self.assertEqual(
+            not_stable_color_task.task,
+            'apps.pages.tasks.run_hourly_not_stable_product_area_colors',
+        )
+        self.assertEqual(not_stable_color_task.interval.every, 1)
+        self.assertEqual(not_stable_color_task.interval.period, 'hours')
+        self.assertEqual(json.loads(not_stable_color_task.kwargs), {})
+        self.assertIsNone(not_stable_color_task.crontab)
+        self.assertIsNone(not_stable_color_task.clocked)
+        self.assertIsNone(not_stable_color_task.solar)
+        self.assertFalse(not_stable_color_task.one_off)
+        self.assertTrue(not_stable_color_task.enabled)
+
+        stable_color_task = PeriodicTask.objects.get(name='Product area colors for stable projects')
+        self.assertEqual(
+            stable_color_task.task,
+            'apps.pages.tasks.run_daily_stable_product_area_colors',
+        )
+        self.assertEqual(stable_color_task.interval.every, 1)
+        self.assertEqual(stable_color_task.interval.period, 'days')
+        self.assertEqual(json.loads(stable_color_task.kwargs), {})
+        self.assertIsNone(stable_color_task.crontab)
+        self.assertIsNone(stable_color_task.clocked)
+        self.assertIsNone(stable_color_task.solar)
+        self.assertFalse(stable_color_task.one_off)
+        self.assertTrue(stable_color_task.enabled)

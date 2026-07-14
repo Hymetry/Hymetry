@@ -6,13 +6,18 @@ from django.db.models import Count, Max, Min, Q, Sum
 from django.utils import timezone as django_timezone
 
 from apps.pages import queries, services
+from apps.pages.locks import project_advisory_lock
 from apps.pages.models import PageDailyMetric, PageUserDailyMetric, PageVisit
-from apps.pages.product_area_colors import resolve_product_area_colors
+from apps.pages.product_area_colors import (
+    build_product_area_color_lookup,
+    product_area_color_from_lookup,
+    resolve_product_area_colors,
+)
 from apps.projects.models import Project
 from apps.tracker.models import ProjectPageRule
 
 
-USERS_PAYLOAD_SCHEMA_VERSION = 9
+USERS_PAYLOAD_SCHEMA_VERSION = 10
 SCATTER_VISIBLE_LIMIT = 300
 INITIAL_USERS_PAYLOAD_LIMIT = 50
 
@@ -247,7 +252,7 @@ def _product_area_short_label(name, short_name=''):
     return full_name[:7] if len(full_name) <= 8 else f'{full_name[:6]}.'
 
 
-def _product_area_options(project_id, start_date, end_date):
+def _product_area_options(project_id, start_date, end_date, *, limit=9):
     rows = (
         PageDailyMetric.objects
         .filter(project_id=project_id, date__gte=start_date, date__lte=end_date)
@@ -274,13 +279,22 @@ def _product_area_options(project_id, start_date, end_date):
             'color': row.get('product_area_color') or '',
         })
     if options:
-        return resolve_product_area_colors(options[:9])
+        resolved = resolve_product_area_colors(options, prefer_explicit=True)
+        if limit is None:
+            return services._project_product_area_options(
+                project_id,
+                resolved,
+                include_unobserved=True,
+            )
+        return resolved[:limit]
 
     fallback_rows = (
         _base_user_queryset(project_id, start_date, end_date)
         .values('product_area_key')
         .annotate(
             product_area_name=Max('product_area_name'),
+            product_area_short_name=Max('product_area__short_name'),
+            product_area_color=Max('product_area__color'),
             engaged_seconds=Sum('engaged_seconds'),
         )
         .order_by('-engaged_seconds', 'product_area_name')
@@ -293,10 +307,17 @@ def _product_area_options(project_id, start_date, end_date):
         options.append({
             'key': row.get('product_area_key') or 'unassigned',
             'name': name,
-            'shortName': _product_area_short_label(name),
-            'color': '',
+            'shortName': _product_area_short_label(name, row.get('product_area_short_name')),
+            'color': row.get('product_area_color') or '',
         })
-    return resolve_product_area_colors(options[:9])
+    resolved = resolve_product_area_colors(options, prefer_explicit=True)
+    if limit is None:
+        return services._project_product_area_options(
+            project_id,
+            resolved,
+            include_unobserved=True,
+        )
+    return resolved[:limit]
 
 
 def _page_rule_names(project_id, page_rule_ids):
@@ -313,7 +334,7 @@ def _page_rule_names(project_id, page_rule_ids):
     }
 
 
-def _area_usage_by_user(project_id, start_date, end_date):
+def _area_usage_by_user(project_id, start_date, end_date, color_lookup=None):
     usage = defaultdict(list)
     rows = (
         _base_user_queryset(project_id, start_date, end_date)
@@ -326,10 +347,23 @@ def _area_usage_by_user(project_id, start_date, end_date):
         )
         .order_by('user_id', '-engaged_seconds')
     )
-    for row in rows:
+    for index, row in enumerate(rows):
+        key = row.get('product_area_key') or 'unassigned'
         name = row.get('product_area_name') or row.get('product_area_key') or 'Unassigned'
+        color = product_area_color_from_lookup(
+            color_lookup,
+            {'key': key, 'name': name},
+            index,
+            prefer_explicit=True,
+        )
         usage[str(row['user_id'])].append({
+            'key': key,
             'name': name,
+            'productArea': name,
+            'productAreaId': key,
+            'color': color,
+            'productAreaColor': color,
+            'product_area_color': color,
             'engagedSeconds': int(row.get('engaged_seconds') or 0),
             'visits': int(row.get('visits') or 0),
             'clicks': int(row.get('clicks') or 0),
@@ -778,9 +812,23 @@ def build_users_overview_payload(project, *, range_key='last_30_days'):
         **_company_names_from_visits(project, start_date, end_date),
     }
     company_engaged = _company_engaged_totals(project.id, start_date, end_date)
-    area_usage = _area_usage_by_user(project.id, start_date, end_date)
-    feature_usage, page_features, feature_product_areas = _feature_usage_by_user(project.id, start_date, end_date)
     product_areas = _product_area_options(project.id, start_date, end_date)
+    product_area_catalog = services._project_product_area_options(
+        project.id,
+        product_areas,
+        include_unobserved=True,
+    )
+    product_area_color_lookup = build_product_area_color_lookup(
+        product_area_catalog,
+        prefer_explicit=True,
+    )
+    area_usage = _area_usage_by_user(
+        project.id,
+        start_date,
+        end_date,
+        product_area_color_lookup,
+    )
+    feature_usage, page_features, feature_product_areas = _feature_usage_by_user(project.id, start_date, end_date)
 
     users = []
     user_ids = set(current) | set(previous)
@@ -1069,8 +1117,30 @@ def hydrate_users_detail_cache(
     project=None,
     generated_at=None,
     expires_at=None,
+    use_lock=True,
 ):
     from apps.pages.user_detail_analytics import BulkUserDetailContext, build_user_detail_cache
+
+    if use_lock:
+        with project_advisory_lock(project_id, namespace='pages-rebuild') as acquired:
+            if not acquired:
+                return {
+                    'status': 'skipped',
+                    'reason': 'lock_not_acquired',
+                    'project_id': project_id,
+                    'range_key': range_key,
+                    'items_count': 0,
+                }
+            return hydrate_users_detail_cache(
+                project_id,
+                range_key=range_key,
+                overview_payload=overview_payload,
+                user_ids=user_ids,
+                project=project,
+                generated_at=generated_at,
+                expires_at=expires_at,
+                use_lock=False,
+            )
 
     project = project or Project.active.filter(pk=project_id).first()
     if project is None:
@@ -1117,6 +1187,7 @@ def hydrate_users_detail_cache(
                 expires_at=expires_at,
                 bulk_context=bulk_context,
                 previous_bulk_context=previous_bulk_context,
+                use_lock=False,
             )
         except Exception as exc:
             errors.append({'user_id': user_id, 'error': str(exc)})
@@ -1135,7 +1206,29 @@ def hydrate_users_detail_cache(
     }
 
 
-def build_users_overview_cache(project_id, *, range_key='last_30_days', include_user_details=False):
+def build_users_overview_cache(
+    project_id,
+    *,
+    range_key='last_30_days',
+    include_user_details=False,
+    use_lock=True,
+):
+    if use_lock:
+        with project_advisory_lock(project_id, namespace='pages-rebuild') as acquired:
+            if not acquired:
+                return {
+                    'status': 'skipped',
+                    'reason': 'lock_not_acquired',
+                    'project_id': project_id,
+                    'range_key': range_key,
+                }
+            return build_users_overview_cache(
+                project_id,
+                range_key=range_key,
+                include_user_details=include_user_details,
+                use_lock=False,
+            )
+
     project = Project.active.filter(pk=project_id).first()
     if project is None:
         raise ValueError(f'Project {project_id} does not exist.')
@@ -1177,6 +1270,7 @@ def build_users_overview_cache(project_id, *, range_key='last_30_days', include_
             project=project,
             generated_at=generated_at,
             expires_at=expires_at,
+            use_lock=False,
         )
     else:
         detail_cache_result = {'status': 'skipped', 'reason': 'not_requested', 'items_count': 0}

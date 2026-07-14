@@ -496,33 +496,153 @@
     series: chartSeriesColors
   };
 
-  function getTreemapColorKey(groupNode) {
-    return String(
-      groupNode?.product_area_key ||
-      groupNode?.product_area_name ||
-      groupNode?.page_group ||
-      groupNode?.name ||
-      "Unassigned"
-    );
+  let productAreaColorByName = new Map();
+  const productAreaColorResolver = globalScope.HymetryProductAreaColors?.createResolver({
+    resolveColor: tailwindColor,
+    palette: chartTheme.series
+  }) || null;
+
+  function productAreaName(area) {
+    if (area && typeof area === "object") {
+      return String(
+        area.product_area_name ||
+        area.productAreaName ||
+        area.product_area ||
+        area.productArea ||
+        area.page_group ||
+        area.pageGroup ||
+        area.name ||
+        area.product_area_key ||
+        area.productAreaKey ||
+        area.key ||
+        ""
+      ).trim() || "Unassigned";
+    }
+
+    return String(area || "").trim() || "Unassigned";
   }
 
-  function createTreemapGroupColorResolver(groupNodes) {
-    const palette = chartTheme.series;
-    const colorByKey = new Map();
-    let fallbackIndex = 0;
+  function productAreaExplicitColor(area, explicitColor = "") {
+    if (explicitColor) {
+      return String(explicitColor).trim();
+    }
 
-    (groupNodes || []).forEach((groupNode) => {
-      const key = getTreemapColorKey(groupNode);
+    if (!area || typeof area !== "object") {
+      return "";
+    }
 
-      if (colorByKey.has(key)) {
+    return String(
+      area.color ||
+      area.product_area_color ||
+      area.productAreaColor ||
+      area.page_group_color ||
+      area.pageGroupColor ||
+      ""
+    ).trim();
+  }
+
+  function sankeyNodeProductAreaName(node) {
+    return String(
+      node?.product_area_name ||
+      node?.productAreaName ||
+      node?.product_area ||
+      node?.productArea ||
+      node?.product_area_key ||
+      node?.productAreaKey ||
+      node?.page_group ||
+      node?.pageGroup ||
+      node?.name ||
+      ""
+    ).trim() || "Unassigned";
+  }
+
+  function syncProductAreaPalette(data) {
+    const names = [];
+    productAreaColorByName = new Map();
+    productAreaColorResolver?.reset();
+
+    const add = (area, explicitColor = "") => {
+      const name = productAreaName(area);
+      const color = productAreaExplicitColor(area, explicitColor);
+
+      if (!names.includes(name)) {
+        names.push(name);
+      }
+
+      productAreaColorResolver?.add(name, color);
+      if (color && !productAreaColorByName.has(name)) {
+        productAreaColorByName.set(name, color);
+      }
+    };
+    const addMany = (areas) => (Array.isArray(areas) ? areas : []).forEach((area) => add(area));
+    const addColorLookup = (lookup) => {
+      if (!lookup || Array.isArray(lookup) || typeof lookup !== "object") {
         return;
       }
 
-      colorByKey.set(key, palette[fallbackIndex % palette.length] || chartTheme.colors.text);
-      fallbackIndex += 1;
+      Object.entries(lookup).forEach(([name, color]) => add(name, color));
+    };
+
+    addMany(data?.product_area_options);
+    addMany(data?.productAreaOptions);
+    addMany(data?.product_areas);
+    addMany(data?.productAreas);
+    addColorLookup(data?.product_area_colors);
+    addColorLookup(data?.productAreaColors);
+    addMany(data?.product_area_summary);
+    addMany(data?.rows);
+    addMany(data?.change_aware_rows);
+
+    (data?.engaged_time_treemap?.nodes || []).forEach((node) => {
+      add(node);
+      (node.children || []).forEach((child) => add(productAreaName(child), productAreaExplicitColor(child) || productAreaExplicitColor(node)));
     });
 
-    return (groupNode) => colorByKey.get(getTreemapColorKey(groupNode)) || chartTheme.colors.text;
+    (data?.company_engagement_by_page_group || []).forEach((group) => add(group));
+
+    (data?.sankey?.nodes || []).forEach((node) => add(sankeyNodeProductAreaName(node), productAreaExplicitColor(node)));
+    (data?.sankey?.links || []).forEach((link) => {
+      add(
+        link.source_product_area_name || link.sourceProductAreaName || link.source_product_area || link.sourceProductArea,
+        link.source_product_area_color || link.sourceProductAreaColor || link.source_color || link.sourceColor
+      );
+      add(
+        link.target_product_area_name || link.targetProductAreaName || link.target_product_area || link.targetProductArea,
+        link.target_product_area_color || link.targetProductAreaColor || link.target_color || link.targetColor
+      );
+    });
+
+    if (productAreaColorResolver) {
+      productAreaColorResolver.finalize();
+      names.forEach((name) => productAreaColorByName.set(name, productAreaColorResolver.color(name)));
+      return;
+    }
+
+    names.forEach((name, index) => {
+      if (!productAreaColorByName.has(name)) {
+        productAreaColorByName.set(name, chartTheme.series[index % chartTheme.series.length] || chartTheme.colors.primary);
+      }
+    });
+  }
+
+  function productAreaColor(area, explicitColor = "") {
+    const name = productAreaName(area);
+    const color = productAreaExplicitColor(area, explicitColor);
+
+    if (productAreaColorResolver) {
+      return productAreaColorResolver.color(name, color);
+    }
+
+    if (color) {
+      productAreaColorByName.set(name, tailwindColor(color));
+    } else if (!productAreaColorByName.has(name)) {
+      productAreaColorByName.set(
+        name,
+        chartTheme.series[productAreaColorByName.size % chartTheme.series.length] || chartTheme.colors.primary
+      );
+    }
+
+    return productAreaColorByName.get(name);
   }
 
   function formatSignedPercent(value) {
@@ -3061,7 +3181,7 @@
   }
 
   function createCompanyEngagementScatterSpec(group, config) {
-    const pointColor = chartTheme.series[config.index % chartTheme.series.length];
+    const pointColor = productAreaColor(group);
     const points = (group.points || []).map((point) => {
       const activeUsers = Number(point.active_users) || 0;
 
@@ -3371,6 +3491,7 @@
     const projectId = body.dataset.projectId || "35590318";
     const data = provider.getMockPagesOverviewData(projectId) || {};
     currentOverviewData = data;
+    syncProductAreaPalette(data);
 
     renderKpiCards(data);
     renderProductAreaSummary(data);
@@ -5312,7 +5433,6 @@
     const totalEngagedSeconds = treemapData.total_engaged_seconds || 1;
     const labelMinShare = 1.6;
     const hoverTintWeight = 0.04;
-    const getGroupColor = createTreemapGroupColorResolver(treemapData.nodes || []);
     const treemapNodeStyle = (color) => ({
       itemStyle: {
         color
@@ -5327,7 +5447,7 @@
       }
     });
     const treemapNodes = (treemapData.nodes || []).map((groupNode) => {
-      const groupColor = getGroupColor(groupNode);
+      const groupColor = productAreaColor(groupNode);
 
       return {
         ...groupNode,
@@ -5915,13 +6035,22 @@
       });
     });
 
-    const ensureNode = (label) => {
+    const ensureNode = (label, productArea = {}) => {
       const cleanLabel = String(label || "Unassigned").trim() || "Unassigned";
 
       if (!nodesByName.has(cleanLabel)) {
         nodesByName.set(cleanLabel, {
           name: cleanLabel,
-          label: cleanLabel
+          label: cleanLabel,
+          ...productArea
+        });
+      } else {
+        const node = nodesByName.get(cleanLabel);
+
+        Object.entries(productArea).forEach(([key, value]) => {
+          if (value && !node[key]) {
+            node[key] = value;
+          }
         });
       }
 
@@ -5958,8 +6087,16 @@
         return;
       }
 
-      const source = ensureNode(link.sourceLabel);
-      const target = ensureNode(link.targetLabel);
+      const source = ensureNode(link.sourceLabel, {
+        product_area_key: link.source_product_area_key || link.sourceProductAreaKey,
+        product_area_name: link.source_product_area_name || link.sourceProductAreaName || link.source_product_area || link.sourceProductArea,
+        color: link.source_product_area_color || link.sourceProductAreaColor || link.source_color || link.sourceColor
+      });
+      const target = ensureNode(link.targetLabel, {
+        product_area_key: link.target_product_area_key || link.targetProductAreaKey,
+        product_area_name: link.target_product_area_name || link.targetProductAreaName || link.target_product_area || link.targetProductArea,
+        color: link.target_product_area_color || link.targetProductAreaColor || link.target_color || link.targetColor
+      });
       const value = Number(link?.value) || 0;
 
       normalizedLinks.push({
@@ -5989,6 +6126,15 @@
 
   function createSankeyOption(data) {
     const sankeyData = createOverviewSankeyData(data?.sankey);
+    const nodes = sankeyData.nodes.map((node) => ({
+      ...node,
+      itemStyle: {
+        ...(node.itemStyle || {}),
+        borderColor: chartTheme.colors.white,
+        borderWidth: 1,
+        color: productAreaColor(sankeyNodeProductAreaName(node), productAreaExplicitColor(node))
+      }
+    }));
 
     return {
       tooltip: {
@@ -6004,7 +6150,7 @@
       series: [
         {
           type: "sankey",
-          data: sankeyData.nodes,
+          data: nodes,
           links: sankeyData.links,
           nodeWidth: 14,
           nodeGap: 18,
@@ -6024,14 +6170,8 @@
           },
           itemStyle: {
             borderColor: chartTheme.colors.white,
-            borderWidth: 1,
-            color: chartTheme.colors.primary
-          },
-          levels: [
-            { depth: 0, itemStyle: { color: chartTheme.colors.mutedText } },
-            { depth: 1, itemStyle: { color: chartTheme.series[0] } },
-            { depth: 2, itemStyle: { color: chartTheme.series[1] } }
-          ]
+            borderWidth: 1
+          }
         }
       ]
     };

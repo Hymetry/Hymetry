@@ -255,6 +255,7 @@ def _empty_payload(project, range_key):
         'change_aware_rows': [],
         'page_metrics_rows': [],
         'product_area_summary': [],
+        'productAreas': [],
         'top_pages_by_visits_over_time': {'granularity': 'day', 'labels': [], 'series': []},
         'top_pages_by_engaged_time_over_time': {'granularity': 'day', 'labels': [], 'series': []},
         'engaged_time_treemap': {'total_engaged_seconds': 0, 'nodes': []},

@@ -722,6 +722,12 @@ class CompaniesOverviewViewTests(TestCase):
         self._user_metric(company_id='peerco', user_id='p1', date=self.end_date, page_rule_id=dashboard_rule.id, area_key='core', area_name='Core product', engaged=600)
         PageCompanyDailyMetric.objects.filter(company_id='acme', product_area_key='core').update(product_area=None)
         overview_payload = self._cache_companies_overview()
+        overview_product_area_colors = {
+            row['name']: row['color']
+            for row in overview_payload['productAreas']
+        }
+        self.assertEqual(overview_product_area_colors['Core product'], '#123456')
+        self.assertEqual(overview_product_area_colors['Billing'], '#abcdef')
         self._cache_company_detail('acme', overview_payload=overview_payload)
 
         response = self.client.get(
@@ -772,13 +778,13 @@ class CompaniesOverviewViewTests(TestCase):
         self.assertEqual(at_risk_metric['dailySeries'][-1]['value'], 1)
         self.assertIn('Dashboard', top_page_names)
         self.assertIn('Billing settings', top_page_names)
-        self.assertEqual(product_area_colors['Core product'], '#4269D0')
-        self.assertEqual(product_area_colors['Billing'], '#EFB118')
+        self.assertEqual(product_area_colors['Core product'], '#123456')
+        self.assertEqual(product_area_colors['Billing'], '#abcdef')
         self.assertEqual(billing_top_page['areaRole'], ProductArea.AREA_ROLE_ADMIN)
-        self.assertEqual(billing_top_page['color'], '#EFB118')
+        self.assertEqual(billing_top_page['color'], '#abcdef')
         self.assertFalse(billing_top_page['isAdoptionRecommendable'])
-        self.assertEqual(billing_treemap_node['color'], '#EFB118')
-        self.assertEqual(core_series['color'], '#4269D0')
+        self.assertEqual(billing_treemap_node['color'], '#abcdef')
+        self.assertEqual(core_series['color'], '#123456')
         self.assertTrue(payload['users'])
         self.assertTrue(all(user.get('status') in {'power', 'healthy', 'light', 'passive', 'dropped'} for user in payload['users']))
         self.assertEqual(users_by_id['u-old']['status'], 'dropped')

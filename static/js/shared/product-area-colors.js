@@ -69,8 +69,16 @@
     ).trim();
   }
 
+  const supportedHexColorPattern = /^#[0-9a-f]{6}$/i;
+  const supportedColorTokenPattern = /^[a-z0-9_-]+$/i;
+
+  function supportedHexColor(value) {
+    const color = String(value || "").trim();
+    return supportedHexColorPattern.test(color) ? color : "";
+  }
+
   function tokenFromCssVariable(value) {
-    const match = String(value || "").trim().match(/^var\(--color-([^)]+)\)$/);
+    const match = String(value || "").trim().match(/^var\(--color-([a-z0-9_-]+)\)$/i);
     return match ? match[1] : "";
   }
 
@@ -81,16 +89,17 @@
       return "";
     }
 
-    const token = tokenFromCssVariable(raw);
-    if (token) {
-      return resolveColor(token) || raw;
+    const hexColor = supportedHexColor(raw);
+    if (hexColor) {
+      return hexColor;
     }
 
-    if (/^(#|rgb\(|rgba\(|hsl\(|hsla\(|oklch\(|color-mix\()/i.test(raw)) {
-      return raw;
+    const token = tokenFromCssVariable(raw) || (supportedColorTokenPattern.test(raw) ? raw : "");
+    if (!token) {
+      return "";
     }
 
-    return resolveColor(raw) || raw;
+    return supportedHexColor(resolveColor(token));
   }
 
   function createResolver(options = {}) {
@@ -117,9 +126,9 @@
         names.push(name);
       }
 
-      const color = colorCandidate(area, explicitColor);
+      const color = resolveColorValue(colorCandidate(area, explicitColor), resolveColor);
       if (color && !explicitColorNames.has(name)) {
-        colorByName.set(name, resolveColorValue(color, resolveColor));
+        colorByName.set(name, color);
         explicitColorNames.add(name);
       }
     }

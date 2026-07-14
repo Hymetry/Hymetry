@@ -7,13 +7,18 @@ from django.db.models import Count, Max, Min, Q, Sum
 from django.utils import timezone as django_timezone
 
 from apps.pages import services
+from apps.pages.locks import project_advisory_lock
 from apps.pages.models import PageDailyMetric, PageUserDailyMetric, PageVisit, UsersDetailCache
-from apps.pages.product_area_colors import resolve_product_area_colors
+from apps.pages.product_area_colors import (
+    build_product_area_color_lookup,
+    product_area_color_from_lookup,
+    resolve_product_area_colors,
+)
 from apps.projects.models import Project
 from apps.tracker.models import ProjectPageRule
 
 
-USER_DETAILS_PAYLOAD_SCHEMA_VERSION = 1
+USER_DETAILS_PAYLOAD_SCHEMA_VERSION = 2
 USER_DETAIL_USERS_LIMIT = 500
 USER_DETAIL_SCATTER_LIMIT = 300
 
@@ -230,7 +235,7 @@ def _product_area_short_label(name):
     return text[:7] if len(text) <= 8 else f'{text[:6]}.'
 
 
-def _product_area_options(project_id, start_date, end_date):
+def _product_area_options(project_id, start_date, end_date, *, limit=9):
     rows = (
         PageDailyMetric.objects
         .filter(project_id=project_id, date__gte=start_date, date__lte=end_date)
@@ -260,13 +265,22 @@ def _product_area_options(project_id, start_date, end_date):
         })
 
     if options:
-        return resolve_product_area_colors(options[:9])
+        resolved = resolve_product_area_colors(options, prefer_explicit=True)
+        if limit is None:
+            return services._project_product_area_options(
+                project_id,
+                resolved,
+                include_unobserved=True,
+            )
+        return resolved[:limit]
 
     fallback_rows = (
         _base_user_queryset(project_id, start_date, end_date)
         .values('product_area_key')
         .annotate(
             product_area_name=Max('product_area_name'),
+            product_area_short_name=Max('product_area__short_name'),
+            product_area_color=Max('product_area__color'),
             engaged_seconds=Sum('engaged_seconds'),
         )
         .order_by('-engaged_seconds', 'product_area_name')
@@ -281,10 +295,17 @@ def _product_area_options(project_id, start_date, end_date):
             'id': key,
             'key': key,
             'name': name,
-            'shortName': _product_area_short_label(name),
-            'color': '',
+            'shortName': row.get('product_area_short_name') or _product_area_short_label(name),
+            'color': row.get('product_area_color') or '',
         })
-    return resolve_product_area_colors(options[:9])
+    resolved = resolve_product_area_colors(options, prefer_explicit=True)
+    if limit is None:
+        return services._project_product_area_options(
+            project_id,
+            resolved,
+            include_unobserved=True,
+        )
+    return resolved[:limit]
 
 
 def _page_rule_names(project_id, page_rule_ids):
@@ -575,7 +596,7 @@ def _daily_usage(project_id, user_id, start_date, end_date, product_areas):
     return output
 
 
-def _area_usage(project_id, start_date, end_date, *, user_ids=None, company_id=None):
+def _area_usage(project_id, start_date, end_date, *, user_ids=None, company_id=None, color_lookup=None):
     queryset = _base_user_queryset(project_id, start_date, end_date)
     if user_ids is not None:
         queryset = queryset.filter(user_id__in=[str(user_id) for user_id in user_ids])
@@ -592,14 +613,24 @@ def _area_usage(project_id, start_date, end_date, *, user_ids=None, company_id=N
         )
     )
     output = defaultdict(dict)
-    for row in rows:
+    for index, row in enumerate(rows):
         user_id = str(row.get('user_id') or '')
         area_key = row.get('product_area_key') or 'unassigned'
         if not user_id:
             continue
+        area_name = row.get('product_area_name') or area_key
+        color = product_area_color_from_lookup(
+            color_lookup,
+            {'key': area_key, 'name': area_name},
+            index,
+            prefer_explicit=True,
+        )
         output[user_id][area_key] = {
             'productAreaId': area_key,
-            'productAreaName': row.get('product_area_name') or area_key,
+            'productAreaName': area_name,
+            'productAreaColor': color,
+            'color': color,
+            'product_area_color': color,
             'engagedSeconds': _to_int(row.get('engaged_seconds_total')),
             'visits': _to_int(row.get('visits')),
             'pagesUsed': _to_int(row.get('pages_used')),
@@ -618,6 +649,8 @@ class BulkUserDetailContext:
         self._project_visits = None
         self._project_emails = None
         self._product_areas = None
+        self._product_area_catalog = None
+        self._product_area_color_lookup = None
         self._company_metrics_cache = OrderedDict()
         self._company_area_usage_cache = OrderedDict()
         self._company_page_usage_cache = OrderedDict()
@@ -660,8 +693,29 @@ class BulkUserDetailContext:
 
     def get_product_areas(self):
         if self._product_areas is None:
-            self._product_areas = _product_area_options(self.project_id, self.start_date, self.end_date)
+            self._product_areas = _product_area_options(
+                self.project_id,
+                self.start_date,
+                self.end_date,
+            )
         return self._product_areas
+
+    def get_product_area_catalog(self):
+        if self._product_area_catalog is None:
+            self._product_area_catalog = services._project_product_area_options(
+                self.project_id,
+                self.get_product_areas(),
+                include_unobserved=True,
+            )
+        return self._product_area_catalog
+
+    def get_product_area_color_lookup(self):
+        if self._product_area_color_lookup is None:
+            self._product_area_color_lookup = build_product_area_color_lookup(
+                self.get_product_area_catalog(),
+                prefer_explicit=True,
+            )
+        return self._product_area_color_lookup
 
     def get_company_metrics(self, company_id):
         if not company_id:
@@ -678,7 +732,13 @@ class BulkUserDetailContext:
         cached = self._get_company_value(self._company_area_usage_cache, company_id)
         if cached is not None:
             return cached
-        value = _area_usage(self.project_id, self.start_date, self.end_date, company_id=company_id)
+        value = _area_usage(
+            self.project_id,
+            self.start_date,
+            self.end_date,
+            company_id=company_id,
+            color_lookup=self.get_product_area_color_lookup(),
+        )
         return self._remember_company_value(self._company_area_usage_cache, company_id, value)
 
     def get_company_page_usage(self, company_id):
@@ -699,12 +759,16 @@ class BulkUserDetailContext:
         return self._remember_company_value(self._company_page_usage_cache, company_id, value)
 
 
-def _top_area(area_rows):
+def _top_area_row(area_rows):
     rows = sorted(
         area_rows.values() if isinstance(area_rows, dict) else area_rows,
         key=lambda row: (-_to_int(row.get('engagedSeconds')), row.get('productAreaName') or ''),
     )
-    return rows[0].get('productAreaName') if rows else ''
+    return rows[0] if rows else {}
+
+
+def _top_area(area_rows):
+    return _top_area_row(area_rows).get('productAreaName') or ''
 
 
 def _peer_comparison_rows(
@@ -717,6 +781,7 @@ def _peer_comparison_rows(
     previous_start,
     previous_end,
     product_areas,
+    product_area_color_lookup=None,
     bulk_context=None,
     previous_bulk_context=None,
 ):
@@ -745,7 +810,13 @@ def _peer_comparison_rows(
         user_ids = sorted(set(current) | {selected_user_id})
         visits = _visit_metrics(project, start_date, end_date, user_ids=user_ids)
         email_lookup = services.user_trait_email_lookup(project, previous_start, end_date, user_ids=user_ids)
-        area_by_user = _area_usage(project.id, start_date, end_date, user_ids=user_ids)
+        area_by_user = _area_usage(
+            project.id,
+            start_date,
+            end_date,
+            user_ids=user_ids,
+            color_lookup=product_area_color_lookup,
+        )
 
     if selected_user_id not in current:
         if bulk_context:
@@ -786,6 +857,7 @@ def _peer_comparison_rows(
                 'visits': _to_int(area_row.get('visits')),
                 'pagesUsed': _to_int(area_row.get('pagesUsed')),
             })
+        top_area = _top_area_row(area_rows)
         status = _status_key(row, previous_row, period_days=period_days, first_seen_at=visit_row.get('first_visit_ts'), end_date=end_date)
         rows.append({
             'userId': user_id,
@@ -806,7 +878,9 @@ def _peer_comparison_rows(
             'visits': metrics['visits'],
             'visitsDeltaPct': _delta_pct_value(metrics['visits'], previous_row.get('visits')),
             'pagesUsed': metrics['pages_used'],
-            'topArea': _top_area(area_rows),
+            'topArea': top_area.get('productAreaName') or '',
+            'topAreaId': top_area.get('productAreaId') or '',
+            'topAreaColor': top_area.get('productAreaColor') or '',
             'productAreaAdoption': adoption,
             'interactionRate': _fraction(metrics['visits_with_click'], metrics['visits']),
             'rank': 0,
@@ -905,6 +979,7 @@ def _page_usage_rows(
     previous_start,
     previous_end,
     product_areas,
+    product_area_color_lookup=None,
     bulk_context=None,
 ):
     rows = list(
@@ -977,6 +1052,12 @@ def _page_usage_rows(
         area = area_by_key.get(area_key, {})
         rule = rule_names.get(page_rule_id) or {}
         product_area_name = row.get('product_area_name') or area.get('name') or rule.get('product_area') or 'Unassigned'
+        product_area_color = product_area_color_from_lookup(
+            product_area_color_lookup,
+            {'key': area_key, 'name': product_area_name},
+            len(output),
+            prefer_explicit=True,
+        )
         page_name = rule.get('page_name') or product_area_name or str(page_rule_id or 'Page')
         visits = _to_int(row.get('visits'))
         engaged = _to_int(row.get('engaged_seconds'))
@@ -998,7 +1079,9 @@ def _page_usage_rows(
             'productAreaId': area_key,
             'productAreaName': product_area_name,
             'productArea': product_area_name,
-            'productAreaColor': area.get('color') or '',
+            'productAreaColor': product_area_color,
+            'color': product_area_color,
+            'product_area_color': product_area_color,
             'visits': visits,
             'visitsDeltaPct': _delta_pct_value(visits, previous.get('visits')),
             'shareOfUserTimePct': _pct(engaged, total_user_engaged),
@@ -1017,10 +1100,26 @@ def _page_usage_rows(
         })
 
     output.sort(key=lambda item: (-item['engagedSeconds'], -item['visits'], item['pageName']))
-    return output, _underused_pages(peer_page_users, peer_page_visits, active_peer_ids, rule_names, product_areas, output)
+    return output, _underused_pages(
+        peer_page_users,
+        peer_page_visits,
+        active_peer_ids,
+        rule_names,
+        product_areas,
+        output,
+        product_area_color_lookup,
+    )
 
 
-def _underused_pages(peer_page_users, peer_page_visits, active_peer_ids, rule_names, product_areas, pages_used):
+def _underused_pages(
+    peer_page_users,
+    peer_page_visits,
+    active_peer_ids,
+    rule_names,
+    product_areas,
+    pages_used,
+    product_area_color_lookup=None,
+):
     if not active_peer_ids:
         return []
     used_by_page = {row.get('pageRuleId'): row for row in pages_used}
@@ -1039,12 +1138,21 @@ def _underused_pages(peer_page_users, peer_page_visits, active_peer_ids, rule_na
         page_name = rule.get('page_name') or str(page_rule_id or 'Page')
         product_area_name = rule.get('product_area') or (used or {}).get('productAreaName') or 'Unassigned'
         area = area_by_name.get(product_area_name) or {}
+        product_area_id = area.get('id') or area.get('key') or (used or {}).get('productAreaId') or ''
+        product_area_color = product_area_color_from_lookup(
+            product_area_color_lookup,
+            {'key': product_area_id, 'name': product_area_name},
+            len(rows),
+            prefer_explicit=True,
+        )
         rows.append({
             'pageRuleId': str(page_rule_id or ''),
             'pageName': page_name,
-            'productAreaId': area.get('id') or area.get('key') or '',
+            'productAreaId': product_area_id,
             'productAreaName': product_area_name,
-            'productAreaColor': area.get('color') or '',
+            'productAreaColor': product_area_color,
+            'color': product_area_color,
+            'product_area_color': product_area_color,
             'peerUsagePct': peer_usage_pct,
             'peerMedianVisits': peer_median_visits,
             'userUsageLabel': f'{visits} visits' if visits else '0 visits',
@@ -1298,13 +1406,27 @@ def build_user_detail_payload(project, user_id, *, range_key='last_30_days', bul
             **bulk_context.get_project_emails(),
         }
         product_areas = bulk_context.get_product_areas()
+        product_area_color_lookup = bulk_context.get_product_area_color_lookup()
     else:
         current = _aggregate_user_metrics(project.id, start_date, end_date, user_ids=[user_id]).get(user_id, {})
         previous = _aggregate_user_metrics(project.id, previous_start, previous_end, user_ids=[user_id]).get(user_id, {})
         current_visits = _visit_metrics(project, start_date, end_date, user_ids=[user_id]).get(user_id, {})
         previous_visits = _visit_metrics(project, previous_start, previous_end, user_ids=[user_id]).get(user_id, {})
         email_lookup = services.user_trait_email_lookup(project, previous_start, end_date, user_ids=[user_id])
-        product_areas = _product_area_options(project.id, start_date, end_date)
+        product_areas = _product_area_options(
+            project.id,
+            start_date,
+            end_date,
+        )
+        product_area_catalog = services._project_product_area_options(
+            project.id,
+            product_areas,
+            include_unobserved=True,
+        )
+        product_area_color_lookup = build_product_area_color_lookup(
+            product_area_catalog,
+            prefer_explicit=True,
+        )
     lifetime = _selected_lifetime_identity(project, user_id)
 
     if not current and not previous and not lifetime:
@@ -1326,6 +1448,7 @@ def build_user_detail_payload(project, user_id, *, range_key='last_30_days', bul
         previous_start,
         previous_end,
         product_areas,
+        product_area_color_lookup=product_area_color_lookup,
         bulk_context=bulk_context,
         previous_bulk_context=previous_bulk_context,
     )
@@ -1339,6 +1462,7 @@ def build_user_detail_payload(project, user_id, *, range_key='last_30_days', bul
         previous_start,
         previous_end,
         product_areas,
+        product_area_color_lookup=product_area_color_lookup,
         bulk_context=bulk_context,
     )
     consistency = _fraction(selected_metrics['active_days'], period_days)
@@ -1454,7 +1578,30 @@ def build_user_detail_cache(
     expires_at=None,
     bulk_context=None,
     previous_bulk_context=None,
+    use_lock=True,
 ):
+    if use_lock:
+        with project_advisory_lock(project_id, namespace='pages-rebuild') as acquired:
+            if not acquired:
+                return {
+                    'status': 'skipped',
+                    'reason': 'lock_not_acquired',
+                    'project_id': project_id,
+                    'range_key': range_key,
+                    'user_id': str(user_id or '').strip(),
+                }
+            return build_user_detail_cache(
+                project_id,
+                user_id,
+                range_key=range_key,
+                project=project,
+                generated_at=generated_at,
+                expires_at=expires_at,
+                bulk_context=bulk_context,
+                previous_bulk_context=previous_bulk_context,
+                use_lock=False,
+            )
+
     project = project or Project.active.filter(pk=project_id).first()
     if project is None:
         raise ValueError(f'Project {project_id} does not exist.')

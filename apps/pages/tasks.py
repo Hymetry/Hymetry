@@ -1,6 +1,10 @@
 from celery import shared_task
 
 from apps.pages.company_analytics import build_companies_overview_cache, build_company_detail_cache
+from apps.pages.product_area_color_assignment import (
+    assign_not_stable_project_product_area_colors,
+    assign_stable_project_product_area_colors,
+)
 from apps.pages.user_detail_analytics import build_user_detail_cache
 from apps.pages.user_analytics import build_users_overview_cache
 from apps.pages.services import (
@@ -9,63 +13,164 @@ from apps.pages.services import (
     rebuild_project_pages_analytics,
     refresh_recent_projects_pages_analytics,
 )
-@shared_task
-def build_page_visits_for_project(project_id, start_date, end_date):
-    return rebuild_project_pages_analytics(project_id, start_date, end_date, range_keys=())
+from apps.projects.models import Project, ProjectPageNamingState
 
 
-@shared_task
-def build_page_transitions_for_project(project_id, start_date, end_date):
-    return rebuild_project_pages_analytics(project_id, start_date, end_date, range_keys=())
+PAGES_LOCK_RETRY_BASE_SECONDS = 30
+PAGES_LOCK_RETRY_MAX_SECONDS = 300
+PAGES_LOCK_MAX_RETRIES = 4
 
 
-@shared_task
-def aggregate_page_daily_metrics(project_id, start_date, end_date):
+class PagesRebuildLockUnavailable(RuntimeError):
+    pass
+
+
+def _pages_lock_retry_countdown(retries):
+    retry_number = max(0, int(retries or 0))
+    return min(
+        PAGES_LOCK_RETRY_BASE_SECONDS * (2 ** retry_number),
+        PAGES_LOCK_RETRY_MAX_SECONDS,
+    )
+
+
+def _locked_project_ids(result):
+    if isinstance(result, dict):
+        if result.get('status') == 'skipped' and result.get('reason') == 'lock_not_acquired':
+            return [result.get('project_id')]
+        project_ids = []
+        for nested_result in result.values():
+            if isinstance(nested_result, (dict, list, tuple)):
+                project_ids.extend(_locked_project_ids(nested_result))
+        return project_ids
+    if isinstance(result, (list, tuple)):
+        project_ids = []
+        for nested_result in result:
+            project_ids.extend(_locked_project_ids(nested_result))
+        return project_ids
+    return []
+
+
+def _retry_task_if_pages_lock_unavailable(task, result):
+    locked_project_ids = list(dict.fromkeys(_locked_project_ids(result)))
+    if not locked_project_ids:
+        return result
+
+    retries = getattr(task.request, 'retries', 0)
+    countdown = _pages_lock_retry_countdown(retries)
+    error = PagesRebuildLockUnavailable(
+        f'Pages rebuild lock unavailable for projects: {locked_project_ids}'
+    )
+    raise task.retry(
+        exc=error,
+        countdown=countdown,
+        max_retries=PAGES_LOCK_MAX_RETRIES,
+    )
+
+
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def build_page_visits_for_project(self, project_id, start_date, end_date):
+    result = rebuild_project_pages_analytics(project_id, start_date, end_date, range_keys=())
+    return _retry_task_if_pages_lock_unavailable(self, result)
+
+
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def build_page_transitions_for_project(self, project_id, start_date, end_date):
+    result = rebuild_project_pages_analytics(project_id, start_date, end_date, range_keys=())
+    return _retry_task_if_pages_lock_unavailable(self, result)
+
+
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def aggregate_page_daily_metrics(self, project_id, start_date, end_date):
     from apps.pages.services import aggregate_page_daily_metrics as aggregate_service
 
-    return aggregate_service(project_id, start_date, end_date)
+    result = aggregate_service(project_id, start_date, end_date)
+    return _retry_task_if_pages_lock_unavailable(self, result)
 
 
-@shared_task
-def build_pages_overview_cache_task(project_id, range_key='last_30_days'):
-    return build_pages_overview_cache(project_id, range_key=range_key)
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def build_pages_overview_cache_task(self, project_id, range_key='last_30_days'):
+    result = build_pages_overview_cache(project_id, range_key=range_key)
+    return _retry_task_if_pages_lock_unavailable(self, result)
 
 
-@shared_task
-def build_companies_overview_cache_task(project_id, range_key='last_30_days'):
-    return build_companies_overview_cache(project_id, range_key=range_key)
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def build_companies_overview_cache_task(self, project_id, range_key='last_30_days'):
+    result = build_companies_overview_cache(project_id, range_key=range_key)
+    return _retry_task_if_pages_lock_unavailable(self, result)
 
 
-@shared_task
-def build_users_overview_cache_task(project_id, range_key='last_30_days'):
-    return build_users_overview_cache(project_id, range_key=range_key)
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def build_users_overview_cache_task(self, project_id, range_key='last_30_days'):
+    result = build_users_overview_cache(project_id, range_key=range_key)
+    return _retry_task_if_pages_lock_unavailable(self, result)
 
 
-@shared_task
-def build_company_detail_cache_task(project_id, company_id, range_key='last_30_days'):
-    return build_company_detail_cache(project_id, company_id, range_key=range_key)
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def build_company_detail_cache_task(self, project_id, company_id, range_key='last_30_days'):
+    result = build_company_detail_cache(project_id, company_id, range_key=range_key)
+    return _retry_task_if_pages_lock_unavailable(self, result)
 
 
-@shared_task
-def build_user_detail_cache_task(project_id, user_id, range_key='last_30_days'):
-    return build_user_detail_cache(project_id, user_id, range_key=range_key)
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def build_user_detail_cache_task(self, project_id, user_id, range_key='last_30_days'):
+    result = build_user_detail_cache(project_id, user_id, range_key=range_key)
+    return _retry_task_if_pages_lock_unavailable(self, result)
 
 
-@shared_task
-def hydrate_pages_scatter_tooltips_cache_task(project_id, range_key='last_30_days'):
-    return hydrate_pages_scatter_tooltips_cache(project_id, range_key=range_key)
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def hydrate_pages_scatter_tooltips_cache_task(self, project_id, range_key='last_30_days'):
+    result = hydrate_pages_scatter_tooltips_cache(project_id, range_key=range_key)
+    return _retry_task_if_pages_lock_unavailable(self, result)
 
 
-@shared_task
-def backfill_pages_analytics_task(project_id, start_date, end_date):
-    return rebuild_project_pages_analytics(project_id, start_date, end_date)
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def backfill_pages_analytics_task(self, project_id, start_date, end_date):
+    result = rebuild_project_pages_analytics(project_id, start_date, end_date)
+    return _retry_task_if_pages_lock_unavailable(self, result)
 
 
-@shared_task
-def refresh_recent_pages_analytics_task(lookback_days=2, active_since_days=2, range_keys=None, exclude_project_ids=None):
-    return refresh_recent_projects_pages_analytics(
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def refresh_recent_pages_analytics_task(
+    self,
+    lookback_days=2,
+    active_since_days=2,
+    range_keys=None,
+    exclude_project_ids=None,
+):
+    result = refresh_recent_projects_pages_analytics(
         lookback_days=lookback_days,
         active_since_days=active_since_days,
         range_keys=range_keys,
         exclude_project_ids=exclude_project_ids,
     )
+    return _retry_task_if_pages_lock_unavailable(self, result)
+
+
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def run_hourly_not_stable_product_area_colors(self):
+    project_ids = list(
+        Project.active
+        .filter(page_naming_state=ProjectPageNamingState.NOT_STABLE)
+        .order_by('id')
+        .values_list('id', flat=True)
+    )
+    results = [
+        assign_not_stable_project_product_area_colors(project_id)
+        for project_id in project_ids
+    ]
+    return _retry_task_if_pages_lock_unavailable(self, results)
+
+
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def run_daily_stable_product_area_colors(self):
+    project_ids = list(
+        Project.active
+        .filter(page_naming_state=ProjectPageNamingState.STABLE)
+        .order_by('id')
+        .values_list('id', flat=True)
+    )
+    results = [
+        assign_stable_project_product_area_colors(project_id)
+        for project_id in project_ids
+    ]
+    return _retry_task_if_pages_lock_unavailable(self, results)

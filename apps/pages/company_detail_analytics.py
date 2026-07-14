@@ -14,7 +14,7 @@ from apps.pages.product_area_colors import (
 from apps.tracker.models import ProjectPageRule
 
 
-COMPANY_DETAIL_PAYLOAD_SCHEMA_VERSION = 13
+COMPANY_DETAIL_PAYLOAD_SCHEMA_VERSION = 14
 AT_RISK_USER_LOOKBACK_DAYS = 90
 PEER_OPTIONAL_METADATA_CANDIDATE_LIMIT = 80
 USER_HEALTH_STATUSES = (
@@ -210,7 +210,8 @@ def product_area_options(project_id, metadata=None):
                 0 if item.get('isAdoptionRecommendable') else 1,
                 item.get('name') or '',
             ),
-        )
+        ),
+        prefer_explicit=True,
     )
 
 
@@ -247,7 +248,12 @@ class BulkCompanyDetailContext:
         if self._metadata is None:
             metadata = _area_metadata(self.project_id)
             product_areas = product_area_options(self.project_id, metadata)
-            self._metadata = apply_product_area_metadata_colors(metadata, build_product_area_color_lookup(product_areas))
+            color_lookup = build_product_area_color_lookup(product_areas, prefer_explicit=True)
+            self._metadata = apply_product_area_metadata_colors(
+                metadata,
+                color_lookup,
+                prefer_explicit=True,
+            )
             self._product_areas = product_area_options(self.project_id, self._metadata)
         return self._metadata
 
@@ -2196,7 +2202,12 @@ def build_company_detail_payload(project, company_id, *, range_key='last_30_days
         previous_start, previous_end = services.previous_period(start_date, end_date)
         metadata = _area_metadata(project.id)
         product_areas = product_area_options(project.id, metadata)
-        metadata = apply_product_area_metadata_colors(metadata, build_product_area_color_lookup(product_areas))
+        color_lookup = build_product_area_color_lookup(product_areas, prefer_explicit=True)
+        metadata = apply_product_area_metadata_colors(
+            metadata,
+            color_lookup,
+            prefer_explicit=True,
+        )
         if overview_payload and overview_payload.get('companies'):
             company_rows = _company_rows_from_overview_payload(overview_payload, metadata, end_date)
         else:

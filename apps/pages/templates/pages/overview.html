@@ -311,10 +311,11 @@
   {% if not analytics_is_empty %}
   <script src="{% static 'echarts/lib/echarts.min.js' %}"></script>
   <script id="pages-overview-data" type="application/json">{{ pages_overview_payload_json }}</script>
+  <script src="{% static 'js/shared/product-area-colors.js' %}"></script>
   <script src="{% static 'js/pages/page-details-helpers.js' %}"></script>
   <script src="{% static 'js/pages/django-pages-data.js' %}?v=20260709-3"></script>
   <script src="{% static 'js/vendor/vega.min.js' %}"></script>
   <script src="{% static 'js/vendor/vega-embed.min.js' %}"></script>
-  <script src="{% static 'js/pages/pages-analytics.js' %}?v=20260713-1"></script>
+  <script src="{% static 'js/pages/pages-analytics.js' %}?v=20260714-1"></script>
   {% endif %}
 {% endblock %}

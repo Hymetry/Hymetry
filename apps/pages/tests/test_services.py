@@ -247,6 +247,99 @@ class PagesAnalyticsServiceTests(TestCase):
         self.assertEqual(payload['page_metrics_rows'][0]['page_rule_ids'], ['1', '2'])
         self.assertEqual(payload['page_metrics_rows'][0]['visits_count'], 5)
 
+    def test_pages_overview_product_area_color_contract_prefers_persisted_color(self):
+        ProductArea.objects.create(
+            project=self.project,
+            name='Billing',
+            slug='billing',
+            short_name='Bill',
+            color='#123456',
+        )
+        ProductArea.objects.create(
+            project=self.project,
+            name='Unobserved Area',
+            slug='unobserved-area',
+            short_name='Unobserved',
+            color='#654321',
+        )
+        product_areas = services._project_product_area_options(
+            self.project.id,
+            [{
+                'product_area_key': 'billing',
+                'product_area_name': 'Billing',
+                'color': '#EFB118',
+            }],
+        )
+        self.assertEqual([area['key'] for area in product_areas], ['billing'])
+        self.assertEqual(product_areas[0]['color'], '#123456')
+        catalog = services._project_product_area_options(
+            self.project.id,
+            product_areas,
+            include_unobserved=True,
+        )
+        self.assertEqual(
+            [area['key'] for area in catalog],
+            ['billing', 'unobserved-area'],
+        )
+
+        payload = services.normalize_overview_payload({
+            'schema_version': services.OVERVIEW_PAYLOAD_SCHEMA_VERSION,
+            'productAreas': product_areas,
+            'product_area_summary': [
+                {'product_area_key': 'billing', 'product_area_name': 'Billing'},
+            ],
+            'company_engagement_by_product_area': [
+                {'product_area_key': 'billing', 'product_area_name': 'Billing', 'points': []},
+            ],
+            'top_actions_by_page_group': [
+                {'page_group': 'Invoices', 'page_rule_id': '1', 'actions': []},
+            ],
+            'engaged_time_treemap': {
+                'total_engaged_seconds': 60,
+                'nodes': [{
+                    'name': 'Billing',
+                    'page_group': 'Billing',
+                    'value': 60,
+                    'engaged_seconds': 60,
+                    'children': [{
+                        'name': 'Invoices',
+                        'page_group': 'Billing',
+                        'value': 60,
+                        'engaged_seconds': 60,
+                    }],
+                }],
+            },
+            'sankey': {
+                'nodes': [{
+                    'name': 'Invoices',
+                    'product_area_key': 'billing',
+                    'product_area_name': 'Billing',
+                }],
+                'links': [{
+                    'source': 'Invoices',
+                    'target': 'Invoices',
+                    'source_product_area': 'Billing',
+                    'target_product_area': 'Billing',
+                    'value': 1,
+                }],
+            },
+        })
+
+        self.assertEqual(services.OVERVIEW_PAYLOAD_SCHEMA_VERSION, 17)
+        self.assertEqual([area['key'] for area in payload['productAreas']], ['billing'])
+        self.assertNotIn('Invoices', [area['name'] for area in payload['productAreas']])
+        self.assertEqual(payload['productAreas'][0]['product_area_color'], '#123456')
+        self.assertEqual(payload['product_area_summary'][0]['color'], '#123456')
+        self.assertEqual(payload['company_engagement_by_product_area'][0]['color'], '#123456')
+        self.assertEqual(payload['engaged_time_treemap']['nodes'][0]['color'], '#123456')
+        self.assertEqual(payload['engaged_time_treemap']['nodes'][0]['children'][0]['color'], '#123456')
+        self.assertEqual(payload['sankey']['nodes'][0]['product_area_color'], '#123456')
+        self.assertEqual(payload['sankey']['links'][0]['source_product_area_color'], '#123456')
+        self.assertEqual(payload['sankey']['links'][0]['target_product_area_color'], '#123456')
+
+        filtered = services.filter_overview_payload_by_product_areas(payload, ['billing'])
+        self.assertEqual(filtered['productAreas'][0]['color'], '#123456')
+
     def test_filter_overview_payload_by_product_area_filters_page_sections(self):
         payload = {
             'schema_version': services.OVERVIEW_PAYLOAD_SCHEMA_VERSION,
@@ -464,7 +557,7 @@ class PagesAnalyticsServiceTests(TestCase):
             name='Billing',
             slug='billing',
             short_name='Billing',
-            color='#4269D0',
+            color='#13579B',
         )
         developer_area = ProductArea.objects.create(
             project=self.project,
@@ -581,6 +674,9 @@ class PagesAnalyticsServiceTests(TestCase):
         self.assertEqual(users_by_id['dropped@example.com']['lastActive'], '30d ago')
         self.assertEqual(status_counts['Dropped'], 1)
         self.assertEqual(payload['productAreas'][0]['name'], 'Billing')
+        self.assertEqual(payload['productAreas'][0]['color'], '#13579B')
+        self.assertEqual(users_by_id['sarah@example.com']['pageGroups'][0]['color'], '#13579B')
+        self.assertEqual(users_by_id['sarah@example.com']['pageGroups'][0]['productAreaColor'], '#13579B')
         last_status_mix = payload['statusMixByDate'][-1]
         for status, key in [
             ('Power', 'power'),
@@ -653,14 +749,21 @@ class PagesAnalyticsServiceTests(TestCase):
             name='Billing',
             slug='billing',
             short_name='Billing',
-            color='#4269D0',
+            color='#13579B',
         )
         analytics = ProductArea.objects.create(
             project=self.project,
             name='Analytics',
             slug='analytics',
             short_name='Analytics',
-            color='#3CA951',
+            color='#2468AC',
+        )
+        automation = ProductArea.objects.create(
+            project=self.project,
+            name='Automation',
+            slug='automation',
+            short_name='Auto',
+            color='#A1B2C3',
         )
         invoices = ProjectPageRule.objects.create(
             project=self.project,
@@ -673,6 +776,12 @@ class PagesAnalyticsServiceTests(TestCase):
             page_name='Reports',
             product_area='Analytics',
             pattern='/reports',
+        )
+        workflows = ProjectPageRule.objects.create(
+            project=self.project,
+            page_name='Workflows',
+            product_area='Automation',
+            pattern='/workflows',
         )
         PageDailyMetric.objects.create(
             project=self.project,
@@ -710,6 +819,22 @@ class PagesAnalyticsServiceTests(TestCase):
             engaged_seconds=1200,
             click_count=3,
         )
+        # This area intentionally has no PageDailyMetric row, so it is outside
+        # the visible product-area options and must still use its persisted color.
+        PageUserDailyMetric.objects.create(
+            project=self.project,
+            date=end_date,
+            page_rule_id=workflows.id,
+            product_area=automation,
+            product_area_key='automation',
+            product_area_name='Automation',
+            company_id='acme',
+            user_id='sarah@example.com',
+            user_name_sample='Sarah Chen',
+            visits_count=1,
+            engaged_seconds=100,
+            click_count=0,
+        )
         PageUserDailyMetric.objects.create(
             project=self.project,
             date=previous_end,
@@ -738,6 +863,20 @@ class PagesAnalyticsServiceTests(TestCase):
                 visits_count=5,
                 engaged_seconds=900,
                 click_count=4,
+            )
+            PageUserDailyMetric.objects.create(
+                project=self.project,
+                date=end_date,
+                page_rule_id=workflows.id,
+                product_area=automation,
+                product_area_key='automation',
+                product_area_name='Automation',
+                company_id='acme',
+                user_id=user_id,
+                user_name_sample=user_id.split('@', 1)[0],
+                visits_count=6,
+                engaged_seconds=1800,
+                click_count=2,
             )
         visit_ts = timezone.make_aware(datetime.combine(end_date, time(hour=12)))
         for user_id in ('sarah@example.com', 'peer-1@example.com', 'peer-2@example.com'):
@@ -771,7 +910,17 @@ class PagesAnalyticsServiceTests(TestCase):
         self.assertTrue(any(row['isCurrentUser'] for row in payload['peerComparison']))
         self.assertTrue(all(row['userId'] != 'sarah@example.com' for row in payload['peerComparison'] if not row['isCurrentUser']))
         self.assertEqual(payload['pagesUsed'][0]['pageRuleId'], str(invoices.id))
+        workflow_page = next(row for row in payload['pagesUsed'] if row['pageName'] == 'Workflows')
+        automation_peer = next(row for row in payload['peerComparison'] if row['userId'] == 'peer-1@example.com')
+        self.assertNotIn('Automation', {row['name'] for row in payload['productAreas']})
+        self.assertEqual(workflow_page['productAreaColor'], '#A1B2C3')
+        self.assertEqual(automation_peer['topArea'], 'Automation')
+        self.assertEqual(automation_peer['topAreaColor'], '#A1B2C3')
         self.assertIn('Reports', {row['pageName'] for row in payload['underusedPages']})
+        self.assertEqual(
+            next(row for row in payload['underusedPages'] if row['pageName'] == 'Workflows')['productAreaColor'],
+            '#A1B2C3',
+        )
         self.assertTrue(all(action['evidence'] for action in payload['recommendedActions']))
 
         result = user_detail_analytics.build_user_detail_cache(
@@ -1001,6 +1150,10 @@ class PagesAnalyticsServiceTests(TestCase):
 
         self.assertEqual(result['status'], 'success')
         self.assertEqual(ProductArea.objects.filter(project=self.project).count(), 2)
+        self.assertEqual(
+            set(ProductArea.objects.filter(project=self.project).values_list('color', flat=True)),
+            {''},
+        )
         self.assertEqual(PageVisit.objects.filter(project=self.project).count(), 4)
         self.assertEqual(PageTransition.objects.filter(project=self.project).count(), 2)
         self.assertEqual(PageDailyMetric.objects.filter(project=self.project).count(), 3)
