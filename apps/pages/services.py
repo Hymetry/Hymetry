@@ -20,7 +20,7 @@ DEFAULT_FILTERS_HASH = 'default'
 DEFAULT_SESSION_TIMEOUT_SECONDS = 30 * 60
 DEFAULT_EVENT_GAP_CAP_SECONDS = 30
 DEFAULT_OVERVIEW_RANGE_KEYS = ('last_7_days', 'last_30_days', 'last_90_days', 'last_180_days')
-OVERVIEW_PAYLOAD_SCHEMA_VERSION = 15
+OVERVIEW_PAYLOAD_SCHEMA_VERSION = 16
 CACHE_TTL = timedelta(hours=1)
 POWER_USER_VISITS_PER_WEEK = 9
 POWER_USER_ENGAGED_SECONDS_PER_WEEK = 1500
@@ -686,6 +686,7 @@ def _ensure_change_row_contract(row):
     bars = row.get('bars') or {}
 
     row['page_rule_id'] = _page_rule_id(row)
+    row['page_rule_ids'] = [str(value) for value in _page_rule_aliases(row)]
     row['page_name'] = page_name
     row['page_group'] = page_group
     row.setdefault('trend_values', _trend_values(row, 'companies'))
@@ -828,6 +829,56 @@ def _page_display_key(row):
     return str(_page_display_name(row) or '').strip().casefold()
 
 
+def _page_rule_aliases(row):
+    aliases = []
+    values = [*(row.get('page_rule_ids') or []), row.get('page_rule_id')]
+    for value in values:
+        if value in (None, ''):
+            continue
+        normalized = str(value)
+        if all(str(existing) != normalized for existing in aliases):
+            aliases.append(value)
+    return aliases
+
+
+def _collapse_page_metric_representatives(rows):
+    """Collapse legacy rule-grained cache rows without inventing aggregate metrics.
+
+    Schema 16 caches contain exact display-page rows.  This conservative fallback
+    keeps stale schema 15 caches usable while their asynchronous rebuild is queued.
+    """
+    groups = {}
+    order = []
+    for source_row in rows or []:
+        if not isinstance(source_row, dict):
+            continue
+        row = dict(source_row)
+        key = _page_display_key(row) or f"rule:{_page_rule_id(row)}"
+        group = groups.get(key)
+        if group is None:
+            group = {'leader': row, 'aliases': []}
+            groups[key] = group
+            order.append(key)
+
+        leader = group['leader']
+        leader_rank = (_to_int(leader.get('visits_count')), _to_int(leader.get('engaged_seconds')))
+        row_rank = (_to_int(row.get('visits_count')), _to_int(row.get('engaged_seconds')))
+        if row_rank > leader_rank:
+            group['leader'] = row
+
+        for alias in _page_rule_aliases(row):
+            if all(str(existing) != str(alias) for existing in group['aliases']):
+                group['aliases'].append(alias)
+
+    collapsed = []
+    for key in order:
+        group = groups[key]
+        leader = dict(group['leader'])
+        leader['page_rule_ids'] = group['aliases']
+        collapsed.append(leader)
+    return collapsed
+
+
 def _summary_by_page(project_id, start_date, end_date):
     rows = queries.fetch_all(
         queries.PAGE_SUMMARY_SQL,
@@ -839,6 +890,18 @@ def _summary_by_page(project_id, start_date, end_date):
         ],
     )
     return {_page_metric_key(row): row for row in rows}
+
+
+def _summary_by_display_page(project_id, start_date, end_date):
+    rows = queries.fetch_all(
+        queries.PAGE_DISPLAY_SUMMARY_SQL,
+        [
+            project_id, start_date, end_date,
+            project_id, start_date, end_date,
+            project_id, start_date, end_date,
+        ],
+    )
+    return {row['page_display_key']: row for row in rows}
 
 
 def _treemap_page_rows(project_id, start_date, end_date, previous_start, previous_end):
@@ -885,6 +948,17 @@ def _page_penetration_denominators(project_id, start_date, end_date):
     return {_page_metric_key(row): _to_int(row['active_users_in_adopted_companies']) for row in rows}
 
 
+def _display_page_penetration_denominators(project_id, start_date, end_date):
+    rows = queries.fetch_all(
+        queries.PAGE_DISPLAY_PENETRATION_DENOMINATOR_SQL,
+        [project_id, start_date, end_date, project_id, start_date, end_date],
+    )
+    return {
+        row['page_display_key']: _to_int(row['active_users_in_adopted_companies'])
+        for row in rows
+    }
+
+
 def _daily_area_rows(project_id, start_date, end_date):
     rows = queries.fetch_all(
         queries.DAILY_AREA_METRICS_SQL,
@@ -913,6 +987,22 @@ def _daily_page_rows(project_id, start_date, end_date):
     for row in rows:
         data[(row['date'], _page_metric_key(row))] = row
     return data
+
+
+def _daily_display_page_rows(project_id, start_date, end_date):
+    rows = queries.fetch_all(
+        queries.DAILY_PAGE_DISPLAY_METRICS_SQL,
+        [
+            project_id, start_date, end_date,
+            project_id, start_date, end_date,
+            project_id, start_date, end_date,
+            project_id,
+        ],
+    )
+    return {
+        (row['date'], row['page_display_key']): row
+        for row in rows
+    }
 
 
 def _daily_page_rows_for_rows(project_id, start_date, end_date, rows):
@@ -1030,6 +1120,13 @@ def _build_change_rows(project_id, start_date, end_date, previous_start, previou
         previous_penetration_denominators = _penetration_denominators(project_id, previous_start, previous_end)
         daily_current = _daily_area_rows(project_id, start_date, end_date)
         daily_previous = _daily_area_rows(project_id, previous_start, previous_end)
+    elif grain == 'display_page':
+        current = _summary_by_display_page(project_id, start_date, end_date)
+        previous = _summary_by_display_page(project_id, previous_start, previous_end)
+        current_penetration_denominators = _display_page_penetration_denominators(project_id, start_date, end_date)
+        previous_penetration_denominators = _display_page_penetration_denominators(project_id, previous_start, previous_end)
+        daily_current = _daily_display_page_rows(project_id, start_date, end_date)
+        daily_previous = _daily_display_page_rows(project_id, previous_start, previous_end)
     else:
         current = _summary_by_page(project_id, start_date, end_date)
         previous = _summary_by_page(project_id, previous_start, previous_end)
@@ -1100,6 +1197,7 @@ def _build_change_rows(project_id, start_date, end_date, previous_start, previou
             'product_area_key': product_area_key,
             'product_area_name': product_area_name,
             'page_rule_id': row.get('page_rule_id'),
+            'page_rule_ids': row.get('page_rule_ids') or _page_rule_aliases(row),
             'page_name': page_name,
             'page_group': product_area_name,
             'page_count': _to_int(row.get('page_count') or 1),
@@ -1309,8 +1407,10 @@ def _build_series(rows, metric):
         )
 
         page_rule_id = row.get('page_rule_id') or _page_rule_id(row)
-        if page_rule_id not in group['page_rule_ids']:
-            group['page_rule_ids'].append(page_rule_id)
+        aliases = _page_rule_aliases(row) or [page_rule_id]
+        for alias in aliases:
+            if all(str(existing) != str(alias) for existing in group['page_rule_ids']):
+                group['page_rule_ids'].append(alias)
 
         group['total'] += current_total
         if current_total > group['_lead_total']:
@@ -1628,6 +1728,7 @@ def _empty_payload(project, range_key, start_date, end_date, previous_start, pre
         'kpis': [],
         'rows': [],
         'change_aware_rows': [],
+        'page_metrics_rows': [],
         'product_area_summary': [],
         'top_pages_by_visits_over_time': {'granularity': 'day', 'labels': [], 'series': []},
         'top_pages_by_engaged_time_over_time': {'granularity': 'day', 'labels': [], 'series': []},
@@ -1696,6 +1797,7 @@ def overview_product_area_filter_options(payload):
 
     for section_name in (
         'product_area_summary',
+        'page_metrics_rows',
         'change_aware_rows',
         'rows',
         'company_engagement_by_product_area',
@@ -2074,6 +2176,11 @@ def filter_overview_payload_by_product_areas(payload, selected_keys):
         for row in payload.get('change_aware_rows') or []
         if _matches_product_area_filter(row, selection)
     ])
+    page_metrics_rows = _rescale_change_row_bars([
+        row
+        for row in payload.get('page_metrics_rows') or []
+        if _matches_product_area_filter(row, selection)
+    ])
     product_area_summary = _rescale_change_row_bars([
         row
         for row in payload.get('product_area_summary') or []
@@ -2092,6 +2199,7 @@ def filter_overview_payload_by_product_areas(payload, selected_keys):
 
     payload['rows'] = rows
     payload['change_aware_rows'] = change_rows
+    payload['page_metrics_rows'] = page_metrics_rows
     payload['product_area_summary'] = product_area_summary
     payload['top_pages_by_visits_over_time'] = _filter_time_series_by_product_area(
         payload.get('top_pages_by_visits_over_time'),
@@ -2111,7 +2219,7 @@ def filter_overview_payload_by_product_areas(payload, selected_keys):
     payload['company_engagement_by_product_area'] = company_engagement
     payload['company_engagement_by_page_group'] = _build_company_engagement_by_page_group(company_engagement)
     payload['top_clicked_elements'] = _build_top_clicked_elements(top_actions)
-    payload['kpis'] = _build_filtered_kpis(payload, change_rows)
+    payload['kpis'] = _build_filtered_kpis(payload, page_metrics_rows or change_rows)
     payload['product_area_filter'] = {
         'selected_keys': [option['key'] for option in selection['options']],
         'selected_names': [option['name'] for option in selection['options']],
@@ -2143,6 +2251,20 @@ def normalize_overview_payload(payload):
     ]
     payload['change_aware_rows'] = [_strip_for_overview_row(row) for row in full_change_rows]
 
+    page_metrics_rows = payload.get('page_metrics_rows')
+    page_metrics_rows = page_metrics_rows if isinstance(page_metrics_rows, list) else []
+    full_page_metrics_rows = [
+        _ensure_change_row_contract(dict(row))
+        for row in page_metrics_rows
+        if isinstance(row, dict)
+    ]
+    if not full_page_metrics_rows and full_change_rows:
+        full_page_metrics_rows = _collapse_page_metric_representatives(full_change_rows)
+    payload['page_metrics_rows'] = [
+        _strip_for_overview_row(row)
+        for row in full_page_metrics_rows
+    ]
+
     rows = payload.get('rows')
     rows = rows if isinstance(rows, list) and rows else full_change_rows
     full_rows = [
@@ -2164,13 +2286,14 @@ def normalize_overview_payload(payload):
         project.setdefault('active_companies_total', max(_to_int(row.get('companies_count')) for row in full_rows))
         project.setdefault('active_users_total', max(_to_int(row.get('users_count')) for row in full_rows))
 
+    overview_page_rows = full_page_metrics_rows or full_rows
     if not _has_time_series_contract(payload.get('top_pages_by_visits_over_time')):
-        payload['top_pages_by_visits_over_time'] = _build_series(full_rows, 'visits_count') if full_rows else _empty_time_series()
+        payload['top_pages_by_visits_over_time'] = _build_series(overview_page_rows, 'visits_count') if overview_page_rows else _empty_time_series()
     if not _has_time_series_contract(payload.get('top_pages_by_engaged_time_over_time')):
-        payload['top_pages_by_engaged_time_over_time'] = _build_series(full_rows, 'engaged_seconds') if full_rows else _empty_time_series()
+        payload['top_pages_by_engaged_time_over_time'] = _build_series(overview_page_rows, 'engaged_seconds') if overview_page_rows else _empty_time_series()
     treemap = payload.get('engaged_time_treemap')
-    if full_rows and not (isinstance(treemap, dict) and treemap.get('nodes')):
-        payload['engaged_time_treemap'] = _build_treemap(full_rows)
+    if overview_page_rows and not (isinstance(treemap, dict) and treemap.get('nodes')):
+        payload['engaged_time_treemap'] = _build_treemap(overview_page_rows)
     else:
         payload.setdefault('engaged_time_treemap', {'total_engaged_seconds': 0, 'nodes': []})
 
@@ -3375,6 +3498,14 @@ def build_pages_overview_cache(project_id, *, range_key='last_30_days', start_da
     source_max_event_ts = source.get('source_max_event_ts')
 
     rows, current_counts, previous_counts = _build_change_rows(project_id, start_date, end_date, previous_start, previous_end)
+    page_metrics_rows, _, _ = _build_change_rows(
+        project_id,
+        start_date,
+        end_date,
+        previous_start,
+        previous_end,
+        grain='display_page',
+    )
     product_area_rows, _, _ = _build_change_rows(
         project_id,
         start_date,
@@ -3383,8 +3514,7 @@ def build_pages_overview_cache(project_id, *, range_key='last_30_days', start_da
         previous_end,
         grain='product_area',
     )
-    previous_rows = _summary_by_page(project_id, previous_start, previous_end)
-    treemap_rows = _treemap_page_rows(project_id, start_date, end_date, previous_start, previous_end)
+    previous_rows = _summary_by_display_page(project_id, previous_start, previous_end)
     payload = _empty_payload(project, range_key, start_date, end_date, previous_start, previous_end, generated_at, source_max_event_ts)
     payload['project'].update({
         'active_companies_total': _to_int(current_counts.get('active_companies_count')),
@@ -3395,9 +3525,10 @@ def build_pages_overview_cache(project_id, *, range_key='last_30_days', start_da
         top_actions = _build_top_actions(project_id, start_date, end_date, previous_start, previous_end)
         company_engagement = _build_scatter(project_id, start_date, end_date)
         overview_rows = [_strip_for_overview_row(row) for row in rows]
+        overview_page_metrics_rows = [_strip_for_overview_row(row) for row in page_metrics_rows]
         payload.update({
             'kpis': _build_kpis(
-                rows,
+                page_metrics_rows,
                 previous_rows,
                 _to_int(current_counts.get('active_companies_count')),
                 _to_int(previous_counts.get('active_companies_count')),
@@ -3405,11 +3536,12 @@ def build_pages_overview_cache(project_id, *, range_key='last_30_days', start_da
             ),
             'rows': overview_rows,
             'change_aware_rows': overview_rows,
+            'page_metrics_rows': overview_page_metrics_rows,
             'product_area_summary': [_strip_for_product_area_summary(row) for row in product_area_rows],
-            'top_pages_by_visits_over_time': _build_series(rows, 'visits_count'),
-            'top_pages_by_engaged_time_over_time': _build_series(rows, 'engaged_seconds'),
+            'top_pages_by_visits_over_time': _build_series(page_metrics_rows, 'visits_count'),
+            'top_pages_by_engaged_time_over_time': _build_series(page_metrics_rows, 'engaged_seconds'),
             'engaged_time_treemap': _build_treemap(
-                treemap_rows or rows,
+                page_metrics_rows,
                 active_companies_total=current_counts.get('active_companies_count'),
             ),
             'sankey': _build_sankey(project_id, timezone_name, start_date, end_date),
@@ -3455,7 +3587,7 @@ def build_pages_overview_cache(project_id, *, range_key='last_30_days', start_da
         'range_key': range_key,
         'start_date': start_date.isoformat(),
         'end_date': end_date.isoformat(),
-        'rows_count': len(rows),
+        'rows_count': len(page_metrics_rows),
         'detail_cache_count': detail_cache_result['items_count'],
     }
 

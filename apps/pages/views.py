@@ -253,6 +253,7 @@ def _empty_payload(project, range_key):
         'kpis': [],
         'rows': [],
         'change_aware_rows': [],
+        'page_metrics_rows': [],
         'product_area_summary': [],
         'top_pages_by_visits_over_time': {'granularity': 'day', 'labels': [], 'series': []},
         'top_pages_by_engaged_time_over_time': {'granularity': 'day', 'labels': [], 'series': []},
@@ -288,7 +289,10 @@ def _filter_page_metrics_rows(rows, request):
 
 
 def _page_metrics_table_payload(payload, request):
-    rows = _filter_page_metrics_rows(payload.get('change_aware_rows') or [], request)
+    rows = _filter_page_metrics_rows(
+        payload.get('page_metrics_rows') or payload.get('change_aware_rows') or [],
+        request,
+    )
     return paginate_cached_rows(
         rows,
         request,
@@ -547,7 +551,15 @@ def render_project_page_detail(request, project, page_rule_id, *, is_demo_view=F
     if payload is None:
         _best_effort_queue_overview_rebuild(project.id, range_key)
     overview_url = reverse('demo_pages') if is_demo_view else project_route(project, 'project_pages')
-    detail_base_url = '/projects/demo/pages/' if is_demo_view else f"{project_route(project, 'project_pages')}/"
+    detail_base_url = (
+        reverse('demo_page_detail', kwargs={'page_rule_id': '__PAGE_RULE_ID__'})
+        if is_demo_view
+        else project_route(
+            project,
+            'project_page_detail',
+            page_rule_id='__PAGE_RULE_ID__',
+        )
+    )
     metric_dynamics_url = reverse('demo_page_metric_dynamics', kwargs={'page_rule_id': page_rule_id}) if is_demo_view else project_route(
         project,
         'project_page_metric_dynamics',

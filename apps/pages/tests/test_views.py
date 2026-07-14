@@ -170,6 +170,85 @@ class PagesOverviewViewTests(TestCase):
         self.assertEqual(table_payload['pagination']['totalRows'], 12)
         self.assertEqual([row['page_name'] for row in table_payload['rows']], ['Page 01', 'Page 00'])
 
+    def test_overview_page_metrics_uses_display_rows_before_pagination(self):
+        generated_at = timezone.now()
+        raw_rows = [
+            {
+                'page_rule_id': '101',
+                'page_name': 'All companies',
+                'page_group': 'CRM',
+                'product_area_name': 'CRM',
+                'companies_count': 1,
+                'visits_count': 2,
+            },
+            {
+                'page_rule_id': '102',
+                'page_name': 'All companies',
+                'page_group': 'CRM',
+                'product_area_name': 'CRM',
+                'companies_count': 1,
+                'visits_count': 3,
+            },
+            {
+                'page_rule_id': '103',
+                'page_name': 'Account settings',
+                'page_group': 'CRM',
+                'product_area_name': 'CRM',
+                'companies_count': 1,
+                'visits_count': 1,
+            },
+        ]
+        display_rows = [
+            {
+                'page_rule_id': '102',
+                'page_rule_ids': ['101', '102'],
+                'page_name': 'All companies',
+                'page_group': 'CRM',
+                'product_area_name': 'CRM',
+                'companies_count': 1,
+                'visits_count': 5,
+            },
+            raw_rows[2],
+        ]
+        PagesOverviewCache.objects.create(
+            project=self.project,
+            range_key='last_30_days',
+            start_date=generated_at.date(),
+            end_date=generated_at.date(),
+            filters_hash='default',
+            payload_json={
+                'schema_version': services.OVERVIEW_PAYLOAD_SCHEMA_VERSION,
+                'project': {'id': self.project.id, 'name': self.project.name},
+                'period': {'range_key': 'last_30_days'},
+                'rows': raw_rows,
+                'change_aware_rows': raw_rows,
+                'page_metrics_rows': display_rows,
+            },
+            generated_at=generated_at,
+        )
+
+        response = self.client.get(reverse('projects:project_pages', kwargs={'project_id': self.project.id}))
+        embedded = self._embedded_json_payload(response, 'pages-overview-data')
+        table_response = self.client.get(
+            reverse('projects:project_pages_table_data', kwargs={'project_id': self.project.id}),
+            {'page': 1, 'page_size': 10, 'sort': 'page', 'direction': 'asc'},
+        )
+        table_payload = table_response.json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row['page_name'] for row in embedded['change_aware_rows']].count('All companies'), 1)
+        self.assertEqual(embedded['tableData']['pageMetrics']['pagination']['totalRows'], 2)
+        self.assertEqual(table_response.status_code, 200)
+        self.assertEqual(table_payload['pagination']['totalRows'], 2)
+        self.assertEqual(
+            [row['page_name'] for row in table_payload['rows']],
+            ['Account settings', 'All companies'],
+        )
+        all_companies = next(row for row in table_payload['rows'] if row['page_name'] == 'All companies')
+        self.assertEqual(all_companies['page_rule_id'], '102')
+        self.assertEqual(all_companies['page_rule_ids'], ['101', '102'])
+        self.assertEqual(all_companies['visits_count'], 5)
+
     def test_overview_missing_cache_is_fast_empty_state(self):
         response = self.client.get(reverse('projects:project_pages', kwargs={'project_id': self.project.id}))
 
@@ -712,6 +791,14 @@ class PagesOverviewViewTests(TestCase):
         self.assertContains(response, 'js/pages/page-details-helpers.js')
         self.assertContains(response, 'data-pages-view="detail"')
         self.assertContains(response, 'data-page-rule-id="123"')
+        self.assertContains(
+            response,
+            f'data-pages-detail-base-url="{self._project_route("project_page_detail", page_rule_id="__PAGE_RULE_ID__")}"',
+        )
+        self.assertNotContains(
+            response,
+            f'data-pages-detail-base-url="{self._project_route("project_pages")}/"',
+        )
         self.assertContains(response, '"selected_period_days":30')
         self.assertContains(response, '"period_payloads":{}')
         self.assertContains(response, '"page_selector_rows":[{')

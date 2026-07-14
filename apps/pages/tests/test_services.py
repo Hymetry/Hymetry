@@ -109,6 +109,144 @@ class PagesAnalyticsServiceTests(TestCase):
         self.assertEqual(result['series'][0]['values'], [12.0, 5.0])
         self.assertEqual(result['series'][0]['page_rule_ids'], [1, 2])
 
+    def test_build_display_page_rows_unions_metrics_across_duplicate_rule_names(self):
+        previous_date = date(2026, 7, 1)
+        current_date = date(2026, 7, 2)
+        first_rule = ProjectPageRule.objects.create(
+            project=self.project,
+            pattern=r'^app\.example\.com/companies$',
+            product_area='CRM',
+            page_name='All companies',
+            priority=100,
+            created_by=ProjectPageNamingRunMode.DAILY_STABLE,
+        )
+        second_rule = ProjectPageRule.objects.create(
+            project=self.project,
+            pattern=r'^app\.example\.com/companies/all$',
+            product_area='CRM',
+            page_name='All companies',
+            priority=90,
+            created_by=ProjectPageNamingRunMode.DAILY_STABLE,
+        )
+
+        ProjectDailyMetric.objects.create(
+            project=self.project,
+            date=previous_date,
+            active_companies_count=1,
+            active_users_count=1,
+        )
+        ProjectDailyMetric.objects.create(
+            project=self.project,
+            date=current_date,
+            active_companies_count=2,
+            active_users_count=2,
+        )
+
+        def add_page_metric(rule, metric_date, visits, engaged, clicks, clicked_visits):
+            PageDailyMetric.objects.create(
+                project=self.project,
+                date=metric_date,
+                page_rule_id=rule.id,
+                product_area_key='crm',
+                product_area_name='CRM',
+                visits_count=visits,
+                engaged_seconds=engaged,
+                click_count=clicks,
+                visits_with_click_count=clicked_visits,
+            )
+
+        def add_company_metric(rule, metric_date, company_id, visits=1, engaged=30):
+            PageCompanyDailyMetric.objects.create(
+                project=self.project,
+                date=metric_date,
+                page_rule_id=rule.id,
+                product_area_key='crm',
+                product_area_name='CRM',
+                company_id=company_id,
+                company_name_sample=company_id.title(),
+                visits_count=visits,
+                engaged_seconds=engaged,
+            )
+
+        def add_user_metric(rule, metric_date, user_id, company_id):
+            PageUserDailyMetric.objects.create(
+                project=self.project,
+                date=metric_date,
+                page_rule_id=rule.id,
+                product_area_key='crm',
+                product_area_name='CRM',
+                company_id=company_id,
+                user_id=user_id,
+                visits_count=1,
+                engaged_seconds=30,
+            )
+
+        add_page_metric(first_rule, previous_date, 1, 30, 1, 1)
+        add_company_metric(first_rule, previous_date, 'acme')
+        add_user_metric(first_rule, previous_date, 'user-1', 'acme')
+
+        add_page_metric(first_rule, current_date, 2, 60, 1, 1)
+        add_page_metric(second_rule, current_date, 3, 90, 2, 2)
+        add_company_metric(first_rule, current_date, 'acme', visits=2, engaged=60)
+        add_company_metric(second_rule, current_date, 'acme', visits=1, engaged=30)
+        add_company_metric(second_rule, current_date, 'beta', visits=2, engaged=60)
+        add_user_metric(first_rule, current_date, 'user-1', 'acme')
+        add_user_metric(second_rule, current_date, 'user-1', 'acme')
+        add_user_metric(second_rule, current_date, 'user-2', 'beta')
+
+        rows, current_counts, previous_counts = services._build_change_rows(
+            self.project.id,
+            current_date,
+            current_date,
+            previous_date,
+            previous_date,
+            grain='display_page',
+        )
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row['page_name'], 'All companies')
+        self.assertEqual(row['page_rule_id'], str(second_rule.id))
+        self.assertEqual(row['page_rule_ids'], [str(first_rule.id), str(second_rule.id)])
+        self.assertEqual(row['companies_count'], 2)
+        self.assertEqual(row['users_count'], 2)
+        self.assertEqual(row['visits_count'], 5)
+        self.assertEqual(row['engaged_seconds'], 150)
+        self.assertEqual(row['avg_visit_seconds'], 30)
+        self.assertEqual(row['interaction_pct'], 60)
+        self.assertEqual(row['clicks_per_visit'], 0.6)
+        self.assertEqual(row['deltas']['companies']['value'], 100)
+        self.assertEqual(row['deltas']['visits']['value'], 400)
+        self.assertEqual(row['relative_change_series']['visits'][0]['current'], 5)
+        self.assertEqual(current_counts['active_companies_count'], 2)
+        self.assertEqual(previous_counts['active_companies_count'], 1)
+
+    def test_normalize_overview_payload_collapses_legacy_page_metric_rows(self):
+        payload = services.normalize_overview_payload({
+            'change_aware_rows': [
+                {
+                    'page_rule_id': 1,
+                    'page_name': ' All companies ',
+                    'visits_count': 2,
+                    'engaged_seconds': 30,
+                    'companies_count': 1,
+                },
+                {
+                    'page_rule_id': 2,
+                    'page_name': 'all COMPANIES',
+                    'visits_count': 5,
+                    'engaged_seconds': 60,
+                    'companies_count': 1,
+                },
+            ],
+        })
+
+        self.assertEqual(len(payload['change_aware_rows']), 2)
+        self.assertEqual(len(payload['page_metrics_rows']), 1)
+        self.assertEqual(payload['page_metrics_rows'][0]['page_rule_id'], '2')
+        self.assertEqual(payload['page_metrics_rows'][0]['page_rule_ids'], ['1', '2'])
+        self.assertEqual(payload['page_metrics_rows'][0]['visits_count'], 5)
+
     def test_filter_overview_payload_by_product_area_filters_page_sections(self):
         payload = {
             'schema_version': services.OVERVIEW_PAYLOAD_SCHEMA_VERSION,
@@ -902,9 +1040,11 @@ class PagesAnalyticsServiceTests(TestCase):
         self.assertTrue(detail_caches.filter(page_rule_id=str(billing_rule.id)).exists())
         self.assertEqual(len(cache.payload_json['change_aware_rows']), 3)
         self.assertEqual(len(cache.payload_json['rows']), 3)
+        self.assertEqual(len(cache.payload_json['page_metrics_rows']), 3)
         self.assertEqual(len(cache.payload_json['product_area_summary']), 2)
         self.assertNotIn('relative_change_series', cache.payload_json['change_aware_rows'][0])
         self.assertNotIn('relative_change_series', cache.payload_json['rows'][0])
+        self.assertNotIn('relative_change_series', cache.payload_json['page_metrics_rows'][0])
         self.assertNotIn('relative_change_series', cache.payload_json['product_area_summary'][0])
         self.assertIn('trends', cache.payload_json['change_aware_rows'][0])
         self.assertIn('adoption', cache.payload_json['change_aware_rows'][0]['trends'])
@@ -913,6 +1053,10 @@ class PagesAnalyticsServiceTests(TestCase):
         self.assertIn('companies', cache.payload_json['product_area_summary'][0]['trends'])
         self.assertEqual(
             {row['page_name'] for row in cache.payload_json['change_aware_rows']},
+            {'Billing', 'Billing history', 'Projects'},
+        )
+        self.assertEqual(
+            {row['page_name'] for row in cache.payload_json['page_metrics_rows']},
             {'Billing', 'Billing history', 'Projects'},
         )
         self.assertEqual(

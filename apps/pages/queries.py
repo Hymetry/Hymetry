@@ -816,6 +816,186 @@ ORDER BY daily.visits_count DESC, daily.page_name
 """
 
 
+PAGE_DISPLAY_SUMMARY_SQL = """
+WITH rule_daily AS (
+    SELECT
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(pdm.product_area_name), ''),
+                'Unassigned'
+            )
+        ) AS page_display_key,
+        COALESCE(NULLIF(pdm.product_area_key, ''), 'unassigned') AS product_area_key,
+        COALESCE(NULLIF(BTRIM(pdm.product_area_name), ''), 'Unassigned') AS product_area_name,
+        pdm.product_area_id,
+        pdm.page_rule_id,
+        COALESCE(
+            NULLIF(BTRIM(pr.page_name), ''),
+            NULLIF(BTRIM(pdm.product_area_name), ''),
+            'Unassigned'
+        ) AS page_name,
+        SUM(pdm.visits_count) AS visits_count,
+        SUM(pdm.engaged_seconds) AS engaged_seconds,
+        SUM(pdm.click_count) AS click_count,
+        SUM(pdm.visits_with_click_count) AS visits_with_click_count
+    FROM pages_pagedailymetric pdm
+    LEFT JOIN tracker_projectpagerule pr ON pr.id = pdm.page_rule_id
+    WHERE pdm.project_id = %s
+      AND pdm.date >= %s
+      AND pdm.date <= %s
+    GROUP BY
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(pdm.product_area_name), ''),
+                'Unassigned'
+            )
+        ),
+        COALESCE(NULLIF(pdm.product_area_key, ''), 'unassigned'),
+        COALESCE(NULLIF(BTRIM(pdm.product_area_name), ''), 'Unassigned'),
+        pdm.product_area_id,
+        pdm.page_rule_id,
+        COALESCE(
+            NULLIF(BTRIM(pr.page_name), ''),
+            NULLIF(BTRIM(pdm.product_area_name), ''),
+            'Unassigned'
+        )
+),
+leaders AS (
+    SELECT DISTINCT ON (page_display_key)
+        page_display_key,
+        product_area_key,
+        product_area_name,
+        product_area_id,
+        page_rule_id,
+        page_name
+    FROM rule_daily
+    ORDER BY
+        page_display_key,
+        (page_rule_id IS NULL),
+        visits_count DESC,
+        engaged_seconds DESC,
+        page_rule_id,
+        product_area_key,
+        page_name
+),
+daily AS (
+    SELECT
+        page_display_key,
+        COUNT(DISTINCT page_rule_id) AS page_count,
+        ARRAY_AGG(DISTINCT page_rule_id ORDER BY page_rule_id)
+            FILTER (WHERE page_rule_id IS NOT NULL) AS page_rule_ids,
+        SUM(visits_count) AS visits_count,
+        SUM(engaged_seconds) AS engaged_seconds,
+        SUM(click_count) AS click_count,
+        SUM(visits_with_click_count) AS visits_with_click_count
+    FROM rule_daily
+    GROUP BY page_display_key
+),
+company_rows AS (
+    SELECT
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(pcdm.product_area_name), ''),
+                'Unassigned'
+            )
+        ) AS page_display_key,
+        pcdm.company_id,
+        pcdm.company_name_sample,
+        pcdm.engaged_seconds,
+        pcdm.visits_count
+    FROM pages_pagecompanydailymetric pcdm
+    LEFT JOIN tracker_projectpagerule pr ON pr.id = pcdm.page_rule_id
+    WHERE pcdm.project_id = %s
+      AND pcdm.date >= %s
+      AND pcdm.date <= %s
+),
+companies AS (
+    SELECT
+        page_display_key,
+        COUNT(DISTINCT company_id)
+            FILTER (WHERE company_id IS NOT NULL AND BTRIM(company_id) <> '') AS companies_count
+    FROM company_rows
+    GROUP BY page_display_key
+),
+users AS (
+    SELECT
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(pudm.product_area_name), ''),
+                'Unassigned'
+            )
+        ) AS page_display_key,
+        COUNT(DISTINCT pudm.user_id)
+            FILTER (WHERE pudm.user_id IS NOT NULL AND BTRIM(pudm.user_id) <> '') AS users_count
+    FROM pages_pageuserdailymetric pudm
+    LEFT JOIN tracker_projectpagerule pr ON pr.id = pudm.page_rule_id
+    WHERE pudm.project_id = %s
+      AND pudm.date >= %s
+      AND pudm.date <= %s
+    GROUP BY
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(pudm.product_area_name), ''),
+                'Unassigned'
+            )
+        )
+),
+company_totals AS (
+    SELECT
+        page_display_key,
+        company_id,
+        COALESCE(MAX(NULLIF(BTRIM(company_name_sample), '')), company_id) AS company_name,
+        SUM(engaged_seconds) AS company_engaged_seconds,
+        SUM(visits_count) AS company_visits_count
+    FROM company_rows
+    WHERE company_id IS NOT NULL
+      AND BTRIM(company_id) <> ''
+    GROUP BY page_display_key, company_id
+),
+company_engaged AS (
+    SELECT DISTINCT ON (page_display_key)
+        page_display_key,
+        company_id AS top_company_id,
+        company_name AS top_company_name
+    FROM company_totals
+    ORDER BY
+        page_display_key,
+        company_engaged_seconds DESC,
+        company_visits_count DESC,
+        company_name,
+        company_id
+)
+SELECT
+    leaders.product_area_key,
+    leaders.product_area_name,
+    leaders.product_area_id,
+    leaders.page_rule_id,
+    COALESCE(daily.page_rule_ids, ARRAY[]::bigint[]) AS page_rule_ids,
+    leaders.page_name,
+    daily.page_display_key,
+    daily.page_count,
+    COALESCE(companies.companies_count, 0) AS companies_count,
+    COALESCE(users.users_count, 0) AS users_count,
+    daily.visits_count,
+    daily.engaged_seconds,
+    daily.click_count,
+    daily.visits_with_click_count,
+    company_engaged.top_company_id,
+    company_engaged.top_company_name
+FROM daily
+JOIN leaders ON leaders.page_display_key = daily.page_display_key
+LEFT JOIN companies ON companies.page_display_key = daily.page_display_key
+LEFT JOIN users ON users.page_display_key = daily.page_display_key
+LEFT JOIN company_engaged ON company_engaged.page_display_key = daily.page_display_key
+ORDER BY daily.visits_count DESC, leaders.page_name, daily.page_display_key
+"""
+
+
 PROJECT_DISTINCT_COUNTS_SQL = """
 SELECT
     (
@@ -957,6 +1137,60 @@ SELECT * FROM page_users
 """
 
 
+PAGE_DISPLAY_PENETRATION_DENOMINATOR_SQL = """
+WITH page_companies AS (
+    SELECT DISTINCT
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(companies.product_area_name), ''),
+                'Unassigned'
+            )
+        ) AS page_display_key,
+        companies.company_id
+    FROM pages_pagecompanydailymetric companies
+    LEFT JOIN tracker_projectpagerule pr ON pr.id = companies.page_rule_id
+    WHERE companies.project_id = %s
+      AND companies.date >= %s
+      AND companies.date <= %s
+      AND companies.company_id IS NOT NULL
+      AND BTRIM(companies.company_id) <> ''
+),
+display_users AS (
+    SELECT DISTINCT
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(users.product_area_name), ''),
+                'Unassigned'
+            )
+        ) AS page_display_key,
+        users.company_id,
+        users.user_id
+    FROM pages_pageuserdailymetric users
+    LEFT JOIN tracker_projectpagerule pr ON pr.id = users.page_rule_id
+    WHERE users.project_id = %s
+      AND users.date >= %s
+      AND users.date <= %s
+      AND users.company_id IS NOT NULL
+      AND BTRIM(users.company_id) <> ''
+      AND users.user_id IS NOT NULL
+      AND BTRIM(users.user_id) <> ''
+),
+page_users AS (
+    SELECT
+        page_companies.page_display_key,
+        COUNT(DISTINCT display_users.user_id) AS active_users_in_adopted_companies
+    FROM page_companies
+    JOIN display_users
+      ON display_users.page_display_key = page_companies.page_display_key
+     AND display_users.company_id = page_companies.company_id
+    GROUP BY page_companies.page_display_key
+)
+SELECT * FROM page_users
+"""
+
+
 DAILY_AREA_METRICS_SQL = """
 WITH daily AS (
     SELECT
@@ -1044,6 +1278,115 @@ WHERE pdm.project_id = %s
   AND pdm.date <= %s
 GROUP BY pdm.date, COALESCE(NULLIF(pdm.product_area_key, ''), 'unassigned'), pdm.page_rule_id
 ORDER BY pdm.date, product_area_key, pdm.page_rule_id
+"""
+
+
+DAILY_PAGE_DISPLAY_METRICS_SQL = """
+WITH daily AS (
+    SELECT
+        pdm.date,
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(pdm.product_area_name), ''),
+                'Unassigned'
+            )
+        ) AS page_display_key,
+        SUM(pdm.visits_count) AS visits_count,
+        SUM(pdm.engaged_seconds) AS engaged_seconds,
+        SUM(pdm.click_count) AS click_count,
+        SUM(pdm.visits_with_click_count) AS visits_with_click_count
+    FROM pages_pagedailymetric pdm
+    LEFT JOIN tracker_projectpagerule pr ON pr.id = pdm.page_rule_id
+    WHERE pdm.project_id = %s
+      AND pdm.date >= %s
+      AND pdm.date <= %s
+    GROUP BY
+        pdm.date,
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(pdm.product_area_name), ''),
+                'Unassigned'
+            )
+        )
+),
+companies AS (
+    SELECT
+        companies.date,
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(companies.product_area_name), ''),
+                'Unassigned'
+            )
+        ) AS page_display_key,
+        COUNT(DISTINCT companies.company_id)
+            FILTER (WHERE companies.company_id IS NOT NULL AND BTRIM(companies.company_id) <> '') AS companies_count_daily
+    FROM pages_pagecompanydailymetric companies
+    LEFT JOIN tracker_projectpagerule pr ON pr.id = companies.page_rule_id
+    WHERE companies.project_id = %s
+      AND companies.date >= %s
+      AND companies.date <= %s
+    GROUP BY
+        companies.date,
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(companies.product_area_name), ''),
+                'Unassigned'
+            )
+        )
+),
+users AS (
+    SELECT
+        users.date,
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(users.product_area_name), ''),
+                'Unassigned'
+            )
+        ) AS page_display_key,
+        COUNT(DISTINCT users.user_id)
+            FILTER (WHERE users.user_id IS NOT NULL AND BTRIM(users.user_id) <> '') AS users_count_daily
+    FROM pages_pageuserdailymetric users
+    LEFT JOIN tracker_projectpagerule pr ON pr.id = users.page_rule_id
+    WHERE users.project_id = %s
+      AND users.date >= %s
+      AND users.date <= %s
+    GROUP BY
+        users.date,
+        LOWER(
+            COALESCE(
+                NULLIF(BTRIM(pr.page_name), ''),
+                NULLIF(BTRIM(users.product_area_name), ''),
+                'Unassigned'
+            )
+        )
+)
+SELECT
+    daily.date,
+    daily.page_display_key,
+    daily.visits_count,
+    daily.engaged_seconds,
+    daily.click_count,
+    daily.visits_with_click_count,
+    COALESCE(companies.companies_count_daily, 0) AS companies_count_daily,
+    COALESCE(users.users_count_daily, 0) AS users_count_daily,
+    COALESCE(prdm.active_companies_count, 0) AS active_companies_count,
+    COALESCE(prdm.active_users_count, 0) AS active_users_count
+FROM daily
+LEFT JOIN companies
+  ON companies.date = daily.date
+ AND companies.page_display_key = daily.page_display_key
+LEFT JOIN users
+  ON users.date = daily.date
+ AND users.page_display_key = daily.page_display_key
+LEFT JOIN pages_projectdailymetric prdm
+  ON prdm.project_id = %s
+ AND prdm.date = daily.date
+ORDER BY daily.date, daily.page_display_key
 """
 
 
