@@ -8,7 +8,6 @@ The hosted demo remains available from **All projects** and opens on the hosted 
 
 - **Docker Compose** — self-host on a server or local machine.
 - **Render** — managed deployment from `render.yaml`.
-- **Heroku** — container deployment from `app.json` and `heroku.yml`.
 
 ## Docker Compose quick start
 
@@ -36,12 +35,6 @@ Data is persisted in Docker volumes for PostgreSQL, Redis, static files, and med
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/hymetry/hymetry)
 
 Render generates `SECRET_KEY`. After the first deploy, open `/account/setup/admin/` on the generated service URL and create the administrator. `HYMETRY_DOMAIN` and `EDGE_URL` are optional; when absent, Hymetry learns the public URL from the request.
-
-## Heroku
-
-[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/Hymetry/Hymetry)
-
-Heroku generates a persistent `SECRET_KEY`. Open `/account/setup/admin/` after deployment to create the administrator. The deployment includes PostgreSQL and Redis add-ons.
 
 ## OSS access model
 

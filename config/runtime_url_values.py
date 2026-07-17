@@ -22,9 +22,7 @@ class RuntimeURLService:
         """
         Auto-upgrade known PaaS public URLs to HTTPS.
         """
-        if url.startswith("http://") and (
-            ".herokuapp.com" in url or ".onrender.com" in url
-        ):
+        if url.startswith("http://") and ".onrender.com" in url:
             return "https://" + url[len("http://"):]
         return url
 

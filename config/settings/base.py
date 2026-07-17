@@ -17,27 +17,12 @@ SECRET_KEY = os.getenv('SECRET_KEY', secrets.token_urlsafe(50))
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-HYMETRY_DOMAIN = os.getenv("HYMETRY_DOMAIN", "http://localhost")
-# 1. Try to get the name Heroku assigned
-APP_NAME = os.environ.get('HEROKU_APP_NAME')
-
-if APP_NAME:
-    # If Metadata is enabled, we know the exact URL
-    HYMETRY_DOMAIN = f"https://{APP_NAME}.herokuapp.com"
-    CSRF_TRUSTED_ORIGINS = [HYMETRY_DOMAIN]
-else:
-    # 2. THE FAILSAFE: Use a wildcard for all Heroku apps
-    # This allows the '1-click' install to work immediately
-    # without the user entering anything.
-    HYMETRY_DOMAIN = os.environ.get('HYMETRY_DOMAIN', '')
-    CSRF_TRUSTED_ORIGINS = [
-        "https://*.herokuapp.com",
-        "https://*.onrender.com",
-    ]
+HYMETRY_DOMAIN = os.environ.get('HYMETRY_DOMAIN', '')
+CSRF_TRUSTED_ORIGINS = ["https://*.onrender.com"]
 
 # Ensure ALLOWED_HOSTS matches (supports self-hosted custom domains)
 _allowed_hosts_env = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()]
-ALLOWED_HOSTS = [".herokuapp.com", ".onrender.com", "localhost", "127.0.0.1", *_allowed_hosts_env]
+ALLOWED_HOSTS = [".onrender.com", "localhost", "127.0.0.1", *_allowed_hosts_env]
 
 if HYMETRY_DOMAIN:
     site_host = urlparse(HYMETRY_DOMAIN).hostname
