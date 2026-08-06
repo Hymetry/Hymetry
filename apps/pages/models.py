@@ -285,6 +285,76 @@ class ProjectDailyMetric(models.Model):
         ]
 
 
+class PagesCompanyAnalyticsManifest(models.Model):
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name='pages_company_analytics_manifests',
+    )
+    range_key = models.CharField(max_length=64)
+    start_date = models.DateField()
+    end_date = models.DateField()
+    analytics_facts_revision = models.PositiveBigIntegerField()
+    schema_version = models.PositiveIntegerField(default=1)
+    payload_format = models.CharField(max_length=32, default='json')
+    company_count = models.PositiveIntegerField(default=0)
+    payload_bytes = models.PositiveBigIntegerField(default=0)
+    source_max_event_ts = models.DateTimeField(null=True, blank=True)
+    generated_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=[
+                    'project',
+                    'range_key',
+                    'start_date',
+                    'end_date',
+                    'analytics_facts_revision',
+                ],
+                name='pages_cmpfact_manifest_uniq',
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=['project', 'range_key', 'analytics_facts_revision'],
+                name='pages_cmpfact_lookup_idx',
+            ),
+        ]
+
+
+class PagesCompanyAnalyticsFragment(models.Model):
+    manifest = models.ForeignKey(
+        PagesCompanyAnalyticsManifest,
+        on_delete=models.CASCADE,
+        related_name='fragments',
+    )
+    company_key = models.CharField(max_length=255)
+    company_id = models.CharField(max_length=255, null=True, blank=True)
+    company_name_sample = models.CharField(max_length=255, blank=True, default='')
+    payload_json = models.JSONField(default=dict, blank=True)
+    payload_binary = models.BinaryField(null=True, blank=True, editable=False)
+    payload_bytes = models.PositiveBigIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['manifest', 'company_key'],
+                name='pages_cmpfrag_key_uniq',
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=['manifest', 'company_id'],
+                name='pages_cmpfrag_company_idx',
+            ),
+            models.Index(
+                fields=['manifest', 'company_key'],
+                name='pages_cmpfrag_lookup_idx',
+            ),
+        ]
+
+
 class PagesOverviewCache(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='pages_overview_caches')
     range_key = models.CharField(max_length=64)
@@ -292,6 +362,7 @@ class PagesOverviewCache(models.Model):
     end_date = models.DateField()
     filters_hash = models.CharField(max_length=64, default='default')
     payload_json = models.JSONField(default=dict, blank=True)
+    payload_compressed = models.BinaryField(null=True, blank=True, editable=False)
     source_max_event_ts = models.DateTimeField(null=True, blank=True)
     generated_at = models.DateTimeField()
     expires_at = models.DateTimeField(null=True, blank=True)

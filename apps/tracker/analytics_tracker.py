@@ -2,30 +2,40 @@ import datetime
 import json
 import logging
 from collections import Counter
+from urllib.parse import urlsplit, urlunsplit
 
-from django.conf import settings
 from django.core.exceptions import PermissionDenied
+from django.db import transaction
 from django.http import JsonResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from apps.projects.demo import is_demo_project
 from apps.projects.domain_utils import request_matches_allowed_domains
 from apps.projects.models import Project
 from apps.projects.services import record_project_production_event
-from apps.tracker.models import AnalyticsEvent, AnalyticsSession
+from apps.tracker.models import AnalyticsEvent, AnalyticsSession, Session
 from apps.tracker.page_naming import (
     DEFAULT_PAGE_NAME,
     compile_page_rules,
     ensure_project_first_event_at,
     get_active_page_rules,
-    normalize_page_url,
     normalize_page_url_key,
     resolve_project_page_name,
 )
 from apps.tracker.rrweb_text_filter import secure_mask_text_dynamic
+from apps.tracker.session_resolver import (
+    SessionResolutionError,
+    SessionResolutionPoint,
+    resolve_visit_session_batch,
+)
 from apps.tracker.visitor_ids import normalize_project_visitor_uuid
 
 logger = logging.getLogger(__name__)
+
+
+class IdentityResolutionError(ValueError):
+    """Raised when a late identity event contradicts a known fragment."""
 
 
 class AnalyticsTracker:
@@ -54,6 +64,8 @@ class AnalyticsTracker:
         ).first()
         if self.project is None:
             raise PermissionDenied("You must provide a valid API_KEY")
+        if is_demo_project(self.project) and not getattr(self.request, '_allow_demo_project_writes', False):
+            raise PermissionDenied("The demo project is read-only.")
         self.compiled_rules = compile_page_rules(get_active_page_rules(self.project))
 
         batch = self.data.get('batch', [])
@@ -92,12 +104,17 @@ class AnalyticsTracker:
 
     def _extract_page(self, raw_page):
         if isinstance(raw_page, str):
-            return self._safe_page_value(normalize_page_url(raw_page))
+            value = self._safe_page_value(raw_page)
+        elif isinstance(raw_page, dict):
+            value = self._safe_page_value(raw_page.get('url'))
+        else:
+            return ""
 
-        if isinstance(raw_page, dict):
-            return self._safe_page_value(normalize_page_url(raw_page.get('url')))
-
-        return ""
+        try:
+            parsed = urlsplit(value)
+            return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, '', ''))
+        except ValueError:
+            return value.split('#', 1)[0].split('?', 1)[0]
 
     def _extract_page_name_original(self, raw_page):
         if isinstance(raw_page, dict):
@@ -199,44 +216,99 @@ class AnalyticsTracker:
             'page_name_original': page_name_original,
         }
 
-    def _session_timeout(self):
-        return datetime.timedelta(
-            seconds=getattr(settings, 'ANALYTICS_SESSION_EXPIRATION_SECONDS', 1800)
+    def _identity_matches(self, session, normalized_event):
+        return (
+            session.user_id == normalized_event['user_id']
+            and session.company_id == normalized_event['company_id']
         )
 
-    def _get_open_session(self, normalized_event):
-        return AnalyticsSession.objects.filter(
-            project=self.project,
-            visitor_guid=normalized_event['visitor_guid'],
-            user_id=normalized_event['user_id'],
-            company_id=normalized_event['company_id'],
-            ended_at__isnull=True,
-        ).order_by('-last_activity').first()
-
-    def _get_or_create_session(self, normalized_event):
+    @transaction.atomic
+    def _get_or_create_session(self, normalized_event, visit_session):
+        """Create contiguous identity fragments inside one canonical visit."""
+        visit_session = Session.objects.select_for_update().get(pk=visit_session.pk)
         event_time = normalized_event['timestamp']
-        timeout = self._session_timeout()
-        session = self._get_open_session(normalized_event)
+        fragments = list(
+            AnalyticsSession.objects.filter(
+                visit_session=visit_session,
+            ).order_by('start_time', 'session_id')
+        )
+        containing = [
+            fragment
+            for fragment in fragments
+            if fragment.start_time <= event_time
+            and (fragment.ended_at is None or event_time < fragment.ended_at)
+        ]
+        if len(containing) > 1:
+            raise IdentityResolutionError(
+                f'Identity event overlaps multiple fragments for visit {visit_session.session_id}.'
+            )
 
-        if session:
+        session = containing[0] if containing else None
+        if session is not None and not self._identity_matches(session, normalized_event):
             reference_time = session.last_activity or session.start_time
-            if reference_time and event_time > reference_time + timeout:
-                # This session expired before the current event; close it and start a new one.
-                ended_at = reference_time + timeout
-                session.ended_at = ended_at
-                session.save(update_fields=['ended_at'])
-                session = None
-
-        if not session:
+            if event_time < reference_time:
+                raise IdentityResolutionError(
+                    f'Late identity event contradicts fragment {session.session_id}.'
+                )
+            previous_end = session.ended_at
+            session.ended_at = event_time
+            session.save(update_fields=['ended_at'])
             session = AnalyticsSession.objects.create(
                 project=self.project,
+                visit_session=visit_session,
                 visitor_guid=normalized_event['visitor_guid'],
                 user_id=normalized_event['user_id'],
                 company_id=normalized_event['company_id'],
                 start_time=event_time,
                 last_activity=event_time,
+                ended_at=previous_end,
             )
-        elif event_time > session.last_activity:
+        elif session is None:
+            next_fragment = next(
+                (fragment for fragment in fragments if fragment.start_time > event_time),
+                None,
+            )
+            previous_fragment = next(
+                (
+                    fragment
+                    for fragment in reversed(fragments)
+                    if fragment.start_time <= event_time
+                ),
+                None,
+            )
+            if (
+                previous_fragment is not None
+                and self._identity_matches(previous_fragment, normalized_event)
+                and (
+                    previous_fragment.ended_at is None
+                    or previous_fragment.ended_at == event_time
+                )
+            ):
+                session = previous_fragment
+                if session.ended_at == event_time:
+                    session.ended_at = (
+                        next_fragment.start_time
+                        if next_fragment is not None
+                        else visit_session.ended_at
+                    )
+                    session.save(update_fields=['ended_at'])
+            else:
+                session = AnalyticsSession.objects.create(
+                    project=self.project,
+                    visit_session=visit_session,
+                    visitor_guid=normalized_event['visitor_guid'],
+                    user_id=normalized_event['user_id'],
+                    company_id=normalized_event['company_id'],
+                    start_time=event_time,
+                    last_activity=event_time,
+                    ended_at=(
+                        next_fragment.start_time
+                        if next_fragment is not None
+                        else visit_session.ended_at
+                    ),
+                )
+
+        if event_time > session.last_activity:
             session.last_activity = event_time
             session.save(update_fields=['last_activity'])
 
@@ -266,19 +338,66 @@ class AnalyticsTracker:
         )
 
     def process_events(self):
+        normalized_events = []
+        for raw_event in self.batch:
+            normalized_event = self._normalize_event(raw_event)
+            if normalized_event is None:
+                self.skipped_events += 1
+                continue
+            normalized_events.append(normalized_event)
+
+        visit_sessions = [None] * len(normalized_events)
+        unresolved_indexes = set()
+        indexes_by_visitor = {}
+        for index, normalized_event in enumerate(normalized_events):
+            indexes_by_visitor.setdefault(normalized_event['visitor_guid'], []).append(index)
+        for visitor_guid, indexes in indexes_by_visitor.items():
+            try:
+                _visitor, resolved = resolve_visit_session_batch(
+                    self.project,
+                    visitor_guid,
+                    [
+                        SessionResolutionPoint(
+                            event_time=normalized_events[index]['timestamp'],
+                            activity_time=normalized_events[index]['timestamp'],
+                        )
+                        for index in indexes
+                    ],
+                )
+            except SessionResolutionError:
+                logger.warning(
+                    "Analytics events left unresolved project_id=%s visitor_guid=%s event_count=%s",
+                    self.project.id,
+                    visitor_guid,
+                    len(indexes),
+                )
+                unresolved_indexes.update(indexes)
+                continue
+            for index, visit_session in zip(indexes, resolved):
+                visit_sessions[index] = visit_session
+
         event_objects = []
         first_event_time = None
         last_event_time = None
         event_type_counts = Counter()
         sample_event = None
 
-        for raw_event in self.batch:
-            normalized_event = self._normalize_event(raw_event)
-            if normalized_event is None:
+        for index, (normalized_event, visit_session) in enumerate(zip(normalized_events, visit_sessions)):
+            if index in unresolved_indexes or visit_session is None:
+                self.skipped_events += 1
+                continue
+            try:
+                session = self._get_or_create_session(normalized_event, visit_session)
+            except IdentityResolutionError:
+                logger.warning(
+                    "Analytics identity event left unresolved project_id=%s visitor_guid=%s timestamp=%s",
+                    self.project.id,
+                    normalized_event['visitor_guid'],
+                    normalized_event['timestamp'].isoformat(),
+                )
                 self.skipped_events += 1
                 continue
 
-            session = self._get_or_create_session(normalized_event)
             page_rule, product_area, page_name = resolve_project_page_name(
                 self.project,
                 normalized_event['url'],

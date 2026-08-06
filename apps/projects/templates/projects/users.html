@@ -4,7 +4,9 @@
 {% block title %}{% if is_demo_view %}Users - {{ demo_project_display_name }}{% else %}Users - {{ project.name }}{% endif %}{% endblock %}
 
 {% block extra_js %}
-  <link rel="stylesheet" href="{% static 'css/users/overview.css' %}" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/users/overview.css' %}?v=20260801-1" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/overview-quick-jumper.css' %}?v=20260722-3" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/company-attribute-filters.css' %}?v=20260727-6" type="text/css" />
 {% endblock %}
 
 {% block nav %}
@@ -16,43 +18,28 @@
 {% endblock %}
 
 {% block body_classes %}
-  class="h-full bg-slate-50 text-sm" data-users-view="overview" data-project-id="{{ project.id }}" data-users-data-url="{{ users_data_url }}" data-user-detail-base-url="{{ users_detail_base_url }}" data-company-detail-base-url="{{ company_detail_base_url }}" data-user-options-url="{{ users_options_url }}" data-users-initial-limit="{{ users_initial_limit }}"
+  class="h-full bg-slate-50 text-sm" data-users-view="overview" data-project-id="{{ project.id }}" data-users-data-url="{{ users_data_url }}" data-users-table-url="{{ users_table_url }}" data-users-range-key="{{ users_range_key }}" data-user-detail-base-url="{{ users_detail_base_url }}" data-company-detail-base-url="{{ company_detail_base_url }}" data-user-options-url="{{ users_options_url }}" data-users-initial-limit="{{ users_initial_limit }}"
 {% endblock %}
 
 {% block content %}
   <main class="page-shell w-full pb-12 pt-20">
     <header class="mb-8">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div class="min-w-0">
-          <h1 class="text-3xl font-bold text-slate-900">Users</h1>
-          <p class="mt-2 max-w-3xl text-slate-600">
-            User-level adoption, engagement, and product usage across B2B accounts.
-          </p>
+        <div class="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-center" data-overview-title-group>
+          <h1 class="shrink-0 text-3xl font-bold text-slate-900">Users</h1>
+
+          {% if not analytics_is_empty %}
+            {% include 'partials/overview_quick_jumper.html' with quick_jumper_root_id='users-header-search' quick_jumper_root_class='company-search' quick_jumper_trigger_id='users-header-search-trigger' quick_jumper_popover_id='users-header-search-popover' quick_jumper_input_id='users-filter-search' quick_jumper_input_class='company-search__input users-search-input--compact' quick_jumper_results_id='users-search-results' quick_jumper_results_class='company-search__dropdown' quick_jumper_entity_label='user' quick_jumper_entity_plural='users' %}
+          {% endif %}
         </div>
 
-        <div class="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-          {% if not analytics_is_empty %}
-          <div id="users-header-search" class="company-search">
-            <label class="sr-only" for="users-filter-search">Go to user</label>
-            <input
-              id="users-filter-search"
-              class="company-search__input users-search-input--compact"
-              type="search"
-              role="combobox"
-              aria-autocomplete="list"
-              aria-haspopup="listbox"
-              aria-expanded="false"
-              aria-controls="users-search-results"
-              placeholder="Go to user..."
-              autocomplete="off" />
-            <div id="users-search-results" class="company-search__dropdown" role="listbox" hidden></div>
-          </div>
-
-          {% endif %}
-
-          {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='users-period-selector' analytics_period_selector_label='Date range' analytics_range_options=users_range_options analytics_range_key=users_range_key %}
+        <div class="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-end" data-overview-filters>
+          {% include 'partials/company_scope_selector.html' %}
+          {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='users-period-selector' analytics_period_selector_label='Date range' analytics_range_options=users_range_options analytics_range_key=users_range_key analytics_query_suffix=company_attribute_filter_query_suffix %}
         </div>
       </div>
+      {% include 'partials/company_attribute_filter_summary.html' %}
+      {% include 'partials/company_segment_review_banner.html' %}
     </header>
 
     {% if analytics_is_empty %}
@@ -89,7 +76,7 @@
     <section class="users-chart-card">
       <div class="px-6 py-5">
         <h2 class="text-lg font-semibold uppercase text-gray-600">Engagement distribution</h2>
-        <p class="mt-1 text-sm text-slate-500">Engaged-time buckets use the selected period. Status mix compares company activity with the previous matching period.</p>
+        <p class="mt-1 text-sm text-slate-500">Engaged-time buckets use the selected period. Each status-mix bar classifies its own period against the equal-length period before it.</p>
       </div>
       <div class="grid gap-6 px-6 pb-5 lg:grid-cols-2">
         <div>
@@ -101,12 +88,12 @@
             aria-label="Horizontal bar chart of users by engaged time bucket"></div>
         </div>
         <div>
-          <h3 class="text-sm font-medium text-slate-700">Status mix vs previous period</h3>
+          <h3 class="text-sm font-medium text-slate-700">User status mix</h3>
           <div
             id="users-status-distribution-chart"
             class="mt-3 h-[280px] w-full"
             role="img"
-            aria-label="Stacked area chart of users by status"></div>
+            aria-label="Two 100% stacked bars of users by status, for the selected and previous periods"></div>
         </div>
       </div>
     </section>
@@ -124,7 +111,7 @@
       <div class="flex flex-col gap-4 px-6 py-5 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <h2 class="text-lg font-semibold uppercase text-gray-600">Users list</h2>
-          <p class="mt-1 text-sm text-slate-500">Top users during the selected period.</p>
+          <p class="mt-1 text-sm text-slate-500">Users during the selected period.</p>
         </div>
       </div>
 
@@ -212,6 +199,7 @@
           <p class="mt-1 text-sm text-slate-500">Users with declining activity, recent inactivity, or weak engagement signals.</p>
         </div>
         <div id="users-attention-list" class="px-6 pb-5"></div>
+        <div class="users-pagination mb-5 flex flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between" data-users-attention-pagination hidden></div>
       </section>
 
       <section class="users-chart-card">
@@ -220,6 +208,7 @@
           <p class="mt-1 text-sm text-slate-500">Users with growing engagement, broader feature usage, or newly strong activity.</p>
         </div>
         <div id="users-momentum-list" class="px-6 pb-5"></div>
+        <div class="users-pagination mb-5 flex flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between" data-users-momentum-pagination hidden></div>
       </section>
     </div>
 
@@ -236,6 +225,9 @@
     {% endif %}
   </main>
 
+  {% include 'partials/company_attribute_filter_dialog.html' %}
+  <script src="{% static 'js/shared/company-attribute-filters.js' %}?v=20260727-5"></script>
+  <script src="{% static 'js/shared/company-segments.js' %}?v=20260727-7"></script>
   {% if not analytics_is_empty %}
   <script id="users-overview-data" type="application/json">{{ users_overview_payload_json }}</script>
   <script src="{% static 'echarts/lib/echarts.min.js' %}"></script>
@@ -243,7 +235,8 @@
   <script src="{% static 'js/vendor/vega-embed.min.js' %}"></script>
   <script src="{% static 'js/shared/analytics-status-colors.js' %}"></script>
   <script src="{% static 'js/shared/product-area-colors.js' %}"></script>
-  <script src="{% static 'js/users/django-users-data.js' %}"></script>
-  <script src="{% static 'js/users/users-analytics.js' %}?v=20260709-2"></script>
+  <script src="{% static 'js/users/django-users-data.js' %}?v=20260801-1"></script>
+  <script src="{% static 'js/shared/overview-quick-jumper.js' %}?v=20260722-2"></script>
+  <script src="{% static 'js/users/users-analytics.js' %}?v=20260801-1"></script>
   {% endif %}
 {% endblock %}

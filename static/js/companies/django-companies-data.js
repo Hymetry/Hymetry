@@ -18,10 +18,6 @@
     "90d": "last_90_days",
     "180d": "last_180_days"
   };
-  const GENERIC_EXPANSION_REASON = "Strong usage footprint";
-  const GENERIC_EXPANSION_ACTION = "Validate expansion fit";
-  const LEGACY_EXPANSION_ACTIONS = new Set([GENERIC_EXPANSION_ACTION, "Map executive expansion path"]);
-  const LEGACY_AT_RISK_ACTIONS = new Set(["Review adoption pattern", "Invite more users", "Schedule reactivation touchpoint"]);
 
   function coercePeriodKey(value) {
     const normalized = String(value || DEFAULT_PERIOD).trim().toLowerCase();
@@ -29,6 +25,20 @@
     const period = `${digits || periodDays}d`;
 
     return PERIOD_OPTIONS.includes(Number(digits)) ? period : DEFAULT_PERIOD;
+  }
+
+  function appendCompanyAttributeParams(nextUrl) {
+    const currentParams = new URLSearchParams(globalScope.location.search);
+    const existingKeys = Array.from(nextUrl.searchParams.keys())
+      .filter((key) => key.startsWith("ca."));
+
+    existingKeys.forEach((key) => nextUrl.searchParams.delete(key));
+    currentParams.forEach((value, key) => {
+      if (key.startsWith("ca.")) {
+        nextUrl.searchParams.append(key, value);
+      }
+    });
+    return nextUrl;
   }
 
   function navigateToPeriod(period) {
@@ -44,11 +54,16 @@
     globalScope.location.assign(`${globalScope.location.pathname}?${params.toString()}`);
   }
 
-  function optionsUrl(baseUrl, query, periodValue, limit = 20) {
+  function optionsUrl(baseUrl, query, periodValue, limit = 20, alphabetical = false) {
     const nextUrl = new URL(baseUrl, globalScope.location.origin);
 
     nextUrl.searchParams.set("period", coercePeriodKey(periodValue || DEFAULT_PERIOD));
     nextUrl.searchParams.set("limit", String(limit));
+    if (alphabetical) {
+      nextUrl.searchParams.set("sort", "alphabetical");
+    } else {
+      nextUrl.searchParams.delete("sort");
+    }
 
     if (String(query || "").trim()) {
       nextUrl.searchParams.set("q", String(query || "").trim());
@@ -56,6 +71,7 @@
       nextUrl.searchParams.delete("q");
     }
 
+    appendCompanyAttributeParams(nextUrl);
     return `${nextUrl.pathname}${nextUrl.search}`;
   }
 
@@ -71,6 +87,7 @@
       nextUrl.searchParams.set(key, String(value));
     });
 
+    appendCompanyAttributeParams(nextUrl);
     return `${nextUrl.pathname}${nextUrl.search}`;
   }
 
@@ -246,8 +263,10 @@
         used: engagedSeconds > 0 || (row.productAreas || []).includes(areaName),
         engagedSeconds,
         visits: Number(area?.visits) || 0,
-        activeUsers: engagedSeconds ? Math.max(1, Math.round((Number(row.activeUsers) || 0) * 0.75)) : 0,
-        pagesUsed: engagedSeconds ? Math.max(1, Math.round((Number(row.pagesUsed) || 0) / Math.max(Number(row.productAreasUsed) || 1, 1))) : 0
+        // Counted per area by _company_area_usage. These are shown to the reader
+        // as measurements, so they are never derived from the company totals.
+        activeUsers: Number(area?.active_users ?? area?.activeUsers) || 0,
+        pagesUsed: Number(area?.pages_used ?? area?.pagesUsed) || 0
       };
     });
   }
@@ -280,19 +299,24 @@
       originalStatus: row.status || status,
       isNew: Boolean(row.isNew),
       isReactivated: Boolean(row.isReactivated),
+      comparisonAvailable: row.comparisonAvailable !== false && row.comparison_available !== false,
       activeUsers: Number(row.activeUsers) || 0,
       averageActiveUsers: Number(row.averageActiveUsers ?? row.avgActiveUsers ?? row.activeUsers) || 0,
       activeUsersDeltaPct: Number(row.activeUsersDeltaPct) || 0,
+      activeUsersDeltaLabel: row.activeUsersDeltaLabel || "",
       productAreasUsed: Number(row.productAreasUsed) || 0,
       productAreasDelta: Number(row.productAreasDelta) || 0,
       pagesUsed: Number(row.pagesUsed) || 0,
       visits: Number(row.visits) || 0,
       visitsDeltaPct: Number(row.visitsDeltaPct) || 0,
+      visitsDeltaLabel: row.visitsDeltaLabel || "",
       engagedSeconds: Number(row.engagedSeconds) || 0,
       engagedDeltaPct: Number(row.engagedDeltaPct) || 0,
+      engagedDeltaLabel: row.engagedDeltaLabel || "",
       avgEngagedSecondsPerUser: Number(row.avgEngagedSecondsPerUser) || 0,
       interactionPct: Number(row.interactionPct) || 0,
       interactionDeltaPp: Number(row.interactionDeltaPp) || 0,
+      interactionDeltaLabel: row.interactionDeltaLabel || "",
       lastSeen: row.lastSeen || formatRelativeDate(row.lastSeenDate),
       lastSeenDays: Number(row.lastSeenDays) || daysSince(row.lastSeenDate),
       firstSeenDate: row.firstSeenDate,
@@ -304,182 +328,42 @@
     };
   }
 
-  function formatExpansionDuration(totalSeconds) {
-    const seconds = Math.max(0, Math.round(Number(totalSeconds) || 0));
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.round((seconds % 3600) / 60);
-
-    if (hours > 0) {
-      return minutes > 0 ? `${hours}h ${String(minutes).padStart(2, "0")}m` : `${hours}h`;
-    }
-
-    return `${Math.max(minutes, 1)}m`;
-  }
-
-  function firstMissingProductArea(row) {
-    const adopted = new Set(row.productAreas || []);
-    return productAreaNames().slice(0, 6).find((areaName) => areaName && !adopted.has(areaName)) || "";
-  }
-
-  function expansionRecommendation(row) {
-    const activeUsers = Number(row.activeUsers) || 0;
-    const avgEngaged = Number(row.avgEngagedSecondsPerUser) || 0;
-    const interaction = Number(row.interactionPct) || 0;
-    const productAreas = Number(row.productAreasUsed) || 0;
-    const distribution = row.productAreaDistribution || [];
-    const topArea = distribution[0]?.productArea || distribution[0]?.product_area_name || distribution[0]?.name || "";
-    const topShare = Number(distribution[0]?.percent) || 0;
-    const missingArea = productAreas >= 2 ? firstMissingProductArea(row) : "";
-
-    if (topShare >= 70 && topArea) {
-      return {
-        reason: `${topArea} dominates usage`,
-        suggestedAction: `Expand beyond ${topArea}`
-      };
-    }
-    if (missingArea) {
-      return {
-        reason: `No ${missingArea} adoption`,
-        suggestedAction: `Introduce ${missingArea} workflow`
-      };
-    }
-    if (activeUsers >= 50 && avgEngaged >= 3600) {
-      if (activeUsers >= 80) {
-        return {
-          reason: `${activeUsers} enterprise users engaged`,
-          suggestedAction: "Map executive expansion path"
-        };
-      }
-      if (avgEngaged >= 18000) {
-        return {
-          reason: `${formatExpansionDuration(avgEngaged)}/user depth`,
-          suggestedAction: "Design premium workflow rollout"
-        };
-      }
-      if (activeUsers >= 60 && productAreas >= 4) {
-        return {
-          reason: `${productAreas} areas broadly adopted`,
-          suggestedAction: "Package cross-area expansion"
-        };
-      }
-      if (avgEngaged >= 14400) {
-        return {
-          reason: `${formatExpansionDuration(avgEngaged)}/user engagement`,
-          suggestedAction: "Offer advanced workflow pilot"
-        };
-      }
-      if (Math.round(interaction) >= 60) {
-        return {
-          reason: `${Math.round(interaction)}% interaction rate`,
-          suggestedAction: "Target power-user workflows"
-        };
-      }
-      return {
-        reason: `${activeUsers} users deeply engaged`,
-        suggestedAction: "Map executive expansion path"
-      };
-    }
-    if (activeUsers >= 50) {
-      return {
-        reason: `${activeUsers} active users`,
-        suggestedAction: "Identify team champions"
-      };
-    }
-    if (avgEngaged >= 3600) {
-      return {
-        reason: `${formatExpansionDuration(avgEngaged)}/user engagement`,
-        suggestedAction: "Offer advanced workflow pilot"
-      };
-    }
-    if (Math.round(interaction) >= 60) {
-      return {
-        reason: `${Math.round(interaction)}% interaction rate`,
-        suggestedAction: "Target power-user workflows"
-      };
-    }
-    if (productAreas >= 4) {
-      return {
-        reason: `${productAreas} areas adopted`,
-        suggestedAction: "Package cross-area expansion"
-      };
-    }
-
-    return {
-      reason: GENERIC_EXPANSION_REASON,
-      suggestedAction: GENERIC_EXPANSION_ACTION
-    };
-  }
-
   function expansionText(row) {
-    const reason = String(row.reason || "").trim();
-    const suggestedAction = String(row.suggestedAction || "").trim();
-    const shouldRefreshLegacyAction = LEGACY_EXPANSION_ACTIONS.has(suggestedAction);
-
-    if (reason && suggestedAction && reason !== GENERIC_EXPANSION_REASON && !shouldRefreshLegacyAction) {
-      return { reason, suggestedAction };
-    }
-
-    const recommendation = expansionRecommendation(row);
+    // _expansion_reason_and_action pairs these on the server and always fills
+    // both, so the browser renders what was stored rather than keeping a second
+    // copy of the scoring rules that would have to track every change to it.
     return {
-      reason: reason && reason !== GENERIC_EXPANSION_REASON && !shouldRefreshLegacyAction ? reason : recommendation.reason,
-      suggestedAction: suggestedAction && !shouldRefreshLegacyAction ? suggestedAction : recommendation.suggestedAction
+      reason: String(row.reason || "").trim() || "Strong usage footprint",
+      suggestedAction: String(row.suggestedAction || "").trim() || "Validate expansion fit"
     };
-  }
-
-  function riskReasonText(row) {
-    const reasons = Array.isArray(row.riskReasons) ? row.riskReasons : [];
-    return [row.riskReason, ...reasons].filter(Boolean).join(" ");
   }
 
   function atRiskSuggestedAction(row) {
-    const existingAction = String(row.suggestedAction || "").trim();
+    // The server computes this in _suggested_action and never stores it empty,
+    // so the stored wording is what the cell shows and what the at-risk table
+    // sorts on. The default only guards a malformed row, and matches the
+    // server's own final fallback.
+    return String(row.suggestedAction || "").trim() || "Review account health";
+  }
 
-    if (existingAction && !LEGACY_AT_RISK_ACTIONS.has(existingAction)) {
-      return existingAction;
-    }
+  function mapAtRiskCompany(row) {
+    const company = mapCompany(row);
 
-    const text = riskReasonText(row);
-    const activeUsers = Number(row.activeUsers) || 0;
-    const activeUsersDelta = Number(row.activeUsersDeltaPct) || 0;
-    const engagedSeconds = Number(row.engagedSeconds) || 0;
-    const engagedDelta = Number(row.engagedDeltaPct) || 0;
-    const productAreas = Number(row.productAreasUsed) || 0;
+    return {
+      ...company,
+      companyId: row.companyId,
+      companyName: row.companyName,
+      riskReason: row.riskReason || row.riskReasons?.[0] || "At risk",
+      riskScore: Number(row.riskScore) || 0,
+      suggestedAction: atRiskSuggestedAction(row),
+      productAreaAdoption: areaAdoption(row)
+    };
+  }
 
-    if (text.includes("Only 1 active user")) {
-      return "Add backup champions";
-    }
-    if (text.includes("No activity")) {
-      if (activeUsers >= 50) {
-        return "Reconnect recent power users";
-      }
-      if (productAreas >= 3 && engagedSeconds >= 28800) {
-        return "Restart cross-area usage";
-      }
-      if (activeUsers >= 20) {
-        return "Re-engage active cohort";
-      }
-      if (activeUsers <= 6 && engagedSeconds >= 3600) {
-        return "Check account owner status";
-      }
-      if (engagedSeconds >= 28800) {
-        return "Restart usage cadence";
-      }
-      return "Schedule reactivation touchpoint";
-    }
-    if ((text.includes("Users dropped") || activeUsersDelta <= -50) && (text.includes("Engaged drop") || engagedDelta <= -50)) {
-      return "Run user reactivation";
-    }
-    if (text.includes("Users dropped") || activeUsersDelta <= -50) {
-      return "Rebuild active user base";
-    }
-    if (text.includes("Product areas")) {
-      return engagedDelta >= 0 || engagedSeconds >= 7200 ? "Expand adjacent workflows" : "Restore lost workflows";
-    }
-    if (text.includes("Engaged drop") || engagedDelta <= -50) {
-      return activeUsers >= 2 ? "Review workflow value" : "Re-engage quiet account";
-    }
-
-    return existingAction || "Review account health";
+  function atRiskCompanyRows(rows) {
+    return (rows || [])
+      .filter((row) => !row.isNew && !row.isReactivated && row.status !== "new" && row.status !== "reactivated")
+      .map(mapAtRiskCompany);
   }
 
   function normalizedHealthDistribution(rows, companies) {
@@ -521,39 +405,41 @@
       .filter((row) => row.count > 0);
   }
 
-  function activationStatus(row) {
-    if (row.activeUsers >= 2 && row.productAreasUsed >= 3 && row.engagedSeconds >= 1800) {
-      return "activated";
-    }
-    if (row.activeUsers >= 2 || row.productAreasUsed >= 2) {
-      return "partially_activated";
-    }
-    return "not_activated";
+  function mapNewReactivatedCompany(row) {
+    const company = mapCompany(row);
+
+    return {
+      ...company,
+      companyId: row.companyId,
+      companyName: row.companyName,
+      // _activation_stage and the elapsed-day count are computed server-side, so
+      // the table can be ordered and paged there like every other one.
+      activationStage: row.activationStage || "not_activated",
+      daysSinceStart: Number(row.daysSinceStart) || 1
+    };
   }
 
-  function buildNewReactivatedRows(companies) {
-    return companies
-      .filter((row) => row.isNew || row.isReactivated || row.status === "new" || row.status === "reactivated")
-      .slice(0, 12)
-      .map((row) => ({
-        companyId: row.id,
-        companyName: row.name,
-        domain: row.domain,
-        type: row.isReactivated || row.status === "reactivated" ? "reactivated" : "new",
-        startDate: row.firstSeenDate || payload.period?.start_date,
-        daysSinceStart: Math.max(1, daysSince(row.firstSeenDate || payload.period?.start_date)),
-        activeUsers: row.activeUsers,
-        productAreasUsed: row.productAreasUsed,
-        pagesUsed: row.pagesUsed,
-        engagedSeconds: row.engagedSeconds,
-        firstProductArea: row.topProductArea || productAreaNames()[0] || "",
-        topProductArea: row.topProductArea,
-        topPage: row.topProductArea || "Core product",
-        avgEngagedSecondsPerUser: row.avgEngagedSecondsPerUser,
-        activationStatus: activationStatus(row),
-        productAreaAdoption: row.productAreaAdoption,
-        suggestedNextStep: row.productAreasUsed <= 1 ? "Explore adjacent workflows" : "Review adoption pattern"
-      }));
+  function newReactivatedRows(rows) {
+    return (rows || []).map(mapNewReactivatedCompany);
+  }
+
+  function mapExpansionCompany(row) {
+    const company = mapCompany(row);
+    const recommendation = expansionText(row);
+
+    return {
+      ...company,
+      companyId: row.companyId,
+      companyName: row.companyName,
+      expansionPriority: row.expansionPriority || "medium",
+      potentialScore: Number(row.potentialScore) || 0,
+      reason: recommendation.reason,
+      suggestedAction: recommendation.suggestedAction
+    };
+  }
+
+  function expansionCompanyRows(rows) {
+    return (rows || []).map(mapExpansionCompany);
   }
 
   function buildAdoptionRamp(newRows) {
@@ -584,9 +470,9 @@
 
   function mapKpis() {
     const byLabel = new Map((payload.kpis || []).map((kpi) => [kpi.label, kpi]));
-    const active = byLabel.get("Active companies") || {};
-    const newReactivated = byLabel.get("New / reactivated") || {};
-    const median = byLabel.get("Median adoption breadth") || {};
+    const active = byLabel.get("Avg daily active companies") || byLabel.get("Active companies") || {};
+    const newReactivated = byLabel.get("Avg daily new / reactivated") || byLabel.get("New / reactivated") || {};
+    const median = byLabel.get("Avg daily adoption breadth") || byLabel.get("Median adoption breadth") || {};
     const atRisk = byLabel.get("At-risk companies") || {};
     const activeTrend = active.trend || [];
     const newReactivatedTrend = newReactivated.trend || [];
@@ -595,40 +481,55 @@
 
     return {
       activeCompanies: {
-        label: "Active companies",
+        label: active.label || "Avg daily active companies",
         value: String(active.value ?? 0),
-        secondary: active.delta?.label || "",
+        secondary: "",
         delta: active.delta?.label || "",
         deltaType: active.delta?.direction || "neutral",
         sparkline: activeTrend,
-        sparklineLabels: trendDateLabels(activeTrend.length)
+        sparklineLabels: active.trend_labels || trendDateLabels(activeTrend.length),
+        sparklineScope: active.trend_scope || (active.trend_grain === "day" ? "daily" : "period_to_date"),
+        sparklineLabel: active.trend_label || "Daily active companies"
       },
       newReactivatedCompanies: {
-        label: "New / reactivated",
+        label: newReactivated.label || "Avg daily new / reactivated",
         value: String(newReactivated.value ?? 0),
         secondary: newReactivated.secondary || newReactivated.delta?.label || "",
         delta: newReactivated.delta?.label || "",
         deltaType: newReactivated.delta?.direction || "neutral",
         sparkline: newReactivatedTrend,
-        sparklineLabels: trendDateLabels(newReactivatedTrend.length)
+        sparklineLabels: newReactivated.trend_labels || trendDateLabels(newReactivatedTrend.length),
+        sparklineScope: newReactivated.trend_scope || (newReactivated.trend_grain === "day" ? "daily" : "period_to_date"),
+        // Each date stands on its own here, so columns rather than a line that
+        // implies companies activated somewhere between two dates.
+        sparklineRender: "columns",
+        sparklineLabel: newReactivated.trend_label || "Daily new / reactivated"
       },
       medianAdoptionBreadth: {
-        label: "Median adoption breadth",
+        label: median.label || "Avg daily adoption breadth",
         value: `${median.value ?? 0} areas`,
-        secondary: median.delta?.label || "",
+        secondary: "",
         delta: median.delta?.label || "",
         deltaType: median.delta?.direction || "neutral",
         sparkline: medianTrend,
-        sparklineLabels: trendDateLabels(medianTrend.length)
+        sparklineLabels: median.trend_labels || trendDateLabels(medianTrend.length),
+        sparklineValueType: "areas",
+        sparklineScope: median.trend_scope || (median.trend_grain === "day" ? "daily" : "period_to_date"),
+        sparklineLabel: median.trend_label || "Daily adoption breadth"
       },
       atRiskCompanies: {
         label: "At-risk companies",
         value: String(atRisk.value ?? 0),
-        secondary: atRisk.delta?.label || "",
+        secondary: "",
         delta: atRisk.delta?.label || "",
         deltaType: atRisk.delta?.direction || "neutral",
         sparkline: atRiskTrend,
-        sparklineLabels: trendDateLabels(atRiskTrend.length)
+        sparklineLabels: atRisk.trend_labels || trendDateLabels(atRiskTrend.length),
+        sparklineScope: atRisk.trend_scope || "as_of",
+        // An end-of-day cohort size holds until the next date reclassifies it,
+        // so the line steps rather than sloping between counts.
+        sparklineRender: "step",
+        sparklineLabel: atRisk.trend_label || "At-risk companies"
       }
     };
   }
@@ -641,41 +542,9 @@
     const scatterPayload = payload.scatter || {};
     const scatterFallback = (scatterPayload.points || []).map(mapCompany);
     const scatterSource = scatterFallback.length ? scatterFallback : companies;
-    const newReactivatedSource = (payload.newReactivatedCompanies?.length ? payload.newReactivatedCompanies : payload.companies || []).map(mapCompany);
-    const newRows = buildNewReactivatedRows(newReactivatedSource);
-    const atRiskRows = (payload.atRiskCompanies || [])
-      .filter((row) => !row.isNew && !row.isReactivated && row.status !== "new" && row.status !== "reactivated")
-      .map((row) => {
-        const company = mapCompany(row);
-        const riskRow = {
-          ...row,
-          ...company,
-          riskReason: row.riskReason || row.riskReasons?.[0] || "At risk"
-        };
-
-        return {
-          ...company,
-          companyId: row.companyId,
-          companyName: row.companyName,
-          riskReason: riskRow.riskReason,
-          suggestedAction: atRiskSuggestedAction(riskRow),
-          productAreaAdoption: areaAdoption(row)
-        };
-      });
-    const expansionRows = (payload.expansionOpportunities || []).map((row) => {
-      const company = mapCompany(row);
-      const recommendation = expansionText({ ...row, ...company });
-
-      return {
-        ...company,
-        companyId: row.companyId,
-        companyName: row.companyName,
-        expansionPriority: row.expansionPriority || "medium",
-        reason: recommendation.reason,
-        suggestedAction: recommendation.suggestedAction,
-        productAreaAdoption: areaAdoption(row)
-      };
-    });
+    const newRows = newReactivatedRows(payload.newReactivatedCompanies);
+    const atRiskRows = atRiskCompanyRows(payload.atRiskCompanies);
+    const expansionRows = expansionCompanyRows(payload.expansionOpportunities);
 
     return {
       period: DEFAULT_PERIOD,
@@ -710,7 +579,7 @@
       return Promise.resolve([]);
     }
 
-    return globalScope.fetch(optionsUrl(baseUrl, query, options.period || options.periodValue, options.limit || 20), {
+    return globalScope.fetch(optionsUrl(baseUrl, query, options.period || options.periodValue, options.limit || 20, options.alphabetical), {
       credentials: "same-origin",
       headers: {
         Accept: "application/json"
@@ -728,6 +597,17 @@
       .catch(() => []);
   }
 
+  function loadOverviewTable(table, options, mapRows) {
+    return fetchTable(body.dataset?.companiesTableUrl || "", { ...options, table })
+      .then((data) => {
+        if (!data || !Array.isArray(data.rows)) {
+          return null;
+        }
+
+        return { ...data, rows: mapRows(data.rows) };
+      });
+  }
+
   function loadCompaniesTable(options = {}) {
     return fetchTable(body.dataset?.companiesTableUrl || "", options)
       .then((data) => {
@@ -742,6 +622,18 @@
       });
   }
 
+  function loadAtRiskTable(options = {}) {
+    return loadOverviewTable("atRisk", options, atRiskCompanyRows);
+  }
+
+  function loadNewReactivatedTable(options = {}) {
+    return loadOverviewTable("newReactivated", options, newReactivatedRows);
+  }
+
+  function loadExpansionTable(options = {}) {
+    return loadOverviewTable("expansion", options, expansionCompanyRows);
+  }
+
   globalScope.HymetryCompaniesDemoData = {
     PERIOD_OPTIONS,
     DEFAULT_PERIOD,
@@ -751,6 +643,9 @@
     getCompaniesDemoData: buildData,
     searchCompanies,
     loadCompaniesTable,
+    loadAtRiskTable,
+    loadNewReactivatedTable,
+    loadExpansionTable,
     coercePeriodKey
   };
 

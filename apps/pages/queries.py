@@ -33,8 +33,206 @@ def execute(sql, params=None):
         return cursor.rowcount
 
 
+def execute_values(prefix, values_template, suffix, rows, *, page_size=100):
+    """
+    Run one statement per *page_size* rows instead of one per row.
+
+    Repeats *values_template* once per row so a batch costs a single round
+    trip. Callers must not put the same conflict target twice in one batch:
+    ``ON CONFLICT`` cannot update a row it has already inserted in the same
+    statement, which Postgres rejects outright.
+    """
+
+    rows = list(rows or [])
+    if not rows:
+        return 0
+
+    affected = 0
+    with connection.cursor() as cursor:
+        for start in range(0, len(rows), page_size):
+            page = rows[start:start + page_size]
+            statement = f'{prefix} {", ".join([values_template] * len(page))} {suffix}'
+            params = [value for row in page for value in row]
+            cursor.execute(statement, params)
+            affected += cursor.rowcount
+    return affected
+
+
+def _period_to_date_row_key_sql(alias, grain, rule_alias=''):
+    if grain == 'product_area':
+        return f"COALESCE(NULLIF({alias}.product_area_key, ''), 'unassigned')"
+    if grain == 'page':
+        return (
+            "CONCAT("
+            f"COALESCE(NULLIF({alias}.product_area_key, ''), 'unassigned'),"
+            "'::',"
+            f"COALESCE({alias}.page_rule_id::text, '')"
+            ")"
+        )
+    if grain == 'display_page':
+        return (
+            "CONCAT("
+            f"LOWER(COALESCE(NULLIF(BTRIM({alias}.product_area_key), ''), 'unassigned')),"
+            "'::',"
+            "LOWER(COALESCE("
+            f"NULLIF(BTRIM({rule_alias}.page_name), ''),"
+            f"NULLIF(BTRIM({alias}.product_area_name), ''),"
+            "'Unassigned'"
+            "))"
+            ")"
+        )
+    raise ValueError(f'Unsupported analytics grain: {grain}')
+
+
+def cumulative_identity_first_seen_sql(grain, *, filtered=False):
+    """Return exact first-seen identity dates used by period-to-date KPI series."""
+
+    if grain not in {'page', 'display_page', 'product_area'}:
+        raise ValueError(f'Unsupported analytics grain: {grain}')
+
+    company_join = ''
+    user_join = ''
+    linked_user_join = ''
+    if grain == 'display_page':
+        company_join = 'LEFT JOIN tracker_projectpagerule company_rule ON company_rule.id = pcdm.page_rule_id'
+        user_join = 'LEFT JOIN tracker_projectpagerule user_rule ON user_rule.id = pudm.page_rule_id'
+        linked_user_join = 'LEFT JOIN tracker_projectpagerule linked_rule ON linked_rule.id = pudm.page_rule_id'
+
+    company_row_key = _period_to_date_row_key_sql('pcdm', grain, 'company_rule')
+    user_row_key = _period_to_date_row_key_sql('pudm', grain, 'user_rule')
+    linked_user_row_key = _period_to_date_row_key_sql('pudm', grain, 'linked_rule')
+    company_cohort = 'AND pcdm.company_id = ANY(%(cohort)s)' if filtered else ''
+    user_cohort = 'AND pudm.company_id = ANY(%(cohort)s)' if filtered else ''
+    company_identity_filter = "AND BTRIM(pcdm.company_id) <> ''" if grain == 'display_page' else ''
+    user_identity_filter = "AND BTRIM(pudm.user_id) <> ''" if grain == 'display_page' else ''
+    linked_company_filter = "AND BTRIM(pudm.company_id) <> ''" if grain == 'display_page' else ''
+    linked_user_filter = "AND BTRIM(pudm.user_id) <> ''" if grain == 'display_page' else ''
+
+    if grain == 'product_area':
+        linked_user_columns = """
+            pudm.company_id,
+            pudm.user_id,
+            pudm.date
+        """
+        linked_user_group = 'company_id, user_id'
+        penetration_join = 'lu.company_id = ec.company_id'
+    else:
+        linked_user_columns = f"""
+            {linked_user_row_key} AS row_key,
+            pudm.company_id,
+            pudm.user_id,
+            pudm.date
+        """
+        linked_user_group = 'row_key, company_id, user_id'
+        penetration_join = 'lu.row_key = ec.row_key AND lu.company_id = ec.company_id'
+
+    return f"""
+WITH entity_company_rows AS (
+    SELECT
+        {company_row_key} AS row_key,
+        pcdm.company_id,
+        pcdm.date
+    FROM pages_pagecompanydailymetric pcdm
+    {company_join}
+    WHERE pcdm.project_id = %(project_id)s
+      AND pcdm.date >= %(start_date)s
+      AND pcdm.date <= %(end_date)s
+      AND pcdm.company_id IS NOT NULL
+      {company_identity_filter}
+      {company_cohort}
+),
+entity_company_first AS (
+    SELECT row_key, company_id, MIN(date) AS first_date
+    FROM entity_company_rows
+    GROUP BY row_key, company_id
+),
+entity_user_rows AS (
+    SELECT
+        {user_row_key} AS row_key,
+        pudm.user_id,
+        pudm.date
+    FROM pages_pageuserdailymetric pudm
+    {user_join}
+    WHERE pudm.project_id = %(project_id)s
+      AND pudm.date >= %(start_date)s
+      AND pudm.date <= %(end_date)s
+      AND pudm.user_id IS NOT NULL
+      {user_identity_filter}
+      {user_cohort}
+),
+entity_user_first AS (
+    SELECT row_key, user_id, MIN(date) AS first_date
+    FROM entity_user_rows
+    GROUP BY row_key, user_id
+),
+project_company_rows AS (
+    SELECT pcdm.company_id, pcdm.date
+    FROM pages_pagecompanydailymetric pcdm
+    WHERE pcdm.project_id = %(project_id)s
+      AND pcdm.date >= %(start_date)s
+      AND pcdm.date <= %(end_date)s
+      AND pcdm.company_id IS NOT NULL
+      {company_cohort}
+),
+project_company_first AS (
+    SELECT company_id, MIN(date) AS first_date
+    FROM project_company_rows
+    GROUP BY company_id
+),
+linked_user_rows AS (
+    SELECT
+        {linked_user_columns}
+    FROM pages_pageuserdailymetric pudm
+    {linked_user_join}
+    WHERE pudm.project_id = %(project_id)s
+      AND pudm.date >= %(start_date)s
+      AND pudm.date <= %(end_date)s
+      AND pudm.company_id IS NOT NULL
+      {linked_company_filter}
+      AND pudm.user_id IS NOT NULL
+      {linked_user_filter}
+),
+linked_user_first AS (
+    SELECT {linked_user_group}, MIN(date) AS first_date
+    FROM linked_user_rows
+    GROUP BY {linked_user_group}
+),
+penetration_first AS (
+    SELECT
+        ec.row_key,
+        lu.user_id,
+        MIN(GREATEST(ec.first_date, lu.first_date)) AS first_date
+    FROM entity_company_first ec
+    JOIN linked_user_first lu ON {penetration_join}
+    GROUP BY ec.row_key, lu.user_id
+),
+identity_first AS (
+    SELECT 'company' AS kind, row_key, company_id AS identity_id, first_date
+    FROM entity_company_first
+    UNION ALL
+    SELECT 'user' AS kind, row_key, user_id AS identity_id, first_date
+    FROM entity_user_first
+    UNION ALL
+    SELECT 'project_company' AS kind, '' AS row_key, company_id AS identity_id, first_date
+    FROM project_company_first
+    UNION ALL
+    SELECT 'penetration' AS kind, row_key, user_id AS identity_id, first_date
+    FROM penetration_first
+)
+SELECT kind, row_key, first_date, COUNT(*) AS identities_count
+FROM identity_first
+GROUP BY kind, row_key, first_date
+ORDER BY kind, row_key, first_date
+"""
+
+
 PROJECT_INFO_SQL = """
-SELECT p.id, p.name, p.timezone
+SELECT
+    p.id,
+    p.name,
+    p.timezone,
+    p.analytics_facts_revision,
+    p.filtered_analytics_revision
 FROM projects_project p
 JOIN projects_workspace w ON w.id = p.workspace_id
 WHERE p.id = %s
@@ -664,52 +862,87 @@ GROUP BY project_id, metric_date
 """
 
 
-AREA_SUMMARY_SQL = """
+# Company-attribute variants of the analytical Pages queries are generated from
+# the same templates as their unfiltered originals, so the two cannot drift.
+#
+# Only `pages_pagecompanydailymetric` and `pages_pageuserdailymetric` carry a
+# company identity. A filtered variant therefore also has to move its base page
+# measures off the project-wide `pages_pagedailymetric` rollup and onto the
+# per-company table, which stores the same four measures at a finer grain.
+#
+# These templates take named parameters because a filtered variant binds one
+# extra value; positional lists would have to be rebuilt per variant.
+
+_COHORT_PREDICATE = 'AND {column} = ANY(%(cohort)s)'
+
+
+def _cohort(column='company_id'):
+    return _COHORT_PREDICATE.format(column=column)
+
+
+_PAGE_MEASURE_SOURCE = 'pages_pagedailymetric'
+_PAGE_MEASURE_SOURCE_BY_COMPANY = 'pages_pagecompanydailymetric'
+
+
+AREA_SUMMARY_TEMPLATE = """
 WITH daily AS (
     SELECT
-        product_area_key,
+        COALESCE(NULLIF(product_area_key, ''), 'unassigned') AS product_area_key,
         MIN(product_area_name) AS product_area_name,
         MIN(product_area_id) AS product_area_id,
-        COUNT(DISTINCT COALESCE(page_rule_id::text, product_area_key)) AS page_count,
+        COUNT(
+            DISTINCT COALESCE(
+                page_rule_id::text,
+                COALESCE(NULLIF(product_area_key, ''), 'unassigned')
+            )
+        ) AS page_count,
         SUM(visits_count) AS visits_count,
         SUM(engaged_seconds) AS engaged_seconds,
         SUM(click_count) AS click_count,
         SUM(visits_with_click_count) AS visits_with_click_count
-    FROM pages_pagedailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
-    GROUP BY product_area_key
+    FROM {measure_source}
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {measure_cohort}
+    GROUP BY COALESCE(NULLIF(product_area_key, ''), 'unassigned')
 ),
 companies AS (
-    SELECT product_area_key, COUNT(DISTINCT company_id) AS companies_count
+    SELECT
+        COALESCE(NULLIF(product_area_key, ''), 'unassigned') AS product_area_key,
+        COUNT(DISTINCT company_id) AS companies_count
     FROM pages_pagecompanydailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
-    GROUP BY product_area_key
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {company_cohort}
+    GROUP BY COALESCE(NULLIF(product_area_key, ''), 'unassigned')
 ),
 users AS (
-    SELECT product_area_key, COUNT(DISTINCT user_id) AS users_count
+    SELECT
+        COALESCE(NULLIF(product_area_key, ''), 'unassigned') AS product_area_key,
+        COUNT(DISTINCT user_id) AS users_count
     FROM pages_pageuserdailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
-    GROUP BY product_area_key
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {user_cohort}
+    GROUP BY COALESCE(NULLIF(product_area_key, ''), 'unassigned')
 ),
 company_engaged AS (
-    SELECT DISTINCT ON (product_area_key)
-        product_area_key,
+    SELECT DISTINCT ON (COALESCE(NULLIF(product_area_key, ''), 'unassigned'))
+        COALESCE(NULLIF(product_area_key, ''), 'unassigned') AS product_area_key,
         company_id AS top_company_id,
         COALESCE(company_name_sample, company_id) AS top_company_name,
         SUM(engaged_seconds) AS company_engaged_seconds,
         SUM(visits_count) AS company_visits_count
     FROM pages_pagecompanydailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
-    GROUP BY product_area_key, company_id, company_name_sample
-    ORDER BY product_area_key, SUM(engaged_seconds) DESC, SUM(visits_count) DESC, COALESCE(company_name_sample, company_id)
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {company_cohort}
+    GROUP BY COALESCE(NULLIF(product_area_key, ''), 'unassigned'), company_id, company_name_sample
+    ORDER BY COALESCE(NULLIF(product_area_key, ''), 'unassigned'), SUM(engaged_seconds) DESC, SUM(visits_count) DESC, COALESCE(company_name_sample, company_id)
 )
 SELECT
     daily.product_area_key,
@@ -731,8 +964,22 @@ LEFT JOIN company_engaged ON company_engaged.product_area_key = daily.product_ar
 ORDER BY daily.visits_count DESC, daily.product_area_name
 """
 
+AREA_SUMMARY_SQL = AREA_SUMMARY_TEMPLATE.format(
+    measure_source=_PAGE_MEASURE_SOURCE,
+    measure_cohort='',
+    company_cohort='',
+    user_cohort='',
+)
 
-PAGE_SUMMARY_SQL = """
+AREA_SUMMARY_FILTERED_SQL = AREA_SUMMARY_TEMPLATE.format(
+    measure_source=_PAGE_MEASURE_SOURCE_BY_COMPANY,
+    measure_cohort=_cohort(),
+    company_cohort=_cohort(),
+    user_cohort=_cohort(),
+)
+
+
+PAGE_SUMMARY_TEMPLATE = """
 WITH daily AS (
     SELECT
         COALESCE(NULLIF(pdm.product_area_key, ''), 'unassigned') AS product_area_key,
@@ -744,11 +991,12 @@ WITH daily AS (
         SUM(pdm.engaged_seconds) AS engaged_seconds,
         SUM(pdm.click_count) AS click_count,
         SUM(pdm.visits_with_click_count) AS visits_with_click_count
-    FROM pages_pagedailymetric pdm
+    FROM {measure_source} pdm
     LEFT JOIN tracker_projectpagerule pr ON pr.id = pdm.page_rule_id
-    WHERE pdm.project_id = %s
-      AND pdm.date >= %s
-      AND pdm.date <= %s
+    WHERE pdm.project_id = %(project_id)s
+      AND pdm.date >= %(start_date)s
+      AND pdm.date <= %(end_date)s
+      {measure_cohort}
     GROUP BY COALESCE(NULLIF(pdm.product_area_key, ''), 'unassigned'), pdm.page_rule_id
 ),
 companies AS (
@@ -757,9 +1005,10 @@ companies AS (
         page_rule_id,
         COUNT(DISTINCT company_id) AS companies_count
     FROM pages_pagecompanydailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {company_cohort}
     GROUP BY COALESCE(NULLIF(product_area_key, ''), 'unassigned'), page_rule_id
 ),
 users AS (
@@ -768,9 +1017,10 @@ users AS (
         page_rule_id,
         COUNT(DISTINCT user_id) AS users_count
     FROM pages_pageuserdailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {user_cohort}
     GROUP BY COALESCE(NULLIF(product_area_key, ''), 'unassigned'), page_rule_id
 ),
 company_engaged AS (
@@ -782,9 +1032,10 @@ company_engaged AS (
         SUM(engaged_seconds) AS company_engaged_seconds,
         SUM(visits_count) AS company_visits_count
     FROM pages_pagecompanydailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {company_cohort}
     GROUP BY COALESCE(NULLIF(product_area_key, ''), 'unassigned'), page_rule_id, company_id, company_name_sample
     ORDER BY product_area_key, page_rule_id, SUM(engaged_seconds) DESC, SUM(visits_count) DESC, COALESCE(company_name_sample, company_id)
 )
@@ -815,15 +1066,33 @@ LEFT JOIN company_engaged
 ORDER BY daily.visits_count DESC, daily.page_name
 """
 
+PAGE_SUMMARY_SQL = PAGE_SUMMARY_TEMPLATE.format(
+    measure_source=_PAGE_MEASURE_SOURCE,
+    measure_cohort='',
+    company_cohort='',
+    user_cohort='',
+)
 
-PAGE_DISPLAY_SUMMARY_SQL = """
+PAGE_SUMMARY_FILTERED_SQL = PAGE_SUMMARY_TEMPLATE.format(
+    measure_source=_PAGE_MEASURE_SOURCE_BY_COMPANY,
+    measure_cohort=_cohort('pdm.company_id'),
+    company_cohort=_cohort(),
+    user_cohort=_cohort(),
+)
+
+
+PAGE_DISPLAY_SUMMARY_TEMPLATE = """
 WITH rule_daily AS (
     SELECT
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(pdm.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(pdm.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(pdm.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         ) AS page_display_key,
         COALESCE(NULLIF(pdm.product_area_key, ''), 'unassigned') AS product_area_key,
@@ -839,17 +1108,22 @@ WITH rule_daily AS (
         SUM(pdm.engaged_seconds) AS engaged_seconds,
         SUM(pdm.click_count) AS click_count,
         SUM(pdm.visits_with_click_count) AS visits_with_click_count
-    FROM pages_pagedailymetric pdm
+    FROM {measure_source} pdm
     LEFT JOIN tracker_projectpagerule pr ON pr.id = pdm.page_rule_id
-    WHERE pdm.project_id = %s
-      AND pdm.date >= %s
-      AND pdm.date <= %s
+    WHERE pdm.project_id = %(project_id)s
+      AND pdm.date >= %(start_date)s
+      AND pdm.date <= %(end_date)s
+      {measure_cohort}
     GROUP BY
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(pdm.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(pdm.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(pdm.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         ),
         COALESCE(NULLIF(pdm.product_area_key, ''), 'unassigned'),
@@ -895,11 +1169,15 @@ daily AS (
 ),
 company_rows AS (
     SELECT
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(pcdm.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(pcdm.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(pcdm.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         ) AS page_display_key,
         pcdm.company_id,
@@ -908,9 +1186,10 @@ company_rows AS (
         pcdm.visits_count
     FROM pages_pagecompanydailymetric pcdm
     LEFT JOIN tracker_projectpagerule pr ON pr.id = pcdm.page_rule_id
-    WHERE pcdm.project_id = %s
-      AND pcdm.date >= %s
-      AND pcdm.date <= %s
+    WHERE pcdm.project_id = %(project_id)s
+      AND pcdm.date >= %(start_date)s
+      AND pcdm.date <= %(end_date)s
+      {company_cohort}
 ),
 companies AS (
     SELECT
@@ -922,26 +1201,35 @@ companies AS (
 ),
 users AS (
     SELECT
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(pudm.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(pudm.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(pudm.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         ) AS page_display_key,
         COUNT(DISTINCT pudm.user_id)
             FILTER (WHERE pudm.user_id IS NOT NULL AND BTRIM(pudm.user_id) <> '') AS users_count
     FROM pages_pageuserdailymetric pudm
     LEFT JOIN tracker_projectpagerule pr ON pr.id = pudm.page_rule_id
-    WHERE pudm.project_id = %s
-      AND pudm.date >= %s
-      AND pudm.date <= %s
+    WHERE pudm.project_id = %(project_id)s
+      AND pudm.date >= %(start_date)s
+      AND pudm.date <= %(end_date)s
+      {user_cohort}
     GROUP BY
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(pudm.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(pudm.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(pudm.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         )
 ),
@@ -995,20 +1283,50 @@ LEFT JOIN company_engaged ON company_engaged.page_display_key = daily.page_displ
 ORDER BY daily.visits_count DESC, leaders.page_name, daily.page_display_key
 """
 
+PAGE_DISPLAY_SUMMARY_SQL = PAGE_DISPLAY_SUMMARY_TEMPLATE.format(
+    measure_source=_PAGE_MEASURE_SOURCE,
+    measure_cohort='',
+    company_cohort='',
+    user_cohort='',
+)
 
-PROJECT_DISTINCT_COUNTS_SQL = """
+PAGE_DISPLAY_SUMMARY_FILTERED_SQL = PAGE_DISPLAY_SUMMARY_TEMPLATE.format(
+    measure_source=_PAGE_MEASURE_SOURCE_BY_COMPANY,
+    measure_cohort=_cohort('pdm.company_id'),
+    company_cohort=_cohort('pcdm.company_id'),
+    user_cohort=_cohort('pudm.company_id'),
+)
+
+
+PROJECT_DISTINCT_COUNTS_TEMPLATE = """
 SELECT
     (
         SELECT COUNT(DISTINCT company_id)
         FROM pages_pagecompanydailymetric
-        WHERE project_id = %s AND date >= %s AND date <= %s
+        WHERE project_id = %(project_id)s
+          AND date >= %(start_date)s
+          AND date <= %(end_date)s
+          {company_cohort}
     ) AS active_companies_count,
     (
         SELECT COUNT(DISTINCT user_id)
         FROM pages_pageuserdailymetric
-        WHERE project_id = %s AND date >= %s AND date <= %s
+        WHERE project_id = %(project_id)s
+          AND date >= %(start_date)s
+          AND date <= %(end_date)s
+          {user_cohort}
     ) AS active_users_count
 """
+
+PROJECT_DISTINCT_COUNTS_SQL = PROJECT_DISTINCT_COUNTS_TEMPLATE.format(
+    company_cohort='',
+    user_cohort='',
+)
+
+PROJECT_DISTINCT_COUNTS_FILTERED_SQL = PROJECT_DISTINCT_COUNTS_TEMPLATE.format(
+    company_cohort=_cohort(),
+    user_cohort=_cohort(),
+)
 
 
 TREEMAP_PAGE_ROWS_SQL = """
@@ -1083,13 +1401,20 @@ ORDER BY current_pages.engaged_seconds DESC, current_pages.page_name
 """
 
 
-PENETRATION_DENOMINATOR_SQL = """
+# A denominator only needs its cohort predicate on the company CTE: the user
+# join already keys on company_id, so restricting the adopted companies
+# restricts their users along with them.
+
+PENETRATION_DENOMINATOR_TEMPLATE = """
 WITH area_companies AS (
-    SELECT DISTINCT product_area_key, company_id
+    SELECT DISTINCT
+        COALESCE(NULLIF(product_area_key, ''), 'unassigned') AS product_area_key,
+        company_id
     FROM pages_pagecompanydailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {company_cohort}
 ),
 area_users AS (
     SELECT
@@ -1097,26 +1422,33 @@ area_users AS (
         COUNT(DISTINCT users.user_id) AS active_users_in_adopted_companies
     FROM area_companies
     JOIN pages_pageuserdailymetric users
-      ON users.project_id = %s
-     AND users.date >= %s
-     AND users.date <= %s
+      ON users.project_id = %(project_id)s
+     AND users.date >= %(start_date)s
+     AND users.date <= %(end_date)s
      AND users.company_id = area_companies.company_id
     GROUP BY area_companies.product_area_key
 )
 SELECT * FROM area_users
 """
 
+PENETRATION_DENOMINATOR_SQL = PENETRATION_DENOMINATOR_TEMPLATE.format(company_cohort='')
 
-PAGE_PENETRATION_DENOMINATOR_SQL = """
+PENETRATION_DENOMINATOR_FILTERED_SQL = PENETRATION_DENOMINATOR_TEMPLATE.format(
+    company_cohort=_cohort(),
+)
+
+
+PAGE_PENETRATION_DENOMINATOR_TEMPLATE = """
 WITH page_companies AS (
     SELECT DISTINCT
         COALESCE(NULLIF(product_area_key, ''), 'unassigned') AS product_area_key,
         page_rule_id,
         company_id
     FROM pages_pagecompanydailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {company_cohort}
 ),
 page_users AS (
     SELECT
@@ -1125,9 +1457,9 @@ page_users AS (
         COUNT(DISTINCT users.user_id) AS active_users_in_adopted_companies
     FROM page_companies
     JOIN pages_pageuserdailymetric users
-      ON users.project_id = %s
-     AND users.date >= %s
-     AND users.date <= %s
+      ON users.project_id = %(project_id)s
+     AND users.date >= %(start_date)s
+     AND users.date <= %(end_date)s
      AND COALESCE(NULLIF(users.product_area_key, ''), 'unassigned') = page_companies.product_area_key
      AND users.page_rule_id IS NOT DISTINCT FROM page_companies.page_rule_id
      AND users.company_id = page_companies.company_id
@@ -1136,42 +1468,59 @@ page_users AS (
 SELECT * FROM page_users
 """
 
+PAGE_PENETRATION_DENOMINATOR_SQL = PAGE_PENETRATION_DENOMINATOR_TEMPLATE.format(
+    company_cohort='',
+)
 
-PAGE_DISPLAY_PENETRATION_DENOMINATOR_SQL = """
+PAGE_PENETRATION_DENOMINATOR_FILTERED_SQL = PAGE_PENETRATION_DENOMINATOR_TEMPLATE.format(
+    company_cohort=_cohort(),
+)
+
+
+PAGE_DISPLAY_PENETRATION_DENOMINATOR_TEMPLATE = """
 WITH page_companies AS (
     SELECT DISTINCT
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(companies.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(companies.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(companies.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         ) AS page_display_key,
         companies.company_id
     FROM pages_pagecompanydailymetric companies
     LEFT JOIN tracker_projectpagerule pr ON pr.id = companies.page_rule_id
-    WHERE companies.project_id = %s
-      AND companies.date >= %s
-      AND companies.date <= %s
+    WHERE companies.project_id = %(project_id)s
+      AND companies.date >= %(start_date)s
+      AND companies.date <= %(end_date)s
       AND companies.company_id IS NOT NULL
       AND BTRIM(companies.company_id) <> ''
+      {company_cohort}
 ),
 display_users AS (
     SELECT DISTINCT
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(users.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(users.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(users.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         ) AS page_display_key,
         users.company_id,
         users.user_id
     FROM pages_pageuserdailymetric users
     LEFT JOIN tracker_projectpagerule pr ON pr.id = users.page_rule_id
-    WHERE users.project_id = %s
-      AND users.date >= %s
-      AND users.date <= %s
+    WHERE users.project_id = %(project_id)s
+      AND users.date >= %(start_date)s
+      AND users.date <= %(end_date)s
       AND users.company_id IS NOT NULL
       AND BTRIM(users.company_id) <> ''
       AND users.user_id IS NOT NULL
@@ -1190,8 +1539,52 @@ page_users AS (
 SELECT * FROM page_users
 """
 
+PAGE_DISPLAY_PENETRATION_DENOMINATOR_SQL = (
+    PAGE_DISPLAY_PENETRATION_DENOMINATOR_TEMPLATE.format(company_cohort='')
+)
 
-DAILY_AREA_METRICS_SQL = """
+PAGE_DISPLAY_PENETRATION_DENOMINATOR_FILTERED_SQL = (
+    PAGE_DISPLAY_PENETRATION_DENOMINATOR_TEMPLATE.format(
+        company_cohort=_cohort('companies.company_id'),
+    )
+)
+
+
+# `pages_projectdailymetric` stores project-wide daily actives, which are the
+# wrong denominator once a cohort is selected. A filtered variant swaps that
+# table for an equivalent per-day rollup restricted to the cohort.
+_COHORT_PROJECT_DAILY = """(
+    SELECT
+        company_days.project_id,
+        company_days.date,
+        company_days.active_companies_count,
+        COALESCE(user_days.active_users_count, 0) AS active_users_count
+    FROM (
+        SELECT project_id, date, COUNT(DISTINCT company_id) AS active_companies_count
+        FROM pages_pagecompanydailymetric
+        WHERE project_id = %(project_id)s
+          AND date >= %(start_date)s
+          AND date <= %(end_date)s
+          AND company_id = ANY(%(cohort)s)
+        GROUP BY project_id, date
+    ) AS company_days
+    LEFT JOIN (
+        SELECT project_id, date, COUNT(DISTINCT user_id) AS active_users_count
+        FROM pages_pageuserdailymetric
+        WHERE project_id = %(project_id)s
+          AND date >= %(start_date)s
+          AND date <= %(end_date)s
+          AND company_id = ANY(%(cohort)s)
+        GROUP BY project_id, date
+    ) AS user_days
+      ON user_days.project_id = company_days.project_id
+     AND user_days.date = company_days.date
+)"""
+
+_PROJECT_DAILY_SOURCE = 'pages_projectdailymetric'
+
+
+DAILY_AREA_METRICS_TEMPLATE = """
 WITH daily AS (
     SELECT
         pdm.date,
@@ -1201,10 +1594,11 @@ WITH daily AS (
         SUM(pdm.engaged_seconds) AS engaged_seconds,
         SUM(pdm.click_count) AS click_count,
         SUM(pdm.visits_with_click_count) AS visits_with_click_count
-    FROM pages_pagedailymetric pdm
-    WHERE pdm.project_id = %s
-      AND pdm.date >= %s
-      AND pdm.date <= %s
+    FROM {measure_source} pdm
+    WHERE pdm.project_id = %(project_id)s
+      AND pdm.date >= %(start_date)s
+      AND pdm.date <= %(end_date)s
+      {measure_cohort}
     GROUP BY pdm.date, COALESCE(NULLIF(pdm.product_area_key, ''), 'unassigned')
 ),
 companies AS (
@@ -1213,9 +1607,10 @@ companies AS (
         COALESCE(NULLIF(product_area_key, ''), 'unassigned') AS product_area_key,
         COUNT(DISTINCT company_id) FILTER (WHERE company_id IS NOT NULL AND company_id <> '') AS companies_count_daily
     FROM pages_pagecompanydailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {company_cohort}
     GROUP BY date, COALESCE(NULLIF(product_area_key, ''), 'unassigned')
 ),
 users AS (
@@ -1224,9 +1619,10 @@ users AS (
         COALESCE(NULLIF(product_area_key, ''), 'unassigned') AS product_area_key,
         COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '') AS users_count_daily
     FROM pages_pageuserdailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {user_cohort}
     GROUP BY date, COALESCE(NULLIF(product_area_key, ''), 'unassigned')
 )
 SELECT
@@ -1248,11 +1644,27 @@ LEFT JOIN companies
 LEFT JOIN users
   ON users.date = daily.date
  AND users.product_area_key = daily.product_area_key
-LEFT JOIN pages_projectdailymetric prdm
-  ON prdm.project_id = %s
+LEFT JOIN {project_daily_source} prdm
+  ON prdm.project_id = %(project_id)s
  AND prdm.date = daily.date
 ORDER BY daily.date, daily.product_area_key
 """
+
+DAILY_AREA_METRICS_SQL = DAILY_AREA_METRICS_TEMPLATE.format(
+    measure_source=_PAGE_MEASURE_SOURCE,
+    measure_cohort='',
+    company_cohort='',
+    user_cohort='',
+    project_daily_source=_PROJECT_DAILY_SOURCE,
+)
+
+DAILY_AREA_METRICS_FILTERED_SQL = DAILY_AREA_METRICS_TEMPLATE.format(
+    measure_source=_PAGE_MEASURE_SOURCE_BY_COMPANY,
+    measure_cohort=_cohort('pdm.company_id'),
+    company_cohort=_cohort(),
+    user_cohort=_cohort(),
+    project_daily_source=_COHORT_PROJECT_DAILY,
+)
 
 
 DAILY_PAGE_METRICS_SQL = """
@@ -1273,95 +1685,183 @@ FROM pages_pagedailymetric pdm
 LEFT JOIN pages_projectdailymetric prdm
   ON prdm.project_id = pdm.project_id
  AND prdm.date = pdm.date
-WHERE pdm.project_id = %s
-  AND pdm.date >= %s
-  AND pdm.date <= %s
+WHERE pdm.project_id = %(project_id)s
+  AND pdm.date >= %(start_date)s
+  AND pdm.date <= %(end_date)s
 GROUP BY pdm.date, COALESCE(NULLIF(pdm.product_area_key, ''), 'unassigned'), pdm.page_rule_id
 ORDER BY pdm.date, product_area_key, pdm.page_rule_id
 """
 
 
-DAILY_PAGE_DISPLAY_METRICS_SQL = """
+# Unlike its siblings this one cannot be produced by swapping a source table.
+# `companies_count_daily` and `users_count_daily` are stored columns on
+# `pages_pagedailymetric` that the per-company table does not carry, so the
+# filtered form recomputes both by counting distinct identities.
+DAILY_PAGE_METRICS_FILTERED_SQL = """
+WITH daily AS (
+    SELECT
+        pcdm.date,
+        COALESCE(NULLIF(pcdm.product_area_key, ''), 'unassigned') AS product_area_key,
+        MIN(pcdm.product_area_name) AS product_area_name,
+        pcdm.page_rule_id,
+        SUM(pcdm.visits_count) AS visits_count,
+        SUM(pcdm.engaged_seconds) AS engaged_seconds,
+        SUM(pcdm.click_count) AS click_count,
+        SUM(pcdm.visits_with_click_count) AS visits_with_click_count,
+        COUNT(DISTINCT pcdm.company_id) AS companies_count_daily
+    FROM pages_pagecompanydailymetric pcdm
+    WHERE pcdm.project_id = %(project_id)s
+      AND pcdm.date >= %(start_date)s
+      AND pcdm.date <= %(end_date)s
+      AND pcdm.company_id = ANY(%(cohort)s)
+    GROUP BY pcdm.date, COALESCE(NULLIF(pcdm.product_area_key, ''), 'unassigned'), pcdm.page_rule_id
+),
+page_users AS (
+    SELECT
+        pudm.date,
+        COALESCE(NULLIF(pudm.product_area_key, ''), 'unassigned') AS product_area_key,
+        pudm.page_rule_id,
+        COUNT(DISTINCT pudm.user_id) AS users_count_daily
+    FROM pages_pageuserdailymetric pudm
+    WHERE pudm.project_id = %(project_id)s
+      AND pudm.date >= %(start_date)s
+      AND pudm.date <= %(end_date)s
+      AND pudm.company_id = ANY(%(cohort)s)
+    GROUP BY pudm.date, COALESCE(NULLIF(pudm.product_area_key, ''), 'unassigned'), pudm.page_rule_id
+)
+SELECT
+    daily.date,
+    daily.product_area_key,
+    daily.product_area_name,
+    daily.page_rule_id,
+    daily.visits_count,
+    daily.engaged_seconds,
+    daily.click_count,
+    daily.visits_with_click_count,
+    daily.companies_count_daily,
+    COALESCE(page_users.users_count_daily, 0) AS users_count_daily,
+    COALESCE(prdm.active_companies_count, 0) AS active_companies_count,
+    COALESCE(prdm.active_users_count, 0) AS active_users_count
+FROM daily
+LEFT JOIN page_users
+  ON page_users.date = daily.date
+ AND page_users.product_area_key = daily.product_area_key
+ AND page_users.page_rule_id IS NOT DISTINCT FROM daily.page_rule_id
+LEFT JOIN {project_daily_source} prdm
+  ON prdm.project_id = %(project_id)s
+ AND prdm.date = daily.date
+ORDER BY daily.date, daily.product_area_key, daily.page_rule_id
+""".format(project_daily_source=_COHORT_PROJECT_DAILY)
+
+
+DAILY_PAGE_DISPLAY_METRICS_TEMPLATE = """
 WITH daily AS (
     SELECT
         pdm.date,
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(pdm.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(pdm.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(pdm.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         ) AS page_display_key,
         SUM(pdm.visits_count) AS visits_count,
         SUM(pdm.engaged_seconds) AS engaged_seconds,
         SUM(pdm.click_count) AS click_count,
         SUM(pdm.visits_with_click_count) AS visits_with_click_count
-    FROM pages_pagedailymetric pdm
+    FROM {measure_source} pdm
     LEFT JOIN tracker_projectpagerule pr ON pr.id = pdm.page_rule_id
-    WHERE pdm.project_id = %s
-      AND pdm.date >= %s
-      AND pdm.date <= %s
+    WHERE pdm.project_id = %(project_id)s
+      AND pdm.date >= %(start_date)s
+      AND pdm.date <= %(end_date)s
+      {measure_cohort}
     GROUP BY
         pdm.date,
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(pdm.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(pdm.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(pdm.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         )
 ),
 companies AS (
     SELECT
         companies.date,
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(companies.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(companies.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(companies.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         ) AS page_display_key,
         COUNT(DISTINCT companies.company_id)
             FILTER (WHERE companies.company_id IS NOT NULL AND BTRIM(companies.company_id) <> '') AS companies_count_daily
     FROM pages_pagecompanydailymetric companies
     LEFT JOIN tracker_projectpagerule pr ON pr.id = companies.page_rule_id
-    WHERE companies.project_id = %s
-      AND companies.date >= %s
-      AND companies.date <= %s
+    WHERE companies.project_id = %(project_id)s
+      AND companies.date >= %(start_date)s
+      AND companies.date <= %(end_date)s
+      {company_cohort}
     GROUP BY
         companies.date,
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(companies.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(companies.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(companies.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         )
 ),
 users AS (
     SELECT
         users.date,
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(users.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(users.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(users.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         ) AS page_display_key,
         COUNT(DISTINCT users.user_id)
             FILTER (WHERE users.user_id IS NOT NULL AND BTRIM(users.user_id) <> '') AS users_count_daily
     FROM pages_pageuserdailymetric users
     LEFT JOIN tracker_projectpagerule pr ON pr.id = users.page_rule_id
-    WHERE users.project_id = %s
-      AND users.date >= %s
-      AND users.date <= %s
+    WHERE users.project_id = %(project_id)s
+      AND users.date >= %(start_date)s
+      AND users.date <= %(end_date)s
+      {user_cohort}
     GROUP BY
         users.date,
-        LOWER(
-            COALESCE(
-                NULLIF(BTRIM(pr.page_name), ''),
-                NULLIF(BTRIM(users.product_area_name), ''),
-                'Unassigned'
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(users.product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(
+                COALESCE(
+                    NULLIF(BTRIM(pr.page_name), ''),
+                    NULLIF(BTRIM(users.product_area_name), ''),
+                    'Unassigned'
+                )
             )
         )
 )
@@ -1383,11 +1883,27 @@ LEFT JOIN companies
 LEFT JOIN users
   ON users.date = daily.date
  AND users.page_display_key = daily.page_display_key
-LEFT JOIN pages_projectdailymetric prdm
-  ON prdm.project_id = %s
+LEFT JOIN {project_daily_source} prdm
+  ON prdm.project_id = %(project_id)s
  AND prdm.date = daily.date
 ORDER BY daily.date, daily.page_display_key
 """
+
+DAILY_PAGE_DISPLAY_METRICS_SQL = DAILY_PAGE_DISPLAY_METRICS_TEMPLATE.format(
+    measure_source=_PAGE_MEASURE_SOURCE,
+    measure_cohort='',
+    company_cohort='',
+    user_cohort='',
+    project_daily_source=_PROJECT_DAILY_SOURCE,
+)
+
+DAILY_PAGE_DISPLAY_METRICS_FILTERED_SQL = DAILY_PAGE_DISPLAY_METRICS_TEMPLATE.format(
+    measure_source=_PAGE_MEASURE_SOURCE_BY_COMPANY,
+    measure_cohort=_cohort('pdm.company_id'),
+    company_cohort=_cohort('companies.company_id'),
+    user_cohort=_cohort('users.company_id'),
+    project_daily_source=_COHORT_PROJECT_DAILY,
+)
 
 
 DAILY_PAGE_METRICS_FOR_RULES_SQL = """
@@ -1420,11 +1936,17 @@ ORDER BY pdm.date, product_area_key, pdm.page_rule_id
 TOP_ACTIONS_SQL = """
 WITH current_page_rows AS (
     SELECT
-        CONCAT_WS(
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(metrics.product_area_key), ''), 'unassigned')),
             '::',
-            COALESCE(NULLIF(rule.product_area, ''), NULLIF(metrics.product_area_key, ''), 'unassigned'),
-            COALESCE(NULLIF(rule.page_name, ''), NULLIF(metrics.page_label, ''), metrics.url_normalized)
+            LOWER(BTRIM(COALESCE(
+                NULLIF(BTRIM(rule.page_name), ''),
+                NULLIF(BTRIM(metrics.page_label), ''),
+                metrics.url_normalized
+            )))
         ) AS page_key,
+        COALESCE(NULLIF(BTRIM(metrics.product_area_key), ''), 'unassigned') AS product_area_key,
+        COALESCE(NULLIF(BTRIM(rule.product_area), ''), NULLIF(BTRIM(metrics.product_area_name), ''), 'Unassigned') AS product_area_name,
         COALESCE(NULLIF(rule.product_area, ''), NULLIF(metrics.product_area_name, ''), 'Unassigned') AS page_group,
         COALESCE(NULLIF(rule.page_name, ''), NULLIF(metrics.page_label, ''), metrics.url_normalized) AS page_label,
         metrics.url_normalized,
@@ -1440,6 +1962,8 @@ WITH current_page_rows AS (
 top_pages AS (
     SELECT
         page_key,
+        MIN(product_area_key) AS product_area_key,
+        MIN(product_area_name) AS product_area_name,
         MIN(page_group) AS page_group,
         MIN(page_label) AS page_label,
         MIN(url_normalized) AS url_normalized,
@@ -1453,10 +1977,14 @@ top_pages AS (
 ),
 previous_page_rows AS (
     SELECT
-        CONCAT_WS(
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(metrics.product_area_key), ''), 'unassigned')),
             '::',
-            COALESCE(NULLIF(rule.product_area, ''), NULLIF(metrics.product_area_key, ''), 'unassigned'),
-            COALESCE(NULLIF(rule.page_name, ''), NULLIF(metrics.page_label, ''), metrics.url_normalized)
+            LOWER(BTRIM(COALESCE(
+                NULLIF(BTRIM(rule.page_name), ''),
+                NULLIF(BTRIM(metrics.page_label), ''),
+                metrics.url_normalized
+            )))
         ) AS page_key,
         metrics.visits_count
     FROM pages_rawpagedailymetric metrics
@@ -1475,10 +2003,13 @@ previous_pages AS (
 ),
 current_action_rows AS (
     SELECT
-        CONCAT_WS(
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(actions.product_area_key), ''), 'unassigned')),
             '::',
-            COALESCE(NULLIF(rule.product_area, ''), NULLIF(actions.product_area_key, ''), 'unassigned'),
-            COALESCE(NULLIF(rule.page_name, ''), actions.url_normalized)
+            LOWER(BTRIM(COALESCE(
+                NULLIF(BTRIM(rule.page_name), ''),
+                actions.url_normalized
+            )))
         ) AS page_key,
         actions.element_key,
         actions.clicks_count,
@@ -1509,10 +2040,13 @@ actions AS (
 ),
 previous_action_rows AS (
     SELECT
-        CONCAT_WS(
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(actions.product_area_key), ''), 'unassigned')),
             '::',
-            COALESCE(NULLIF(rule.product_area, ''), NULLIF(actions.product_area_key, ''), 'unassigned'),
-            COALESCE(NULLIF(rule.page_name, ''), actions.url_normalized)
+            LOWER(BTRIM(COALESCE(
+                NULLIF(BTRIM(rule.page_name), ''),
+                actions.url_normalized
+            )))
         ) AS page_key,
         actions.element_key,
         actions.clicks_count,
@@ -1535,6 +2069,8 @@ previous_actions AS (
 )
 SELECT
     top_pages.page_key,
+    top_pages.product_area_key,
+    top_pages.product_area_name,
     top_pages.url_normalized,
     top_pages.page_rule_id,
     top_pages.page_group,
@@ -1562,13 +2098,184 @@ ORDER BY top_pages.visits_count DESC, top_pages.page_label, actions.action_rank
 """
 
 
-SANKEY_SQL = """
+# `pages_rawpagedailymetric` and `pages_rawpageactiondailymetric` are keyed by
+# URL and carry no company identity, so a cohort cannot be expressed against
+# them at all. The filtered variant therefore takes its pages from the
+# per-company daily table and re-derives the click actions from the source
+# events, the same way ingestion builds the raw action rollup. The partial
+# `trk_anae_click_comp_ts_idx` index keeps that event scan bounded.
+#
+# Pages are keyed by `page_rule_id` rather than by the composed display string,
+# so the current window, the previous window and the events all agree on
+# identity without depending on matching text expressions.
+TOP_ACTIONS_FILTERED_SQL = """
+WITH current_pages AS (
+    SELECT
+        pcdm.page_rule_id,
+        COALESCE(NULLIF(BTRIM(pcdm.product_area_key), ''), 'unassigned') AS product_area_key,
+        COALESCE(
+            NULLIF(BTRIM(pr.product_area), ''),
+            NULLIF(BTRIM(pcdm.product_area_name), ''),
+            'Unassigned'
+        ) AS product_area_name,
+        COALESCE(
+            NULLIF(BTRIM(pr.page_name), ''),
+            NULLIF(BTRIM(pcdm.product_area_name), ''),
+            'Unassigned'
+        ) AS page_label,
+        SUM(pcdm.visits_count) AS visits_count,
+        SUM(pcdm.engaged_seconds) AS engaged_seconds
+    FROM pages_pagecompanydailymetric pcdm
+    LEFT JOIN tracker_projectpagerule pr ON pr.id = pcdm.page_rule_id
+    WHERE pcdm.project_id = %(project_id)s
+      AND pcdm.date >= %(start_date)s
+      AND pcdm.date <= %(end_date)s
+      AND pcdm.company_id = ANY(%(cohort)s)
+    GROUP BY
+        pcdm.page_rule_id,
+        COALESCE(NULLIF(BTRIM(pcdm.product_area_key), ''), 'unassigned'),
+        COALESCE(
+            NULLIF(BTRIM(pr.product_area), ''),
+            NULLIF(BTRIM(pcdm.product_area_name), ''),
+            'Unassigned'
+        ),
+        COALESCE(
+            NULLIF(BTRIM(pr.page_name), ''),
+            NULLIF(BTRIM(pcdm.product_area_name), ''),
+            'Unassigned'
+        )
+),
+top_pages AS (
+    SELECT
+        current_pages.*,
+        CONCAT(LOWER(product_area_key), '::', LOWER(page_label)) AS page_key
+    FROM current_pages
+    ORDER BY visits_count DESC, page_label
+    LIMIT 10
+),
+previous_pages AS (
+    SELECT
+        pcdm.page_rule_id,
+        SUM(pcdm.visits_count) AS previous_visits_count
+    FROM pages_pagecompanydailymetric pcdm
+    WHERE pcdm.project_id = %(project_id)s
+      AND pcdm.date >= %(previous_start_date)s
+      AND pcdm.date <= %(previous_end_date)s
+      AND pcdm.company_id = ANY(%(cohort)s)
+    GROUP BY pcdm.page_rule_id
+),
+click_events AS (
+    SELECT
+        (e.timestamp AT TIME ZONE %(timezone)s)::date AS event_date,
+        e.page_rule_id,
+        e.element_key,
+        NULLIF(COALESCE(NULLIF(e.user_id, ''), NULLIF(s.user_id, '')), '') AS user_id,
+        NULLIF(COALESCE(NULLIF(e.company_id, ''), NULLIF(s.company_id, '')), '') AS company_id,
+        pv.id AS visit_id
+    FROM tracker_analyticsevent e
+    JOIN tracker_analyticssession s ON s.session_id = e.session_id
+    LEFT JOIN pages_pagevisit pv
+      ON pv.project_id = s.project_id
+     AND pv.session_id = e.session_id
+     AND pv.url_normalized = COALESCE(NULLIF(e.url_normalized, ''), NULLIF(e.url, ''))
+     AND pv.visit_start_ts <= e.timestamp
+     AND pv.visit_end_ts >= e.timestamp
+    WHERE s.project_id = %(project_id)s
+      AND e.event_type = 'click'
+      AND e.element_key IS NOT NULL
+      AND e.element_key <> ''
+      AND (e.timestamp AT TIME ZONE %(timezone)s)::date >= %(previous_start_date)s
+      AND (e.timestamp AT TIME ZONE %(timezone)s)::date <= %(end_date)s
+      AND COALESCE(NULLIF(e.company_id, ''), NULLIF(s.company_id, '')) = ANY(%(cohort)s)
+),
+actions AS (
+    SELECT
+        click_events.page_rule_id,
+        click_events.element_key,
+        COUNT(*) AS clicks_count,
+        COUNT(DISTINCT click_events.visit_id)
+            FILTER (WHERE click_events.visit_id IS NOT NULL) AS visits_with_action_count,
+        COUNT(DISTINCT click_events.user_id)
+            FILTER (WHERE click_events.user_id IS NOT NULL) AS users_count_daily,
+        COUNT(DISTINCT click_events.company_id)
+            FILTER (WHERE click_events.company_id IS NOT NULL) AS companies_count_daily,
+        ROW_NUMBER() OVER (
+            PARTITION BY click_events.page_rule_id
+            ORDER BY COUNT(*) DESC, click_events.element_key
+        ) AS action_rank
+    FROM click_events
+    JOIN top_pages ON top_pages.page_rule_id IS NOT DISTINCT FROM click_events.page_rule_id
+    WHERE click_events.event_date >= %(start_date)s
+    GROUP BY click_events.page_rule_id, click_events.element_key
+),
+previous_actions AS (
+    SELECT
+        click_events.page_rule_id,
+        click_events.element_key,
+        COUNT(*) AS previous_clicks_count,
+        COUNT(DISTINCT click_events.visit_id)
+            FILTER (WHERE click_events.visit_id IS NOT NULL) AS previous_visits_with_action_count
+    FROM click_events
+    JOIN top_pages ON top_pages.page_rule_id IS NOT DISTINCT FROM click_events.page_rule_id
+    WHERE click_events.event_date <= %(previous_end_date)s
+    GROUP BY click_events.page_rule_id, click_events.element_key
+)
+SELECT
+    top_pages.page_key,
+    top_pages.product_area_key,
+    top_pages.product_area_name,
+    '' AS url_normalized,
+    top_pages.page_rule_id,
+    top_pages.product_area_name AS page_group,
+    top_pages.page_label,
+    top_pages.visits_count,
+    top_pages.engaged_seconds,
+    actions.element_key,
+    COALESCE(actions.clicks_count, 0) AS clicks_count,
+    COALESCE(actions.visits_with_action_count, 0) AS visits_with_action_count,
+    COALESCE(actions.users_count_daily, 0) AS users_count_daily,
+    COALESCE(actions.companies_count_daily, 0) AS companies_count_daily,
+    COALESCE(previous_pages.previous_visits_count, 0) AS previous_page_visits_count,
+    COALESCE(previous_actions.previous_clicks_count, 0) AS previous_clicks_count,
+    COALESCE(previous_actions.previous_visits_with_action_count, 0) AS previous_visits_with_action_count
+FROM top_pages
+LEFT JOIN actions
+  ON actions.page_rule_id IS NOT DISTINCT FROM top_pages.page_rule_id
+ AND actions.action_rank <= 5
+LEFT JOIN previous_pages
+  ON previous_pages.page_rule_id IS NOT DISTINCT FROM top_pages.page_rule_id
+LEFT JOIN previous_actions
+  ON previous_actions.page_rule_id IS NOT DISTINCT FROM actions.page_rule_id
+ AND previous_actions.element_key = actions.element_key
+ORDER BY top_pages.visits_count DESC, top_pages.page_label, actions.action_rank
+"""
+
+
+SANKEY_TEMPLATE = """
 WITH normalized AS (
     SELECT
-        COALESCE(from_page_rule_id::text, NULLIF(from_url_normalized, ''), NULLIF(from_product_area_key, ''), 'unassigned') AS from_page_key,
-        COALESCE(to_page_rule_id::text, NULLIF(to_url_normalized, ''), NULLIF(to_product_area_key, ''), 'unassigned') AS to_page_key,
-        COALESCE(NULLIF(from_rule.page_name, ''), NULLIF(from_url_normalized, ''), NULLIF(from_product_area_name, ''), 'Unassigned') AS from_page_name,
-        COALESCE(NULLIF(to_rule.page_name, ''), NULLIF(to_url_normalized, ''), NULLIF(to_product_area_name, ''), 'Unassigned') AS to_page_name,
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(from_product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(BTRIM(COALESCE(
+                NULLIF(BTRIM(from_rule.page_name), ''),
+                NULLIF(BTRIM(from_url_normalized), ''),
+                NULLIF(BTRIM(from_product_area_name), ''),
+                'Unassigned'
+            )))
+        ) AS from_page_key,
+        CONCAT(
+            LOWER(COALESCE(NULLIF(BTRIM(to_product_area_key), ''), 'unassigned')),
+            '::',
+            LOWER(BTRIM(COALESCE(
+                NULLIF(BTRIM(to_rule.page_name), ''),
+                NULLIF(BTRIM(to_url_normalized), ''),
+                NULLIF(BTRIM(to_product_area_name), ''),
+                'Unassigned'
+            )))
+        ) AS to_page_key,
+        COALESCE(NULLIF(BTRIM(from_rule.page_name), ''), NULLIF(BTRIM(from_url_normalized), ''), NULLIF(BTRIM(from_product_area_name), ''), 'Unassigned') AS from_page_name,
+        COALESCE(NULLIF(BTRIM(to_rule.page_name), ''), NULLIF(BTRIM(to_url_normalized), ''), NULLIF(BTRIM(to_product_area_name), ''), 'Unassigned') AS to_page_name,
         from_product_area_key,
         from_product_area_name,
         to_product_area_key,
@@ -1578,9 +2285,10 @@ WITH normalized AS (
     FROM pages_pagetransition transitions
     LEFT JOIN tracker_projectpagerule from_rule ON from_rule.id = transitions.from_page_rule_id
     LEFT JOIN tracker_projectpagerule to_rule ON to_rule.id = transitions.to_page_rule_id
-    WHERE transitions.project_id = %s
-      AND (transition_ts AT TIME ZONE %s)::date >= %s
-      AND (transition_ts AT TIME ZONE %s)::date <= %s
+    WHERE transitions.project_id = %(project_id)s
+      AND (transition_ts AT TIME ZONE %(timezone)s)::date >= %(start_date)s
+      AND (transition_ts AT TIME ZONE %(timezone)s)::date <= %(end_date)s
+      {company_cohort}
 ),
 links AS (
     SELECT
@@ -1603,6 +2311,77 @@ links AS (
 )
 SELECT * FROM links
 """
+
+SANKEY_SQL = SANKEY_TEMPLATE.format(company_cohort='')
+
+SANKEY_FILTERED_SQL = SANKEY_TEMPLATE.format(
+    company_cohort=_cohort('transitions.company_id'),
+)
+
+
+TWO_WAY_MOVEMENT_TEMPLATE = """
+WITH filtered AS (
+    SELECT
+        transitions.from_page_rule_id,
+        transitions.to_page_rule_id,
+        session_id,
+        company_id,
+        user_id
+    FROM pages_pagetransition transitions
+    WHERE transitions.project_id = %(project_id)s
+      AND (transition_ts AT TIME ZONE %(timezone)s)::date >= %(start_date)s
+      AND (transition_ts AT TIME ZONE %(timezone)s)::date <= %(end_date)s
+      {company_cohort}
+      AND from_page_rule_id IS NOT NULL
+      AND to_page_rule_id IS NOT NULL
+      AND from_page_rule_id <> to_page_rule_id
+),
+pair_base AS (
+    SELECT
+        LEAST(from_page_rule_id, to_page_rule_id) AS page_low_id,
+        GREATEST(from_page_rule_id, to_page_rule_id) AS page_high_id,
+        COUNT(*) FILTER (WHERE from_page_rule_id < to_page_rule_id) AS low_to_high,
+        COUNT(*) FILTER (WHERE from_page_rule_id > to_page_rule_id) AS high_to_low,
+        COUNT(DISTINCT session_id) AS sessions_count,
+        COUNT(DISTINCT company_id) FILTER (WHERE company_id IS NOT NULL AND company_id <> '') AS companies_count,
+        COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '') AS users_count
+    FROM filtered
+    GROUP BY 1, 2
+),
+scored AS (
+    SELECT
+        page_low_id,
+        page_high_id,
+        low_to_high,
+        high_to_low,
+        low_to_high + high_to_low AS total_transitions,
+        2 * LEAST(low_to_high, high_to_low) AS reciprocal_volume,
+        100.0 * (2 * LEAST(low_to_high, high_to_low)) / NULLIF(low_to_high + high_to_low, 0) AS reciprocity_pct,
+        1.0 * LEAST(low_to_high, high_to_low) / NULLIF(GREATEST(low_to_high, high_to_low), 0) AS direction_balance,
+        sessions_count,
+        companies_count,
+        users_count
+    FROM pair_base
+    WHERE low_to_high > 0 AND high_to_low > 0
+)
+SELECT
+    scored.*,
+    COALESCE(NULLIF(BTRIM(low_rule.page_name), ''), 'Unnamed page') AS page_low_name,
+    COALESCE(NULLIF(BTRIM(high_rule.page_name), ''), 'Unnamed page') AS page_high_name,
+    COALESCE(NULLIF(BTRIM(low_rule.product_area), ''), 'Unassigned') AS page_low_product_area_name,
+    COALESCE(NULLIF(BTRIM(high_rule.product_area), ''), 'Unassigned') AS page_high_product_area_name
+FROM scored
+JOIN tracker_projectpagerule low_rule ON low_rule.id = scored.page_low_id
+JOIN tracker_projectpagerule high_rule ON high_rule.id = scored.page_high_id
+ORDER BY reciprocal_volume DESC, total_transitions DESC
+LIMIT 10
+"""
+
+TWO_WAY_MOVEMENT_SQL = TWO_WAY_MOVEMENT_TEMPLATE.format(company_cohort='')
+
+TWO_WAY_MOVEMENT_FILTERED_SQL = TWO_WAY_MOVEMENT_TEMPLATE.format(
+    company_cohort=_cohort('transitions.company_id'),
+)
 
 
 DETAIL_FLOW_SQL = """
@@ -1736,13 +2515,14 @@ SELECT * FROM links
 """
 
 
-SCATTER_SQL = """
+SCATTER_TEMPLATE = """
 WITH top_areas AS (
     SELECT product_area_key, MIN(product_area_name) AS product_area_name, SUM(engaged_seconds) AS engaged_seconds
-    FROM pages_pagedailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
+    FROM {measure_source}
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {measure_cohort}
     GROUP BY product_area_key
     ORDER BY SUM(engaged_seconds) DESC
     LIMIT 8
@@ -1756,9 +2536,10 @@ company_engagement AS (
         SUM(visits_count) AS visits_count,
         SUM(click_count) AS clicks_count
     FROM pages_pagecompanydailymetric
-    WHERE project_id = %s
-      AND date >= %s
-      AND date <= %s
+    WHERE project_id = %(project_id)s
+      AND date >= %(start_date)s
+      AND date <= %(end_date)s
+      {company_cohort}
     GROUP BY product_area_key, company_id
 ),
 company_users AS (
@@ -1766,9 +2547,10 @@ company_users AS (
     FROM (
         SELECT product_area_key, company_id, date, COUNT(DISTINCT user_id) AS active_users
         FROM pages_pageuserdailymetric
-        WHERE project_id = %s
-          AND date >= %s
-          AND date <= %s
+        WHERE project_id = %(project_id)s
+          AND date >= %(start_date)s
+          AND date <= %(end_date)s
+          {user_cohort}
         GROUP BY product_area_key, company_id, date
     ) daily_users
     GROUP BY product_area_key, company_id
@@ -1799,6 +2581,20 @@ WHERE row_number <= 80
 ORDER BY product_area_name, row_number
 """
 
+SCATTER_SQL = SCATTER_TEMPLATE.format(
+    measure_source=_PAGE_MEASURE_SOURCE,
+    measure_cohort='',
+    company_cohort='',
+    user_cohort='',
+)
+
+SCATTER_FILTERED_SQL = SCATTER_TEMPLATE.format(
+    measure_source=_PAGE_MEASURE_SOURCE_BY_COMPANY,
+    measure_cohort=_cohort(),
+    company_cohort=_cohort(),
+    user_cohort=_cohort(),
+)
+
 
 UPSERT_OVERVIEW_CACHE_SQL = """
 INSERT INTO pages_pagesoverviewcache (
@@ -1808,17 +2604,19 @@ INSERT INTO pages_pagesoverviewcache (
     end_date,
     filters_hash,
     payload_json,
+    payload_compressed,
     source_max_event_ts,
     generated_at,
     expires_at,
     is_stale
 )
-VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, false)
+VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, false)
 ON CONFLICT (project_id, range_key, filters_hash)
 DO UPDATE SET
     start_date = EXCLUDED.start_date,
     end_date = EXCLUDED.end_date,
     payload_json = EXCLUDED.payload_json,
+    payload_compressed = EXCLUDED.payload_compressed,
     source_max_event_ts = EXCLUDED.source_max_event_ts,
     generated_at = EXCLUDED.generated_at,
     expires_at = EXCLUDED.expires_at,
@@ -1828,13 +2626,28 @@ DO UPDATE SET
 
 FETCH_OVERVIEW_CACHE_SQL = """
 SELECT
-    payload_json,
+    CASE
+        WHEN payload_compressed IS NULL THEN payload_json
+        ELSE NULL
+    END AS payload_json,
+    payload_compressed,
     source_max_event_ts,
     generated_at,
     expires_at,
     is_stale,
     start_date,
     end_date
+FROM pages_pagesoverviewcache
+WHERE project_id = %s
+  AND range_key = %s
+  AND filters_hash = %s
+LIMIT 1
+"""
+
+
+FETCH_OVERVIEW_CACHE_JSON_FALLBACK_SQL = """
+SELECT
+    payload_json
 FROM pages_pagesoverviewcache
 WHERE project_id = %s
   AND range_key = %s
@@ -1902,7 +2715,7 @@ DO UPDATE SET
 
 FETCH_COMPANIES_OVERVIEW_CACHE_SQL = """
 SELECT
-    payload_json,
+    payload_json::text AS payload_json_text,
     source_max_event_ts,
     generated_at,
     expires_at,
@@ -1963,7 +2776,7 @@ DO UPDATE SET
 
 FETCH_USERS_OVERVIEW_CACHE_SQL = """
 SELECT
-    payload_json,
+    payload_json::text AS payload_json_text,
     source_max_event_ts,
     generated_at,
     expires_at,
@@ -1975,6 +2788,330 @@ WHERE project_id = %s
   AND range_key = %s
   AND filters_hash = %s
 LIMIT 1
+"""
+
+
+FETCH_USERS_OVERVIEW_CLIENT_CACHE_SQL = """
+SELECT
+    (payload_json - 'users')::text AS payload_json_text,
+    payload_json ->> 'schema_version' AS schema_version,
+    source_max_event_ts,
+    generated_at,
+    expires_at,
+    is_stale,
+    start_date,
+    end_date
+FROM pages_usersoverviewcache
+WHERE project_id = %s
+  AND range_key = %s
+  AND filters_hash = %s
+LIMIT 1
+"""
+
+
+# Endpoints that render from SQL rather than from the payload still have to
+# decide whether a variant may be served. These return only what that decision
+# needs, so a table page or a selector lookup never transfers a payload.
+OVERVIEW_VARIANT_METADATA_TEMPLATE = """
+SELECT
+    payload_json ->> 'schema_version' AS schema_version,
+    payload_json -> 'freshness' ->> 'filtered_analytics_revision'
+        AS filtered_analytics_revision,
+    payload_json -> 'freshness' ->> 'analytics_facts_revision'
+        AS analytics_facts_revision,
+    generated_at,
+    expires_at,
+    is_stale,
+    start_date,
+    end_date
+FROM {table}
+WHERE project_id = %s
+  AND range_key = %s
+  AND filters_hash = %s
+LIMIT 1
+"""
+
+FETCH_PAGES_OVERVIEW_METADATA_SQL = OVERVIEW_VARIANT_METADATA_TEMPLATE.format(
+    table='pages_pagesoverviewcache',
+)
+FETCH_COMPANIES_OVERVIEW_METADATA_SQL = OVERVIEW_VARIANT_METADATA_TEMPLATE.format(
+    table='pages_companiesoverviewcache',
+)
+FETCH_USERS_OVERVIEW_METADATA_SQL = OVERVIEW_VARIANT_METADATA_TEMPLATE.format(
+    table='pages_usersoverviewcache',
+)
+
+
+# The user selector runs on every keystroke and returns at most a few dozen
+# rows, so it matches and orders inside the payload rather than transferring the
+# whole `users` array to filter it in Python.
+FETCH_USERS_OVERVIEW_SELECTOR_SQL = """
+WITH cached AS (
+    SELECT payload_json
+    FROM pages_usersoverviewcache
+    WHERE project_id = %(project_id)s
+      AND range_key = %(range_key)s
+      AND filters_hash = %(filters_hash)s
+    LIMIT 1
+),
+users AS MATERIALIZED (
+    SELECT item.user_row
+    FROM cached
+    CROSS JOIN LATERAL jsonb_array_elements(
+        CASE
+            WHEN jsonb_typeof(cached.payload_json -> 'users') = 'array'
+                THEN cached.payload_json -> 'users'
+            ELSE '[]'::jsonb
+        END
+    ) AS item(user_row)
+),
+identified AS (
+    SELECT
+        user_row,
+        COALESCE(
+            NULLIF(BTRIM(user_row ->> 'id'), ''),
+            NULLIF(BTRIM(user_row ->> 'userId'), '')
+        ) AS user_id
+    FROM users
+),
+matched AS (
+    SELECT
+        user_id,
+        COALESCE(NULLIF(user_row ->> 'name', ''), user_id) AS name,
+        COALESCE(user_row ->> 'email', '') AS email,
+        COALESCE(user_row ->> 'companyId', '') AS company_id,
+        COALESCE(NULLIF(user_row ->> 'companyName', ''), user_row ->> 'company', '') AS company_name,
+        COALESCE(user_row ->> 'role', '') AS role,
+        COALESCE(user_row ->> 'seatType', '') AS seat_type,
+        COALESCE(user_row ->> 'status', '') AS status,
+        CASE WHEN jsonb_typeof(user_row -> 'engagedSeconds') = 'number'
+             THEN (user_row ->> 'engagedSeconds')::numeric ELSE 0 END AS engaged_seconds,
+        CASE WHEN jsonb_typeof(user_row -> 'visitsCount') = 'number'
+             THEN (user_row ->> 'visitsCount')::numeric ELSE 0 END AS visits_count,
+        CASE WHEN jsonb_typeof(user_row -> 'featuresCount') = 'number'
+             THEN (user_row ->> 'featuresCount')::numeric
+             WHEN jsonb_typeof(user_row -> 'topFeatures') = 'array'
+             THEN jsonb_array_length(user_row -> 'topFeatures')
+             ELSE 0 END AS features_count,
+        COALESCE(user_row ->> 'lastActive', '') AS last_active,
+        CASE WHEN jsonb_typeof(user_row -> 'lastActiveSort') = 'number'
+             THEN (user_row ->> 'lastActiveSort')::numeric ELSE 0 END AS last_active_sort
+    FROM identified
+    WHERE user_id IS NOT NULL
+      AND (
+          %(query)s = ''
+          OR POSITION(%(query)s IN LOWER(CONCAT_WS(
+              ' ',
+              user_row ->> 'name',
+              user_row ->> 'email',
+              COALESCE(NULLIF(user_row ->> 'companyName', ''), user_row ->> 'company'),
+              user_row ->> 'role',
+              user_row ->> 'seatType',
+              user_id
+          ))) > 0
+      )
+),
+counted AS (
+    SELECT COUNT(*)::integer AS total FROM matched
+),
+ordered AS (
+    SELECT
+        matched.*,
+        ROW_NUMBER() OVER (
+            ORDER BY
+                CASE WHEN %(alphabetical)s THEN LOWER(name) END ASC,
+                CASE WHEN NOT %(alphabetical)s AND %(query)s <> '' THEN LOWER(company_name) END ASC,
+                CASE WHEN NOT %(alphabetical)s AND %(query)s <> '' THEN LOWER(name) END ASC,
+                CASE WHEN NOT %(alphabetical)s AND %(query)s = '' THEN last_active_sort END ASC,
+                CASE WHEN NOT %(alphabetical)s AND %(query)s = '' THEN -engaged_seconds END ASC,
+                CASE WHEN NOT %(alphabetical)s AND %(query)s = '' THEN LOWER(name) END ASC,
+                user_id ASC
+        ) AS selector_position
+    FROM matched
+)
+SELECT
+    COALESCE((
+        SELECT jsonb_agg(
+            to_jsonb(ordered) - 'selector_position'
+            ORDER BY ordered.selector_position
+        )
+        FROM ordered
+        WHERE ordered.selector_position <= %(limit)s
+    ), '[]'::jsonb) AS rows,
+    counted.total
+FROM counted
+"""
+
+
+FETCH_USERS_OVERVIEW_TABLE_PAGE_SQL = """
+WITH cached AS (
+    SELECT payload_json
+    FROM pages_usersoverviewcache
+    WHERE project_id = %s
+      AND range_key = %s
+      AND filters_hash = %s
+    LIMIT 1
+),
+users AS MATERIALIZED (
+    SELECT item.user_row
+    FROM cached
+    CROSS JOIN LATERAL jsonb_array_elements(
+        CASE
+            WHEN jsonb_typeof(cached.payload_json -> 'users') = 'array'
+                THEN cached.payload_json -> 'users'
+            ELSE '[]'::jsonb
+        END
+    ) AS item(user_row)
+),
+filtered AS MATERIALIZED (
+    SELECT user_row
+    FROM users
+    WHERE (%s = '' OR COALESCE(user_row ->> 'company', '') = %s)
+      AND (%s = '' OR COALESCE(user_row ->> 'status', '') = %s)
+      AND (%s = '' OR COALESCE(user_row ->> 'role', '') = %s)
+      AND (
+          %s = ''
+          OR POSITION(%s IN LOWER(CONCAT_WS(
+              ' ',
+              user_row ->> 'name',
+              user_row ->> 'email',
+              user_row ->> 'company',
+              user_row ->> 'role'
+          ))) > 0
+      )
+      AND (
+          %s = FALSE
+          OR COALESCE((user_row ->> 'identified')::boolean, FALSE) = TRUE
+      )
+      AND (
+          %s = ''
+          OR COALESCE(user_row ->> 'topFeature', '') = %s
+          OR EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(
+                  CASE
+                      WHEN jsonb_typeof(user_row -> 'topFeatures') = 'array'
+                          THEN user_row -> 'topFeatures'
+                      ELSE '[]'::jsonb
+                  END
+              ) AS feature_row(value)
+              WHERE COALESCE(feature_row.value ->> 'feature', '') = %s
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(
+                  CASE
+                      WHEN jsonb_typeof(user_row -> 'pageGroups') = 'array'
+                          THEN user_row -> 'pageGroups'
+                      ELSE '[]'::jsonb
+                  END
+              ) AS area_row(value)
+              WHERE COALESCE(area_row.value ->> 'name', '') = %s
+          )
+      )
+),
+filter_options AS (
+    SELECT jsonb_build_object(
+        'companies', COALESCE((
+            SELECT jsonb_agg(option_value ORDER BY option_value)
+            FROM (
+                SELECT DISTINCT BTRIM(COALESCE(user_row ->> 'company', '')) AS option_value
+                FROM users
+            ) AS company_options
+            WHERE option_value <> ''
+        ), '[]'::jsonb),
+        'roles', COALESCE((
+            SELECT jsonb_agg(option_value ORDER BY option_value)
+            FROM (
+                SELECT DISTINCT BTRIM(COALESCE(user_row ->> 'role', '')) AS option_value
+                FROM users
+            ) AS role_options
+            WHERE option_value <> ''
+        ), '[]'::jsonb),
+        'statuses', COALESCE((
+            SELECT jsonb_agg(
+                option_value
+                ORDER BY CASE option_value
+                    WHEN 'Power' THEN 0
+                    WHEN 'Healthy' THEN 1
+                    WHEN 'Light' THEN 2
+                    WHEN 'Passive' THEN 3
+                    WHEN 'Dropped' THEN 4
+                    ELSE 99
+                END,
+                option_value
+            )
+            FROM (
+                SELECT DISTINCT BTRIM(COALESCE(user_row ->> 'status', '')) AS option_value
+                FROM users
+            ) AS status_options
+            WHERE option_value <> ''
+        ), '[]'::jsonb)
+    ) AS options
+),
+filtered_count AS (
+    SELECT COUNT(*)::integer AS total_rows
+    FROM filtered
+),
+requested AS (
+    SELECT %s::integer AS requested_page, %s::integer AS page_size
+),
+pagination_base AS (
+    SELECT
+        filtered_count.total_rows,
+        requested.requested_page,
+        requested.page_size,
+        GREATEST(
+            1,
+            CEIL(filtered_count.total_rows::numeric / requested.page_size)::integer
+        ) AS total_pages
+    FROM filtered_count
+    CROSS JOIN requested
+),
+pagination AS (
+    SELECT
+        total_rows,
+        page_size,
+        total_pages,
+        GREATEST(1, LEAST(requested_page, total_pages)) AS page
+    FROM pagination_base
+),
+numbered AS (
+    SELECT
+        user_row,
+        ROW_NUMBER() OVER (
+            ORDER BY
+                {sort_expression} {sort_direction},
+                LOWER(COALESCE(
+                    user_row ->> 'id',
+                    user_row ->> 'userId',
+                    user_row ->> 'email',
+                    user_row ->> 'name',
+                    ''
+                )) ASC
+        ) AS sort_position
+    FROM filtered
+),
+page_rows AS (
+    SELECT numbered.user_row, numbered.sort_position
+    FROM numbered
+    CROSS JOIN pagination
+    WHERE numbered.sort_position > (pagination.page - 1) * pagination.page_size
+      AND numbered.sort_position <= pagination.page * pagination.page_size
+)
+SELECT
+    COALESCE((
+        SELECT jsonb_agg(page_rows.user_row ORDER BY page_rows.sort_position)
+        FROM page_rows
+    ), '[]'::jsonb) AS rows,
+    pagination.page,
+    pagination.page_size,
+    pagination.total_rows,
+    pagination.total_pages,
+    filter_options.options AS filter_options
+FROM cached
+CROSS JOIN pagination
+CROSS JOIN filter_options
 """
 
 
@@ -1995,6 +3132,35 @@ WHERE project_id = %s
 LIMIT 1
 """
 
+
+COMPANY_DETAIL_CACHE_INSERT_PREFIX = """
+INSERT INTO pages_companiesdetailcache (
+    project_id,
+    range_key,
+    company_id,
+    start_date,
+    end_date,
+    filters_hash,
+    payload_json,
+    generated_at,
+    expires_at,
+    is_stale
+)
+VALUES
+"""
+
+COMPANY_DETAIL_CACHE_VALUES_TEMPLATE = '(%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, false)'
+
+COMPANY_DETAIL_CACHE_CONFLICT_SUFFIX = """
+ON CONFLICT (project_id, range_key, company_id, filters_hash)
+DO UPDATE SET
+    start_date = EXCLUDED.start_date,
+    end_date = EXCLUDED.end_date,
+    payload_json = EXCLUDED.payload_json,
+    generated_at = EXCLUDED.generated_at,
+    expires_at = EXCLUDED.expires_at,
+    is_stale = false
+"""
 
 UPSERT_COMPANY_DETAIL_CACHE_SQL = """
 INSERT INTO pages_companiesdetailcache (

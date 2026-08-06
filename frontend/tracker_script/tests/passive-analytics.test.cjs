@@ -388,9 +388,9 @@ function run() {
     assert.equal(eventTypes.filter((type) => type === 'click').length, 1);
     assert.equal(eventTypes.filter((type) => type === 'scroll').length, 1);
     assert.equal(eventTypes.filter((type) => type === 'mouse_move').length, 1);
-    assert.equal(batch.find((event) => event.type === 'scroll').page.url, 'https://app.example.com/dashboard');
-    assert.equal(batch.find((event) => event.type === 'mouse_move').page.url, 'https://app.example.com/dashboard');
-    assert.equal(batch.find((event) => event.type === 'click').page.url, 'https://app.example.com/dashboard');
+    assert.equal(batch.find((event) => event.type === 'scroll').page.url, 'https://app.example.com/dashboard?scroll=latest');
+    assert.equal(batch.find((event) => event.type === 'mouse_move').page.url, 'https://app.example.com/dashboard?move=latest');
+    assert.equal(batch.find((event) => event.type === 'click').page.url, 'https://app.example.com/dashboard?click=final');
     assert.equal(batch.find((event) => event.type === 'click').elementKey, 'Button: Open dashboard');
 
     env.intervals[0].callback();
@@ -704,6 +704,49 @@ function runMissingSettingsIdentityScenario() {
   }
 }
 
+function runIdentityDoesNotRewriteQueuedAnonymousEventsScenario() {
+  const env = installBrowserStubs();
+
+  try {
+    delete require.cache[require.resolve(env.bundlePath)];
+    require(env.bundlePath);
+
+    env.setNow(1000);
+    env.document.dispatchEvent({ type: 'scroll' });
+
+    env.window.hymetry.identify({
+      user: {
+        id: 'user-after-login',
+        traits: {
+          name: 'Jane After Login',
+        },
+      },
+      company: {
+        id: null,
+        traits: {},
+      },
+    });
+
+    env.setNow(2000);
+    env.document.dispatchEvent({
+      type: 'click',
+      target: new env.FakeButtonElement('Continue'),
+    });
+    env.intervals[0].callback();
+
+    assert.equal(env.fetchCalls.length, 1);
+    const payload = JSON.parse(env.fetchCalls[0].options.body);
+    const scrollEvent = payload.batch.find((event) => event.type === 'scroll');
+    const clickEvent = payload.batch.find((event) => event.type === 'click');
+    assert.equal(scrollEvent.user_id, null);
+    assert.equal(scrollEvent.user.id, null);
+    assert.equal(clickEvent.user_id, 'user-after-login');
+    assert.equal(clickEvent.user.id, 'user-after-login');
+  } finally {
+    env.restore();
+  }
+}
+
 try {
   run();
   runFallbackVisitorIdScenario();
@@ -714,6 +757,7 @@ try {
   runSettingsIdentifyEmailFallbackScenario();
   runSettingsIdentifyUserIdFallbackScenario();
   runMissingSettingsIdentityScenario();
+  runIdentityDoesNotRewriteQueuedAnonymousEventsScenario();
   console.log('passive analytics smoke test passed');
 } catch (error) {
   console.error(error);

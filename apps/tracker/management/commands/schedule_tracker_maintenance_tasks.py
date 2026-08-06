@@ -1,23 +1,23 @@
 from django.core.management.base import BaseCommand
+from django.db.models import Q
 from django_celery_beat.models import IntervalSchedule, PeriodicTask
 
 
 class Command(BaseCommand):
-    help = 'Create or update periodic Celery Beat tasks used by session replay analytics.'
+    help = 'Create or update general tracker maintenance tasks.'
+
+    LEGACY_TASK_NAMES = (
+        'Bubble cache refresh',
+        'Normalization',
+        'Calculate normalization factors daily',
+    )
+    LEGACY_TASK_PATHS = (
+        'apps.tracker.tasks.run_calculate_bubble_cache',
+        'apps.tracker.tasks.calculate_bubble_cache',
+        'apps.tracker.tasks.calculate_project_normalization_factors',
+    )
 
     TASKS = (
-        (
-            'Bubble cache refresh',
-            'apps.tracker.tasks.run_calculate_bubble_cache',
-            5,
-            IntervalSchedule.MINUTES,
-        ),
-        (
-            'Calculate normalization factors daily',
-            'apps.tracker.tasks.calculate_project_normalization_factors',
-            1,
-            IntervalSchedule.DAYS,
-        ),
         (
             'Celery backend cleanup',
             'celery.backend_cleanup',
@@ -36,6 +36,10 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         is_fast = options['mode'] == 'fast'
+        PeriodicTask.objects.filter(
+            Q(name__in=self.LEGACY_TASK_NAMES) | Q(task__in=self.LEGACY_TASK_PATHS)
+        ).update(enabled=False)
+
         for name, task_path, every, period in self.TASKS:
             if is_fast:
                 every, period = 30, IntervalSchedule.SECONDS

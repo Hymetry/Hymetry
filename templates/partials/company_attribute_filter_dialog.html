@@ -1,0 +1,96 @@
+<div
+  id="company-attribute-filters"
+  data-company-attribute-filter-root
+  data-has-attributes="{% if company_attribute_filter.has_attributes %}true{% else %}false{% endif %}"
+  data-preview-url="{{ company_attribute_filter.preview_url }}"
+  data-surface="{{ company_attribute_filter.surface }}"
+  hidden>
+  <div class="company-attribute-filter-shell">
+    <section
+      class="company-attribute-filter-dialog"
+      role="dialog"
+      aria-labelledby="company-attribute-filter-title"
+      tabindex="-1">
+      <header class="company-attribute-filter-header">
+        <div class="company-attribute-filter-heading">
+          <h2
+            id="company-attribute-filter-title"
+            class="company-attribute-filter-title"
+            data-attribute-filter-title
+            tabindex="-1">Filter by company attributes</h2>
+          <p class="company-attribute-filter-subtitle" data-attribute-filter-subtitle hidden></p>
+        </div>
+        <button type="button" data-attribute-filter-close class="company-attribute-filter-close" aria-label="Close company attribute filters">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
+            <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+          </svg>
+        </button>
+      </header>
+
+      <div class="company-segment-builder-context" data-attribute-filter-context role="status" hidden>
+        <p class="company-segment-builder-context__title" data-attribute-filter-context-text></p>
+      </div>
+
+      {% comment %}
+        Filled by static/js/shared/company-attribute-filters.js when the segment
+        being edited references a deleted attribute. Those conditions have no
+        row to show — the attribute is gone — so this is the only place the
+        editor can account for them.
+      {% endcomment %}
+      <div class="company-segment-builder-review" data-attribute-filter-review role="alert" hidden>
+        <p class="company-segment-builder-review__title" data-attribute-filter-review-title></p>
+        <ul class="company-segment-builder-review__list" data-attribute-filter-review-list></ul>
+        <p class="company-segment-builder-review__copy" data-attribute-filter-review-copy></p>
+      </div>
+
+      {% if company_attribute_filter.has_attributes %}
+        <div class="company-attribute-filter-panel">
+          <div class="company-attribute-filter-body" data-attribute-filter-rows></div>
+          <footer class="company-attribute-filter-footer">
+            <div class="attribute-filter-preview" data-attribute-filter-preview>
+              <div class="attribute-filter-preview-heading">
+                <div class="attribute-filter-preview-label" data-attribute-filter-preview-label role="status" aria-live="polite">
+                  Open the filter to preview matching companies
+                </div>
+                {% comment %}
+                  Clearing is only offered once the draft has something to clear,
+                  so the button hides itself again as soon as it is used.
+                {% endcomment %}
+                <button type="button" class="company-attribute-filter-reset" data-attribute-filter-reset hidden>Clear</button>
+              </div>
+              <div class="attribute-filter-preview-track" aria-hidden="true">
+                <span class="attribute-filter-preview-fill" data-attribute-filter-preview-fill style="--preview-width: 0%"></span>
+              </div>
+              <p class="company-filter-draft-error" data-attribute-filter-draft-error role="alert" hidden></p>
+            </div>
+            {% comment %}
+              Actions depend on the dialog mode, so company-attribute-filters.js
+              renders them: Save as segment… plus Apply while filtering, Cancel
+              plus Save changes while editing a saved segment.
+            {% endcomment %}
+            <div class="attribute-filter-actions" data-attribute-filter-actions></div>
+          </footer>
+        </div>
+      {% else %}
+        <div class="company-attribute-filter-panel">
+          <div class="company-attribute-filter-body">
+            <div class="company-attribute-filter-empty">
+              <div class="company-attribute-filter-empty-icon" aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor">
+                  <path d="M200-160v-80h560v80H200Zm80-160q-33 0-56.5-23.5T200-400v-320q0-33 23.5-56.5T280-800h400q33 0 56.5 23.5T760-720v320q0 33-23.5 56.5T680-320H280Zm0-80h400v-320H280v320Zm60-60h120v-60H340v60Zm0-100h280v-60H340v60Zm0-100h280v-60H340v60Zm-60 260v-320 320Z" />
+                </svg>
+              </div>
+              <h3 class="company-attribute-filter-empty-title">No company attributes yet</h3>
+              <p class="company-attribute-filter-empty-copy">
+                Create and set company attributes in project settings. Once configured, you can use them here to filter companies.
+              </p>
+              <a class="company-attribute-filter-empty-link" href="{{ company_attribute_filter.settings_url }}">Go to company attribute settings</a>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% include 'partials/company_segment_dialogs.html' %}
+<script id="company-attribute-filter-payload" type="application/json">{{ company_attribute_filter_payload_json }}</script>

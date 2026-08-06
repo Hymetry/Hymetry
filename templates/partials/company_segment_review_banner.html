@@ -1,0 +1,48 @@
+{% comment %}
+  Shown to the owner of a company segment whose definition still names a
+  company attribute somebody deleted. Rendered by the server on Pages,
+  Companies, Users, and Visits so the warning does not depend on script, and
+  removed only when every affected segment has been reviewed and saved.
+
+  The second banner is the answer to one specific attempt: a segment that
+  needs review was requested in the URL and the server refused to apply it.
+{% endcomment %}
+{% if company_segment_review.active %}
+  <div
+    class="company-segment-review-banner"
+    data-company-segment-review-banner
+    role="status">
+    {% include 'partials/company_segment_warning_icon.html' %}
+    <div class="company-segment-review-banner__body">
+      {% for message in company_segment_review.messages %}
+        <p class="company-segment-review-banner__message">{{ message }}</p>
+      {% endfor %}
+    </div>
+    {% if company_attribute_filter.segments_manageable %}
+      <button
+        type="button"
+        class="company-segment-review-banner__action"
+        data-company-segment-review-action>Review segments</button>
+    {% endif %}
+  </div>
+{% endif %}
+{% if company_attribute_filter.blocked_segment_name %}
+  <div
+    class="company-segment-review-banner company-segment-review-banner--blocked"
+    data-company-segment-blocked-banner
+    data-segment-id="{{ company_attribute_filter_payload.scope.blockedSegmentId }}"
+    role="alert">
+    {% include 'partials/company_segment_warning_icon.html' %}
+    <div class="company-segment-review-banner__body">
+      <p class="company-segment-review-banner__message">
+        “{{ company_attribute_filter.blocked_segment_name }}” was not applied because it must be reviewed first. It used a company attribute that was deleted, so this page is showing all companies.
+      </p>
+    </div>
+    {% if company_attribute_filter.segments_manageable %}
+      <button
+        type="button"
+        class="company-segment-review-banner__action"
+        data-company-segment-edit-action>Edit segment</button>
+    {% endif %}
+  </div>
+{% endif %}

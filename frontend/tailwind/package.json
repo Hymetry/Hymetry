@@ -2,17 +2,23 @@
   "name": "tailwind_styles",
   "version": "1.0.0",
   "main": "index.js",
+  "private": true,
   "scripts": {
-    "build": "tailwindcss -i ./input.css -o ../../static/css/output.css --watch",
-    "build:prod": "tailwindcss -i ./input.css -o ../../static/css/output.css --minify",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tailwindcss -i ./input.css -o ../../static/css/output.css",
+    "build:watch": "npm run build -- --watch",
+    "build:prod": "npm run build -- --minify",
+    "test:build": "npm run build:prod",
+    "test": "npm run test:build && node tests/css-contract.test.cjs"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
-    "@tailwindcss/cli": "^4.1.11",
-    "tailwindcss": "^4.1.11"
+    "@tailwindcss/cli": "4.3.3",
+    "tailwindcss": "4.3.3"
   }
 }

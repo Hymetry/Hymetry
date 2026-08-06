@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 from django.db.models import Count, Max, Min, Q, Sum
 
-from apps.pages import services
+from apps.pages import analytics_memo, services
 from apps.pages.models import PageCompanyDailyMetric, PageUserDailyMetric, PageVisit, ProductArea
 from apps.pages.product_area_colors import (
     apply_product_area_metadata_colors,
@@ -14,7 +14,7 @@ from apps.pages.product_area_colors import (
 from apps.tracker.models import ProjectPageRule
 
 
-COMPANY_DETAIL_PAYLOAD_SCHEMA_VERSION = 14
+COMPANY_DETAIL_PAYLOAD_SCHEMA_VERSION = 16
 AT_RISK_USER_LOOKBACK_DAYS = 90
 PEER_OPTIONAL_METADATA_CANDIDATE_LIMIT = 80
 USER_HEALTH_STATUSES = (
@@ -111,14 +111,24 @@ def _risk_comparison_periods(start_date, end_date):
     return current_start, current_end, previous_start, previous_end
 
 
-def _relative_date_label(value, end_date):
+def _relative_date_label(value, end_date, *, today=None):
+    """
+    Age of a date as a reader would say it, measured from the actual today.
+
+    Analytical windows end on the last complete day, so the window end is
+    yesterday and measuring from it would label yesterday "Today" and shift
+    every other answer by a day. Callers that know the project's today pass it;
+    otherwise it is derived from the window, which is exact for every range key.
+    """
+
     if not value:
         return '-'
-    days = max(0, (end_date - value).days)
+    reference = today or (end_date + timedelta(days=1))
+    days = max(0, (reference - value).days)
     if days <= 0:
         return 'Today'
     if days == 1:
-        return '1d ago'
+        return 'Yesterday'
     return f'{days}d ago'
 
 
@@ -243,6 +253,7 @@ class BulkCompanyDetailContext:
         self._summary_cache = defaultdict(dict)
         self._daily_company_values_cache = {}
         self._new_reactivated_cache = {}
+        self._power_user_thresholds = None
 
     def metadata(self):
         if self._metadata is None:
@@ -336,6 +347,15 @@ class BulkCompanyDetailContext:
                 previous_start,
             )
         return self._new_reactivated_cache[key]
+
+    def power_user_thresholds(self):
+        if self._power_user_thresholds is None:
+            self._power_user_thresholds = services.project_power_user_thresholds(
+                self.project_id,
+                self.start_date,
+                self.end_date,
+            )
+        return self._power_user_thresholds
 
 
 def _company_base_queryset(project_id, start_date, end_date):
@@ -617,6 +637,7 @@ def _company_rows(project_id, start_date, end_date, previous_start, previous_end
     active_before_previous = _companies_active_before(project_id, previous_start)
     known_users = _known_user_counts(project_id)
     thresholds = _thresholds(current.values())
+    comparison_available = bool(previous)
     rows = []
 
     for company_id, row in current.items():
@@ -649,7 +670,10 @@ def _company_rows(project_id, start_date, end_date, previous_start, previous_end
             'riskReasons': reasons,
             'isNew': is_new,
             'isReactivated': is_reactivated,
+            'comparisonAvailable': comparison_available,
+            'comparison_available': comparison_available,
             'activeUsers': active_users,
+            'previousActiveUsers': _to_int(previous_row.get('active_users')),
             'activeUsersDeltaPct': _delta_pct(active_users, previous_row.get('active_users')),
             'totalKnownUsers': max(active_users, known_users.get(company_id, active_users)),
             'productAreasUsed': _to_int(row.get('product_areas_used')),
@@ -658,12 +682,16 @@ def _company_rows(project_id, start_date, end_date, previous_start, previous_end
             'rawProductAreasUsed': _to_int(row.get('raw_product_areas_used')),
             'rawPagesUsed': _to_int(row.get('raw_pages_used')),
             'visits': visits,
+            'previousVisits': _to_int(previous_row.get('visits')),
             'visitsDeltaPct': _delta_pct(visits, previous_row.get('visits')),
             'engagedSeconds': engaged_seconds,
+            'previousEngagedSeconds': _to_int(previous_row.get('engaged_seconds')),
             'engagedDeltaPct': _delta_pct(engaged_seconds, previous_row.get('engaged_seconds')),
             'avgEngagedSecondsPerUser': _avg(engaged_seconds, active_users),
+            'previousAvgEngagedSecondsPerUser': _avg(previous_row.get('engaged_seconds'), previous_row.get('active_users')),
             'avgEngagedSecondsPerUserDeltaPct': _delta_pct(_avg(engaged_seconds, active_users), _avg(previous_row.get('engaged_seconds'), previous_row.get('active_users'))),
             'interactionPct': interaction_pct,
+            'previousInteractionPct': previous_interaction_pct,
             'interactionDeltaPp': _delta_pp(interaction_pct, previous_interaction_pct),
             'lastActiveAt': _relative_date_label(row.get('last_seen_date'), end_date),
             'lastSeen': _relative_date_label(row.get('last_seen_date'), end_date),
@@ -717,6 +745,10 @@ def _company_rows_from_overview_payload(overview_payload, metadata, end_date):
         first_seen_date = services._safe_date(source.get('firstSeenDate'))
         active_users = _to_int(source.get('activeUsers'))
         distribution = _normalize_overview_area_distribution(source.get('productAreaDistribution') or [], metadata)
+        comparison_available = source.get(
+            'comparisonAvailable',
+            source.get('comparison_available', True),
+        ) is not False
 
         rows.append({
             'id': company_id,
@@ -728,6 +760,8 @@ def _company_rows_from_overview_payload(overview_payload, metadata, end_date):
             'riskReasons': source.get('riskReasons') or [],
             'isNew': bool(source.get('isNew')),
             'isReactivated': bool(source.get('isReactivated')),
+            'comparisonAvailable': comparison_available,
+            'comparison_available': comparison_available,
             'activeUsers': active_users,
             'activeUsersDeltaPct': source.get('activeUsersDeltaPct') or 0,
             'totalKnownUsers': max(active_users, _to_int(source.get('totalKnownUsers') or source.get('totalIdentifiedUsers') or active_users)),
@@ -817,7 +851,7 @@ def _apply_company_summary_to_detail_row(row, summary, previous_summary=None, en
 
 
 def _empty_daily_company_values(dates):
-    return {day: {'visits': 0, 'engaged': 0, 'clickVisits': 0, 'productPageCount': 0} for day in dates}
+    return {day: {'visits': 0, 'engaged': 0, 'clickVisits': 0} for day in dates}
 
 
 def _daily_company_values_for_companies(project_id, company_ids, start_date, end_date, metadata, active_user_company_ids=None):
@@ -856,41 +890,72 @@ def _daily_company_values_for_companies(project_id, company_ids, start_date, end
             company_id__in=company_ids,
         )
         .filter(_recommendable_product_usage_filter(project_id, metadata))
-        .values('company_id', 'date')
-        .annotate(product_pages=Count('page_rule_id', distinct=True))
+        .exclude(product_area_key__isnull=True)
+        .values('company_id', 'product_area_key')
+        .annotate(first_used_date=Min('date'))
     ):
         company_id = str(row['company_id'])
-        if company_id in daily_by_company and row['date'] in daily_by_company[company_id]:
-            daily_by_company[company_id][row['date']]['productPageCount'] = _to_int(row.get('product_pages'))
+        if company_id in daily_by_company and row.get('first_used_date') in daily_by_company[company_id]:
+            daily_by_company[company_id][row['first_used_date']].setdefault('newProductAreas', set()).add(
+                row['product_area_key'],
+            )
 
-    active_users_by_company_day = defaultdict(dict)
+    active_users_by_company_day = defaultdict(lambda: defaultdict(set))
     if active_user_company_ids:
         for row in (
             _user_base_queryset(project_id, start_date, end_date)
             .filter(company_id__in=active_user_company_ids)
-            .values('company_id', 'date')
-            .annotate(active_users=Count('user_id', distinct=True))
+            .exclude(user_id__isnull=True)
+            .values('company_id', 'user_id')
+            .annotate(first_active_date=Min('date'))
         ):
-            active_users_by_company_day[str(row['company_id'])][row['date']] = _to_int(row.get('active_users'))
+            active_users_by_company_day[str(row['company_id'])][row['first_active_date']].add(row['user_id'])
 
     results = {}
     for company_id in company_ids:
         base_values = daily_by_company[company_id]
         active_users_by_day = active_users_by_company_day.get(company_id, {})
+        running_visits = 0
+        running_engaged = 0
+        running_click_visits = 0
+        running_users = set()
+        running_product_areas = set()
+        active_users_series = []
+        visits_series = []
+        engaged_series = []
+        avg_per_user_series = []
+        interaction_series = []
+        adoption_breadth_series = []
+
+        for day in dates:
+            running_visits += base_values[day]['visits']
+            running_engaged += base_values[day]['engaged']
+            running_click_visits += base_values[day]['clickVisits']
+            running_users.update(active_users_by_day.get(day, ()))
+            running_product_areas.update(base_values[day].get('newProductAreas') or ())
+            active_users = len(running_users)
+
+            active_users_series.append({'date': day.isoformat(), 'value': active_users})
+            visits_series.append({'date': day.isoformat(), 'value': running_visits})
+            engaged_series.append({'date': day.isoformat(), 'value': running_engaged})
+            avg_per_user_series.append({'date': day.isoformat(), 'value': _avg(running_engaged, active_users)})
+            interaction_series.append({
+                'date': day.isoformat(),
+                'value': _safe_pct(running_click_visits, running_visits),
+            })
+            adoption_breadth_series.append({
+                'date': day.isoformat(),
+                'value': len(running_product_areas),
+            })
+
         results[company_id] = {
             'dates': dates,
-            'activeUsers': [{'date': day.isoformat(), 'value': active_users_by_day.get(day, 0)} for day in dates],
-            'visits': [{'date': day.isoformat(), 'value': base_values[day]['visits']} for day in dates],
-            'engaged': [{'date': day.isoformat(), 'value': base_values[day]['engaged']} for day in dates],
-            'avgPerUser': [
-                {'date': day.isoformat(), 'value': _avg(base_values[day]['engaged'], active_users_by_day.get(day, 0))}
-                for day in dates
-            ],
-            'interaction': [
-                {'date': day.isoformat(), 'value': _safe_pct(base_values[day]['clickVisits'], base_values[day]['visits'])}
-                for day in dates
-            ],
-            'adoptionBreadth': [{'date': day.isoformat(), 'value': base_values[day]['productPageCount']} for day in dates],
+            'activeUsers': active_users_series,
+            'visits': visits_series,
+            'engaged': engaged_series,
+            'avgPerUser': avg_per_user_series,
+            'interaction': interaction_series,
+            'adoptionBreadth': adoption_breadth_series,
         }
 
     return results
@@ -937,10 +1002,16 @@ def _new_reactivated_users(project_id, company_id, start_date, end_date, previou
         if row['first_current_date'] in daily:
             daily[row['first_current_date']] += 1
 
+    running = 0
+    cumulative_daily = []
+    for day in _date_series(start_date, end_date):
+        running += daily[day]
+        cumulative_daily.append({'date': day.isoformat(), 'value': running})
+
     return {
         'new': len(new_users),
         'reactivated': len(reactivated_users - new_users),
-        'daily': [{'date': day.isoformat(), 'value': daily[day]} for day in _date_series(start_date, end_date)],
+        'daily': cumulative_daily,
     }
 
 
@@ -1005,11 +1076,74 @@ def _at_risk_user_ids_for_period(project_id, company_id, start_date, end_date, p
 
 
 def _daily_at_risk_user_count_series(project_id, company_id, users, start_date, end_date, previous_start, previous_end):
-    dates = _date_series(start_date, end_date)
-    user_ids = [
+    """
+    Count the at-risk users of one company as of every day in the period.
+
+    Every company detail page charts its peers alongside it, so a rebuild asks
+    for a given company's series once for its own page and again from each page
+    that lists it as a peer. The answer depends only on the company, the period
+    and which of its users are in scope, so those callers share one result.
+
+    The user set is part of the identity rather than the company alone: a peer
+    is charted with all its users, while a company's own page excludes the ones
+    that have dropped, and those are different questions.
+    """
+
+    user_ids = frozenset(
         str(user.get('id'))
         for user in users or []
         if user.get('id') not in (None, '') and user.get('riskStatus') != 'dropped'
+    )
+    series = analytics_memo.memoized(
+        'at_risk_user_count_series',
+        (project_id, str(company_id), start_date, end_date, previous_start, previous_end, user_ids),
+        lambda: _daily_at_risk_user_count_series_uncached(
+            project_id,
+            company_id,
+            user_ids,
+            start_date,
+            end_date,
+            previous_start,
+            previous_end,
+        ),
+    )
+    # One shared list is handed to every caller, so hand out copies: these end
+    # up embedded in payloads that later passes edit in place.
+    return [dict(point) for point in series]
+
+
+def _daily_at_risk_user_count_series_uncached(
+    project_id,
+    company_id,
+    user_ids,
+    start_date,
+    end_date,
+    previous_start,
+    previous_end,
+):
+    dates = _date_series(start_date, end_date)
+    user_ids = sorted(user_ids)
+    if not user_ids:
+        return [{'date': day.isoformat(), 'value': 0} for day in dates]
+
+    first_selected_activity = {
+        row['user_id']: row['first_active_date']
+        for row in (
+            _user_base_queryset(project_id, start_date, end_date)
+            .filter(company_id=company_id, user_id__in=user_ids)
+            .filter(
+                Q(visits_count__gt=0)
+                | Q(engaged_seconds__gt=0)
+                | Q(click_count__gt=0)
+            )
+            .values('user_id')
+            .annotate(first_active_date=Min('date'))
+        )
+    }
+    user_ids = [
+        user_id
+        for user_id in user_ids
+        if first_selected_activity.get(user_id) is not None
     ]
     if not user_ids:
         return [{'date': day.isoformat(), 'value': 0} for day in dates]
@@ -1069,6 +1203,8 @@ def _daily_at_risk_user_count_series(project_id, company_id, users, start_date, 
         previous_start = previous_end - timedelta(days=risk_days - 1)
         count = 0
         for user_id in user_ids:
+            if first_selected_activity[user_id] > day:
+                continue
             prefixes = prefixes_by_user[user_id]
             current_engaged = range_sum(prefixes['engaged'], current_start, day)
             current_visits = range_sum(prefixes['visits'], current_start, day)
@@ -1127,13 +1263,23 @@ def _peer_at_risk_user_metric_series(project_id, peer_companies, start_date, end
         if not company_id:
             continue
 
-        peer_user_ids = (
-            _user_base_queryset(project_id, start_date, end_date)
-            .filter(company_id=company_id)
-            .values_list('user_id', flat=True)
-            .distinct()
+        # The same company is a peer of many others, so this asks the same
+        # question once per page that lists it rather than once per company.
+        peer_user_ids = analytics_memo.memoized(
+            'company_period_user_ids',
+            (project_id, company_id, start_date, end_date),
+            lambda: [
+                user_id
+                for user_id in (
+                    _user_base_queryset(project_id, start_date, end_date)
+                    .filter(company_id=company_id)
+                    .values_list('user_id', flat=True)
+                    .distinct()
+                )
+                if user_id not in (None, '')
+            ],
         )
-        peer_users = [{'id': user_id, 'riskStatus': 'active'} for user_id in peer_user_ids if user_id not in (None, '')]
+        peer_users = [{'id': user_id, 'riskStatus': 'active'} for user_id in peer_user_ids]
         series.append({
             'companyId': company_id,
             'companyName': peer.get('name') or peer.get('companyName') or company_id,
@@ -1149,6 +1295,136 @@ def _peer_at_risk_user_metric_series(project_id, peer_companies, start_date, end
         })
 
     return series
+
+
+def _benchmark_series_index(benchmark_pool, daily_by_company, key):
+    """
+    Precompute what every company's benchmark series needs from its peers.
+
+    Each company is benchmarked against every other eligible company, so the
+    same peer values get re-sorted once per company. The pool is identical
+    apart from which single company is left out, so the sorted values, their
+    positions, and the full-pool answer are computed once here and each
+    company's series is then derived by removing its own contribution.
+
+    ``benchmark_pool`` must be the whole eligible set in its original order,
+    including the company that will later be excluded, because the date at each
+    point is taken from the first series that carries one.
+    """
+
+    order = []
+    series_by_company = {}
+    for peer in benchmark_pool or []:
+        company_id = str(peer.get('id') or peer.get('companyId') or '')
+        daily_series = daily_by_company.get(company_id, {}).get(key) or []
+        if daily_series and company_id not in series_by_company:
+            order.append(company_id)
+            series_by_company[company_id] = daily_series
+
+    if not order:
+        return None
+
+    lengths = {company_id: len(series) for company_id, series in series_by_company.items()}
+    ordered_lengths = sorted(lengths.values(), reverse=True)
+    max_len = ordered_lengths[0]
+    max_len_count = sum(1 for value in ordered_lengths if value == max_len)
+    second_len = ordered_lengths[1] if len(ordered_lengths) > 1 else 0
+
+    points = []
+    for index in range(max_len):
+        # Two candidates is enough: exactly one company is ever removed, so the
+        # runner-up becomes the answer whenever the leader is the excluded one.
+        date_candidates = []
+        pairs = []
+        for company_id in order:
+            series = series_by_company[company_id]
+            if index >= len(series):
+                continue
+            point = series[index]
+            point_date = point.get('date')
+            if point_date and len(date_candidates) < 2:
+                date_candidates.append((company_id, point_date))
+            value = point.get('value')
+            if value is not None:
+                pairs.append((value, company_id))
+
+        pairs.sort(key=lambda item: item[0])
+        sorted_values = [value for value, _company_id in pairs]
+        position_by_company = {company_id: position for position, (_value, company_id) in enumerate(pairs)}
+        points.append({
+            'date_candidates': date_candidates,
+            'sorted_values': sorted_values,
+            'position_by_company': position_by_company,
+            'full_median': services._median(sorted_values) if sorted_values else None,
+        })
+
+    return {
+        'order': order,
+        'lengths': lengths,
+        'max_len': max_len,
+        'max_len_count': max_len_count,
+        'second_len': second_len,
+        'points': points,
+    }
+
+
+def _median_excluding_position(sorted_values, position):
+    """Median of *sorted_values* with the entry at *position* removed."""
+
+    remaining = len(sorted_values) - 1
+    if remaining <= 0:
+        return None
+
+    def value_at(offset):
+        return sorted_values[offset] if offset < position else sorted_values[offset + 1]
+
+    middle = remaining // 2
+    if remaining % 2:
+        return value_at(middle)
+    return (value_at(middle - 1) + value_at(middle)) / 2
+
+
+def _benchmark_metric_series_from_index(index, exclude_company_id):
+    """Derive one company's benchmark series from a precomputed pool index."""
+
+    if not index:
+        return []
+
+    exclude_company_id = str(exclude_company_id)
+    excluded_length = index['lengths'].get(exclude_company_id)
+    if excluded_length is None:
+        # Not in the pool, so nothing is removed and the pool answer stands.
+        length = index['max_len']
+    else:
+        if len(index['order']) == 1:
+            return []
+        length = (
+            index['second_len']
+            if excluded_length == index['max_len'] and index['max_len_count'] == 1
+            else index['max_len']
+        )
+
+    result = []
+    for position in range(length):
+        point = index['points'][position]
+        point_date = ''
+        for candidate_id, candidate_date in point['date_candidates']:
+            if candidate_id != exclude_company_id:
+                point_date = candidate_date
+                break
+
+        if excluded_length is None:
+            value = point['full_median']
+        else:
+            excluded_position = point['position_by_company'].get(exclude_company_id)
+            if excluded_position is None:
+                value = point['full_median']
+            else:
+                value = _median_excluding_position(point['sorted_values'], excluded_position)
+
+        result.append({'date': point_date, 'value': value})
+
+    return result
 
 
 def _benchmark_metric_series(benchmark_companies, daily_by_company, key):
@@ -1182,8 +1458,34 @@ def _benchmark_metric_series(benchmark_companies, daily_by_company, key):
     return result
 
 
-def _metric_card(key, label, value_type, value, previous_value, daily_series, *, secondary_text='', delta_unit='%', peer_series=None, benchmark_series=None, benchmark_peer_count=0):
-    delta_value = _delta_pp(value, previous_value) if delta_unit == 'pp' else _delta_pct(value, previous_value)
+def _metric_card(
+    key,
+    label,
+    value_type,
+    value,
+    previous_value,
+    daily_series,
+    *,
+    secondary_text='',
+    delta_unit='%',
+    peer_series=None,
+    benchmark_series=None,
+    benchmark_peer_count=0,
+    comparison_available=True,
+):
+    if not comparison_available:
+        delta_value = None
+        delta_direction = 'neutral'
+        formatted_delta = 'n/a'
+    elif delta_unit != 'pp' and float(previous_value or 0) == 0 and float(value or 0) > 0:
+        delta_value = None
+        delta_direction = 'positive'
+        formatted_delta = 'New'
+    else:
+        delta_value = _delta_pp(value, previous_value) if delta_unit == 'pp' else _delta_pct(value, previous_value)
+        delta_direction = _delta_direction(delta_value)
+        formatted_delta = _formatted_delta(delta_value, delta_unit)
+
     return {
         'key': key,
         'label': label,
@@ -1191,8 +1493,10 @@ def _metric_card(key, label, value_type, value, previous_value, daily_series, *,
         'value': value,
         'previousValue': previous_value,
         'deltaValue': delta_value,
-        'deltaDirection': _delta_direction(delta_value),
-        'formattedDelta': _formatted_delta(delta_value, delta_unit),
+        'deltaDirection': delta_direction,
+        'formattedDelta': formatted_delta,
+        'comparisonAvailable': comparison_available,
+        'comparison_available': comparison_available,
         'secondaryText': secondary_text,
         'dailySeries': daily_series,
         'peerSeries': peer_series or [],
@@ -1202,7 +1506,11 @@ def _metric_card(key, label, value_type, value, previous_value, daily_series, *,
 
 
 def _apply_metric_delta(card, delta_value, delta_unit='%'):
-    if delta_value is None:
+    if (
+        delta_value is None
+        or card.get('comparisonAvailable') is False
+        or card.get('formattedDelta') in {'New', 'n/a'}
+    ):
         return card
 
     card['deltaValue'] = delta_value
@@ -1225,10 +1533,12 @@ def _metric_cards(
     peer_companies=None,
     benchmark_companies=None,
     bulk_context=None,
+    benchmark_pool=None,
 ):
     company_id = str(company_id)
     peer_companies = list(peer_companies or [])
     benchmark_companies = list(benchmark_companies or [])
+    benchmark_pool = list(benchmark_pool) if benchmark_pool is not None else None
     peer_ids = [peer.get('id') or peer.get('companyId') for peer in peer_companies]
     benchmark_ids = [peer.get('id') or peer.get('companyId') for peer in benchmark_companies]
     metric_company_ids = list(dict.fromkeys([company_id, *peer_ids, *benchmark_ids]))
@@ -1245,6 +1555,28 @@ def _metric_cards(
         )
     )
     daily = daily_by_company[company_id]
+
+    # Every company in the pool is benchmarked against the same peers bar
+    # itself, so the sorted peer values are built once per period and metric
+    # and each company's series is derived from them. The pool sits inside the
+    # companies already loaded above, so the first company to ask builds an
+    # index the rest reuse.
+    benchmark_pool_ids = (
+        tuple(str(peer.get('id') or peer.get('companyId') or '') for peer in benchmark_pool)
+        if benchmark_pool is not None
+        else None
+    )
+
+    def benchmark_series(key):
+        if benchmark_pool is None:
+            return _benchmark_metric_series(benchmark_companies, daily_by_company, key)
+        index = analytics_memo.memoized(
+            'benchmark_series_index',
+            (project_id, start_date, end_date, key, benchmark_pool_ids),
+            lambda: _benchmark_series_index(benchmark_pool, daily_by_company, key),
+        )
+        return _benchmark_metric_series_from_index(index, company_id)
+
     new_reactivated = (
         bulk_context.new_reactivated_users(company_id, start_date, end_date, previous_start)
         if bulk_context
@@ -1274,10 +1606,16 @@ def _metric_cards(
     previous_visits = previous_company.get('visits', 0)
     interaction = company.get('interactionPct', 0)
     previous_interaction = _safe_pct(previous_company.get('visits_with_click_count'), previous_company.get('visits'))
+    comparison_available = company.get(
+        'comparisonAvailable',
+        company.get('comparison_available', bool(previous_company)),
+    ) is not False
     benchmark_peer_count = len(benchmark_companies)
     at_risk_users = [user for user in users if user.get('riskStatus') == 'at_risk']
-    risk_start, risk_end, risk_previous_start, risk_previous_end = _risk_comparison_periods(start_date, end_date)
-    previous_risk_start, previous_risk_end, before_previous_start, before_previous_end = _risk_comparison_periods(risk_previous_start, risk_previous_end)
+    previous_risk_start, previous_risk_end, before_previous_start, before_previous_end = _risk_comparison_periods(
+        previous_start,
+        previous_end,
+    )
     previous_at_risk_count = len(_at_risk_user_ids_for_period(
         project_id,
         company_id,
@@ -1305,8 +1643,9 @@ def _metric_cards(
             previous_active_users,
             daily['activeUsers'],
             peer_series=_peer_metric_series(peer_companies, daily_by_company, 'activeUsers'),
-            benchmark_series=_benchmark_metric_series(benchmark_companies, daily_by_company, 'activeUsers'),
+            benchmark_series=benchmark_series('activeUsers'),
             benchmark_peer_count=benchmark_peer_count,
+            comparison_available=comparison_available,
         ),
         company.get('activeUsersDeltaPct'),
     )
@@ -1319,8 +1658,9 @@ def _metric_cards(
             _avg(previous_engaged, previous_active_users),
             daily['avgPerUser'],
             peer_series=_peer_metric_series(peer_companies, daily_by_company, 'avgPerUser'),
-            benchmark_series=_benchmark_metric_series(benchmark_companies, daily_by_company, 'avgPerUser'),
+            benchmark_series=benchmark_series('avgPerUser'),
             benchmark_peer_count=benchmark_peer_count,
+            comparison_available=comparison_available,
         ),
         company.get('avgEngagedSecondsPerUserDeltaPct'),
     )
@@ -1340,6 +1680,27 @@ def _metric_cards(
         previous_start,
         previous_end,
     )
+    adoption_breadth_card = _metric_card(
+        'adoptionBreadth',
+        'ADOPTION BREADTH',
+        'number',
+        company.get('productAreasUsed', 0),
+        previous_company.get('product_areas_used', 0),
+        daily['adoptionBreadth'],
+        secondary_text=(
+            f"{company.get('productAreasUsed', 0)} areas \u00b7 "
+            f"{company.get('pagesUsed', 0)} pages"
+        ),
+        peer_series=_peer_metric_series(peer_companies, daily_by_company, 'adoptionBreadth'),
+        benchmark_series=benchmark_series('adoptionBreadth'),
+        benchmark_peer_count=benchmark_peer_count,
+        comparison_available=comparison_available,
+    )
+    if adoption_breadth_card['formattedDelta'] not in {'New', 'n/a'}:
+        adoption_breadth_card['formattedDelta'] = _formatted_delta(
+            company.get('productAreasDelta', 0),
+            'area',
+        )
 
     return [
         active_users_card,
@@ -1353,6 +1714,7 @@ def _metric_cards(
             secondary_text=f"{new_reactivated['new']} new · {new_reactivated['reactivated']} reactivated",
             peer_series=peer_new_reactivated_series,
             benchmark_peer_count=len(peer_new_reactivated_series),
+            comparison_available=comparison_available,
         ),
         _metric_card(
             'visits',
@@ -1362,8 +1724,9 @@ def _metric_cards(
             previous_visits,
             daily['visits'],
             peer_series=_peer_metric_series(peer_companies, daily_by_company, 'visits'),
-            benchmark_series=_benchmark_metric_series(benchmark_companies, daily_by_company, 'visits'),
+            benchmark_series=benchmark_series('visits'),
             benchmark_peer_count=benchmark_peer_count,
+            comparison_available=comparison_available,
         ),
         _metric_card(
             'engaged',
@@ -1373,8 +1736,9 @@ def _metric_cards(
             previous_engaged,
             daily['engaged'],
             peer_series=_peer_metric_series(peer_companies, daily_by_company, 'engaged'),
-            benchmark_series=_benchmark_metric_series(benchmark_companies, daily_by_company, 'engaged'),
+            benchmark_series=benchmark_series('engaged'),
             benchmark_peer_count=benchmark_peer_count,
+            comparison_available=comparison_available,
         ),
         avg_per_user_card,
         _metric_card(
@@ -1386,24 +1750,11 @@ def _metric_cards(
             daily['interaction'],
             delta_unit='pp',
             peer_series=_peer_metric_series(peer_companies, daily_by_company, 'interaction'),
-            benchmark_series=_benchmark_metric_series(benchmark_companies, daily_by_company, 'interaction'),
+            benchmark_series=benchmark_series('interaction'),
             benchmark_peer_count=benchmark_peer_count,
+            comparison_available=comparison_available,
         ),
-        {
-            **_metric_card(
-                'adoptionBreadth',
-                'ADOPTION BREADTH',
-                'number',
-                company.get('productAreasUsed', 0),
-                previous_company.get('product_areas_used', 0),
-                daily['adoptionBreadth'],
-                secondary_text=f"{company.get('productAreasUsed', 0)} areas · {company.get('pagesUsed', 0)} pages",
-                peer_series=_peer_metric_series(peer_companies, daily_by_company, 'adoptionBreadth'),
-                benchmark_series=_benchmark_metric_series(benchmark_companies, daily_by_company, 'adoptionBreadth'),
-                benchmark_peer_count=benchmark_peer_count,
-            ),
-            'formattedDelta': _formatted_delta(company.get('productAreasDelta', 0), 'area'),
-        },
+        adoption_breadth_card,
         _metric_card(
             'atRiskUsers',
             'AT-RISK USERS',
@@ -1413,6 +1764,7 @@ def _metric_cards(
             at_risk_daily,
             peer_series=peer_at_risk_series,
             benchmark_peer_count=len(peer_at_risk_series),
+            comparison_available=comparison_available,
         ),
     ]
 
@@ -1467,6 +1819,7 @@ def _top_pages(project_id, company_id, start_date, end_date, previous_start, pre
             .annotate(users=Count('user_id', distinct=True))
         )
     }
+    comparison_available = _company_base_queryset(project_id, previous_start, previous_end).exists()
     page_names = _page_names(project_id, [row['page_rule_id'] for row in current_rows])
     daily = defaultdict(dict)
     for row in (
@@ -1498,15 +1851,22 @@ def _top_pages(project_id, company_id, start_date, end_date, previous_start, pre
             'color': info['color'],
             'areaRole': info['areaRole'],
             'isAdoptionRecommendable': info['isAdoptionRecommendable'],
+            'comparisonAvailable': comparison_available,
+            'comparison_available': comparison_available,
             'users': users_current.get(page_rule_id, 0),
+            'previousUsers': users_previous.get(page_rule_id, 0),
             'usersDeltaPct': _delta_pct(users_current.get(page_rule_id, 0), users_previous.get(page_rule_id, 0)),
             'visits': visits,
+            'previousVisits': previous_visits,
             'visitsDeltaPct': _delta_pct(visits, previous_visits),
             'engagedSeconds': engaged,
+            'previousEngagedSeconds': previous_engaged,
             'engagedDeltaPct': _delta_pct(engaged, previous_engaged),
             'avgVisitSeconds': _avg(engaged, visits),
+            'previousAvgVisitSeconds': _avg(previous_engaged, previous_visits),
             'avgVisitDeltaPct': _delta_pct(_avg(engaged, visits), _avg(previous_engaged, previous_visits)),
             'interactionPct': interaction,
+            'previousInteractionPct': previous_interaction,
             'interactionDeltaPp': _delta_pp(interaction, previous_interaction),
             'dailySeries': [{'date': day.isoformat(), 'value': daily[page_rule_id].get(day, 0)} for day in dates],
         })
@@ -1804,19 +2164,26 @@ def _peer_key_difference(peer, current):
     return 'Similar adoption breadth'
 
 
-def _company_user_health_status(visits, engaged_seconds, product_areas_used, click_count, active_days=None, *, period_days=30):
+def _company_user_health_status(
+    visits,
+    engaged_seconds,
+    product_areas_used,
+    click_count,
+    active_days=None,
+    *,
+    period_days=30,
+    power_thresholds=None,
+):
     visits = _to_int(visits)
     engaged_seconds = _to_int(engaged_seconds)
     product_areas_used = _to_int(product_areas_used)
     click_count = _to_int(click_count)
     active_days = min(visits, int(period_days or 1)) if active_days is None else _to_int(active_days)
     interaction = click_count / max(visits, 1)
-    power_thresholds = services.power_user_thresholds(period_days)
-    healthy_visits = services.weekly_scaled_threshold(3, period_days)
-    healthy_engaged = services.weekly_scaled_threshold(300, period_days)
-    healthy_active_days = services.active_days_threshold(period_days, 0.10)
+    power_thresholds = power_thresholds or services.power_user_thresholds(period_days)
+    healthy_thresholds = services.healthy_user_thresholds(period_days)
     passive_visits = services.passive_visits_threshold(period_days)
-    passive_engaged = services.weekly_scaled_threshold(60, period_days)
+    passive_engaged = services.PASSIVE_USER_ENGAGED_SECONDS
 
     if visits <= 0 and engaged_seconds <= 0:
         return 'dropped'
@@ -1829,10 +2196,10 @@ def _company_user_health_status(visits, engaged_seconds, product_areas_used, cli
     ):
         return 'power'
     if (
-        visits >= healthy_visits
-        and engaged_seconds >= healthy_engaged
-        and product_areas_used >= 1
-        and active_days >= healthy_active_days
+        visits >= healthy_thresholds['visits']
+        and engaged_seconds >= healthy_thresholds['engaged_seconds']
+        and product_areas_used >= healthy_thresholds['product_areas']
+        and active_days >= healthy_thresholds['active_days']
     ):
         return 'healthy'
     if visits <= passive_visits or engaged_seconds < passive_engaged or interaction < 0.2:
@@ -1844,7 +2211,16 @@ def _company_user_period_active(row):
     return any(_to_int(row.get(key)) > 0 for key in ('visits', 'engaged_seconds', 'click_count', 'active_days'))
 
 
-def _company_health_distribution(project_id, company_id, start_date, end_date, previous_start, previous_end):
+def _company_health_distribution(
+    project_id,
+    company_id,
+    start_date,
+    end_date,
+    previous_start,
+    previous_end,
+    *,
+    power_thresholds=None,
+):
     counts = Counter()
     current_user_ids = set()
     period_days = (end_date - start_date).days + 1
@@ -1870,6 +2246,7 @@ def _company_health_distribution(project_id, company_id, start_date, end_date, p
             row.get('click_count'),
             row.get('active_days'),
             period_days=period_days,
+            power_thresholds=power_thresholds,
         )
         counts[status] += 1
 
@@ -1922,7 +2299,17 @@ def _company_user_session_counts(project, company_id, user_ids, start_date, end_
     }
 
 
-def _user_rows(project, company_id, start_date, end_date, previous_start, previous_end, product_area_names):
+def _user_rows(
+    project,
+    company_id,
+    start_date,
+    end_date,
+    previous_start,
+    previous_end,
+    product_area_names,
+    *,
+    power_thresholds=None,
+):
     project_id = project.id
     period_days = (end_date - start_date).days + 1
     current_rows = list(
@@ -1958,6 +2345,7 @@ def _user_rows(project, company_id, start_date, end_date, previous_start, previo
     }
     current_active_ids = {user_id for user_id, row in current.items() if _company_user_period_active(row)}
     previous_active_ids = {user_id for user_id, row in previous.items() if _company_user_period_active(row)}
+    comparison_available = _company_base_queryset(project_id, previous_start, previous_end).exists()
     current_table_ids = [
         row['user_id']
         for row in sorted(
@@ -2053,6 +2441,7 @@ def _user_rows(project, company_id, start_date, end_date, previous_start, previo
             row.get('click_count'),
             row.get('active_days'),
             period_days=period_days,
+            power_thresholds=power_thresholds,
         ) if has_current_activity else 'dropped'
         fallback_email_name = str(user_id).replace(' ', '.').lower()
         last_seen = row.get('last_seen') if has_current_activity else previous_row.get('last_seen')
@@ -2064,13 +2453,17 @@ def _user_rows(project, company_id, start_date, end_date, previous_start, previo
             'email': f'{fallback_email_name}@example.com' if '@' not in fallback_email_name else fallback_email_name,
             'status': status,
             'riskStatus': risk_status,
+            'comparisonAvailable': comparison_available,
+            'comparison_available': comparison_available,
             'lastActive': _relative_date_label(last_seen, end_date),
             'lastActiveDays': (end_date - last_seen).days if last_seen else 9999,
             'activeDays': _to_int(row.get('active_days')) if has_current_activity else 0,
             'sessionsCount': session_counts.get(user_id, 0) if has_current_activity else 0,
             'visits': visits,
+            'previousVisits': previous_visits,
             'visitsDeltaPct': _delta_pct(visits, previous_visits),
             'engagedSeconds': engaged,
+            'previousEngagedSeconds': previous_engaged,
             'engagedDeltaPct': _delta_pct(engaged, previous_engaged),
             'interactionPct': _safe_pct(min(_to_int(row.get('click_count')), visits), visits),
             'productAreaAdoption': [
@@ -2223,7 +2616,11 @@ def build_company_detail_payload(project, company_id, *, range_key='last_30_days
 
     if bulk_context:
         current_company_summary = bulk_context.company_summaries([current_company['id']]).get(current_company['id'], {})
-        previous_company = bulk_context.company_summaries([current_company['id']], period='previous').get(current_company['id'], {})
+        previous_company = bulk_context.company_summaries(
+            [current_company['id']],
+            period='previous',
+            include_active_users=True,
+        ).get(current_company['id'], {})
     else:
         current_company_summary = _company_summaries(
             project.id,
@@ -2238,7 +2635,7 @@ def build_company_detail_payload(project, company_id, *, range_key='last_30_days
             previous_start,
             previous_end,
             company_ids=[current_company['id']],
-            include_active_users=False,
+            include_active_users=True,
             metadata=metadata,
         ).get(current_company['id'], {})
     _apply_company_summary_to_detail_row(current_company, current_company_summary, previous_company, end_date)
@@ -2263,7 +2660,21 @@ def build_company_detail_payload(project, company_id, *, range_key='last_30_days
         _apply_company_summary_to_detail_row(peer, peer_summaries.get(peer['id']))
 
     top_pages = _top_pages(project.id, current_company['id'], start_date, end_date, previous_start, previous_end, metadata)
-    users = _user_rows(project, current_company['id'], start_date, end_date, previous_start, previous_end, product_area_names)
+    power_thresholds = (
+        bulk_context.power_user_thresholds()
+        if bulk_context
+        else services.project_power_user_thresholds(project.id, start_date, end_date)
+    )
+    users = _user_rows(
+        project,
+        current_company['id'],
+        start_date,
+        end_date,
+        previous_start,
+        previous_end,
+        product_area_names,
+        power_thresholds=power_thresholds,
+    )
     peer_comparison = _peer_comparison(current_company, company_rows, product_area_names, peers=selected_peers)
     payload = {
         'schema_version': COMPANY_DETAIL_PAYLOAD_SCHEMA_VERSION,
@@ -2292,13 +2703,24 @@ def build_company_detail_payload(project, company_id, *, range_key='last_30_days
             selected_peers,
             metric_benchmark_companies,
             bulk_context=bulk_context,
+            # The whole eligible set in its original order. Each company's own
+            # benchmark leaves itself out, which the index does per company.
+            benchmark_pool=[row for row in company_rows if _peer_active_users(row) > 0],
         ),
         'areaTreemap': _area_treemap(top_pages),
         'adoptionBreadthSeries': _area_usage_over_time(project.id, current_company['id'], start_date, end_date, metadata),
         'topPages': top_pages[:15],
         'allTopPages': top_pages,
         'peerComparison': peer_comparison,
-        'companyHealthDistribution': _company_health_distribution(project.id, current_company['id'], start_date, end_date, previous_start, previous_end),
+        'companyHealthDistribution': _company_health_distribution(
+            project.id,
+            current_company['id'],
+            start_date,
+            end_date,
+            previous_start,
+            previous_end,
+            power_thresholds=power_thresholds,
+        ),
         'users': users,
     }
     payload['healthSummary'] = _health_summary(current_company, peer_comparison, users)

@@ -1,0 +1,44 @@
+{
+  "schema_version": 2,
+  "policy_version": "oss-sync-v2",
+  "source_ref": "refs/heads/main",
+  "completed_cloud_sha": "9cf06f734a4d9e1cd22ee60b11394c28bb2375d4",
+  "migration_mode": "incremental",
+  "migration_baseline_oss_sha": "da90b398e6ed0069b1835d08314f7ac46c6ca8d8",
+  "accepted_migrations": [
+    {
+      "path": "apps/core/migrations/0001_initial.py",
+      "git_blob": "f4fcfcf4db08b80ff998a7e5a12aa46fdb2e8e94"
+    },
+    {
+      "path": "apps/pages/migrations/0001_initial.py",
+      "git_blob": "0ddd8f38e24ae68039c444fa3669578d4efa4299"
+    },
+    {
+      "path": "apps/pages/migrations/0002_pagesoverviewcache_payload_compressed_and_more.py",
+      "git_blob": "0fe85ecc33e50f346a3cfd7249bb4de6af552196"
+    },
+    {
+      "path": "apps/projects/migrations/0001_initial.py",
+      "git_blob": "a8db7a244c6145ce5786d196e7dc2028899fba3e"
+    },
+    {
+      "path": "apps/projects/migrations/0002_project_analytics_facts_revision_and_more.py",
+      "git_blob": "72288b9ece2e15720ece90982883185cc5335a1a"
+    },
+    {
+      "path": "apps/tracker/migrations/0001_initial.py",
+      "git_blob": "5edd4f4b5e90a2abe2dc418312707fff6c18ad4a"
+    },
+    {
+      "path": "apps/tracker/migrations/0002_analyticssession_visit_session_and_more.py",
+      "git_blob": "fc0aaa96805faef32fa93340cab645360df8a132"
+    }
+  ],
+  "last_sync": {
+    "audit_id": "2026-08-06-5cb44f8-9cf06f7",
+    "cloud_base": "5cb44f8e616c6653f2ec72309e7e11c803d0b929",
+    "cloud_head": "9cf06f734a4d9e1cd22ee60b11394c28bb2375d4",
+    "oss_base": "da90b398e6ed0069b1835d08314f7ac46c6ca8d8"
+  }
+}

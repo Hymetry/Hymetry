@@ -139,10 +139,11 @@ def _current_product_areas(project_id):
 
 
 def _mark_product_area_color_caches_stale(project_id):
-    return {
+    updated = {
         cache_name: cache_model.objects.filter(project_id=project_id, is_stale=False).update(is_stale=True)
         for cache_name, cache_model in COLOR_CACHE_MODELS
     }
+    return updated
 
 
 def _assignment_policy(expected_state):

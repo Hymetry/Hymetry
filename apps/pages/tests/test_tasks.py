@@ -1,14 +1,19 @@
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
 from apps.pages.tasks import (
     PAGES_LOCK_MAX_RETRIES,
+    PAGES_LOCK_RETRY_MAX_SECONDS,
     PagesRebuildLockUnavailable,
     aggregate_page_daily_metrics,
     backfill_pages_analytics_task,
     build_companies_overview_cache_task,
     build_company_detail_cache_task,
+    build_filtered_companies_overview_cache_task,
+    build_filtered_pages_overview_cache_task,
+    build_filtered_users_overview_cache_task,
     build_page_transitions_for_project,
     build_page_visits_for_project,
     build_pages_overview_cache_task,
@@ -129,6 +134,228 @@ class PagesAnalyticsTaskRetryTests(SimpleTestCase):
         retry.assert_called_once()
         self.assertEqual(retry.call_args.kwargs['countdown'], 30)
 
+    @patch('apps.pages.filtered_overview.services.build_pages_overview_cache')
+    @patch('apps.pages.filtered_overview.parse_company_attribute_filters')
+    @patch('apps.pages.filtered_overview.Project.active.filter')
+    def test_filtered_cache_task_preserves_repeated_values(
+        self,
+        project_filter,
+        parse_filters,
+        build_cache,
+    ):
+        canonical_pairs = [
+            ['ca.33.op', 'in'],
+            ['ca.33.value', '32'],
+            ['ca.33.value', '33'],
+        ]
+        state = SimpleNamespace(
+            active=True,
+            filters_hash='expected-hash',
+            canonical_pairs=tuple(tuple(pair) for pair in canonical_pairs),
+        )
+        project = SimpleNamespace(id=9)
+        project_filter.return_value = SimpleNamespace(first=lambda: project)
+        parse_filters.return_value = state
+        build_cache.return_value = {'status': 'success', 'project_id': 9}
+
+        result = build_filtered_pages_overview_cache_task.run(
+            9,
+            canonical_pairs,
+            'expected-hash',
+            range_key='last_180_days',
+        )
+
+        parsed_query = parse_filters.call_args.args[1]
+        self.assertEqual(parsed_query.getlist('ca.33.value'), ['32', '33'])
+        parse_filters.assert_called_once_with(project, parsed_query, strict=True)
+        build_cache.assert_called_once_with(
+            9,
+            range_key='last_180_days',
+            company_attribute_filter_state=state,
+        )
+        self.assertEqual(result['status'], 'success')
+
+    @patch('apps.pages.filtered_overview.services.build_pages_overview_cache')
+    @patch('apps.pages.filtered_overview.parse_company_attribute_filters')
+    @patch('apps.pages.filtered_overview.Project.active.filter')
+    def test_filtered_cache_task_skips_when_worker_hash_differs(
+        self,
+        project_filter,
+        parse_filters,
+        build_cache,
+    ):
+        project_filter.return_value = SimpleNamespace(first=lambda: SimpleNamespace(id=9))
+        parse_filters.return_value = SimpleNamespace(
+            active=True,
+            filters_hash='new-worker-hash',
+        )
+
+        result = build_filtered_pages_overview_cache_task.run(
+            9,
+            [['ca.33.op', 'in'], ['ca.33.value', '32']],
+            'request-hash',
+        )
+
+        self.assertEqual(result['status'], 'skipped')
+        self.assertEqual(result['reason'], 'filters_changed')
+        build_cache.assert_not_called()
+
+    @patch('apps.pages.filtered_overview.services.build_pages_overview_cache')
+    @patch('apps.pages.filtered_overview.parse_company_attribute_filters')
+    @patch('apps.pages.filtered_overview.Project.active.filter')
+    def test_filtered_cache_task_retries_lock_miss(
+        self,
+        project_filter,
+        parse_filters,
+        build_cache,
+    ):
+        project_filter.return_value = SimpleNamespace(first=lambda: SimpleNamespace(id=9))
+        parse_filters.return_value = SimpleNamespace(
+            active=True,
+            filters_hash='expected-hash',
+        )
+        build_cache.return_value = self._lock_skip(9)
+
+        with patch.object(
+            build_filtered_pages_overview_cache_task,
+            'retry',
+            side_effect=RuntimeError('retry requested'),
+        ) as retry:
+            with self.assertRaisesRegex(RuntimeError, 'retry requested'):
+                build_filtered_pages_overview_cache_task.run(
+                    9,
+                    [['ca.33.op', 'in'], ['ca.33.value', '32']],
+                    'expected-hash',
+                )
+
+        retry.assert_called_once()
+        self.assertEqual(retry.call_args.kwargs['countdown'], 30)
+
+    def _run_with_retries(self, task, retries, run):
+        task.push_request(retries=retries)
+        try:
+            return run()
+        finally:
+            task.pop_request()
+
+    def test_request_triggered_warms_return_the_skip_once_their_budget_is_spent(self):
+        warms = (
+            (
+                build_pages_overview_cache_task,
+                'apps.pages.tasks.build_pages_overview_cache',
+                (33333333,),
+            ),
+            (
+                hydrate_pages_scatter_tooltips_cache_task,
+                'apps.pages.tasks.hydrate_pages_scatter_tooltips_cache',
+                (33333333,),
+            ),
+            (
+                build_company_detail_cache_task,
+                'apps.pages.tasks.build_company_detail_cache',
+                (33333333, 'company-1'),
+            ),
+            (
+                build_user_detail_cache_task,
+                'apps.pages.tasks.build_user_detail_cache',
+                (33333333, 'user-1'),
+            ),
+        )
+
+        for task, build_target, args in warms:
+            with self.subTest(task=task.name):
+                with patch(build_target) as build:
+                    build.return_value = self._lock_skip(33333333)
+                    with patch.object(
+                        task,
+                        'retry',
+                        side_effect=RuntimeError('retry requested'),
+                    ) as retry:
+                        result = self._run_with_retries(
+                            task,
+                            PAGES_LOCK_MAX_RETRIES,
+                            lambda: task.run(*args),
+                        )
+
+                retry.assert_not_called()
+                self.assertIs(result, build.return_value)
+
+    @patch('apps.pages.tasks.build_user_detail_cache')
+    def test_request_triggered_warm_still_retries_while_its_budget_remains(self, build_cache):
+        build_cache.return_value = self._lock_skip(33333333)
+
+        with patch.object(
+            build_user_detail_cache_task,
+            'retry',
+            side_effect=RuntimeError('retry requested'),
+        ) as retry:
+            with self.assertRaisesRegex(RuntimeError, 'retry requested'):
+                self._run_with_retries(
+                    build_user_detail_cache_task,
+                    PAGES_LOCK_MAX_RETRIES - 1,
+                    lambda: build_user_detail_cache_task.run(33333333, 'user-1'),
+                )
+
+        retry.assert_called_once()
+        self.assertEqual(retry.call_args.kwargs['countdown'], 240)
+
+    @patch('apps.pages.filtered_overview.services.build_pages_overview_cache')
+    @patch('apps.pages.filtered_overview.parse_company_attribute_filters')
+    @patch('apps.pages.filtered_overview.Project.active.filter')
+    def test_filtered_cache_task_returns_the_skip_once_its_budget_is_spent(
+        self,
+        project_filter,
+        parse_filters,
+        build_cache,
+    ):
+        project_filter.return_value = SimpleNamespace(first=lambda: SimpleNamespace(id=9))
+        parse_filters.return_value = SimpleNamespace(
+            active=True,
+            filters_hash='expected-hash',
+        )
+        build_cache.return_value = self._lock_skip(9)
+
+        with patch.object(
+            build_filtered_pages_overview_cache_task,
+            'retry',
+            side_effect=RuntimeError('retry requested'),
+        ) as retry:
+            result = self._run_with_retries(
+                build_filtered_pages_overview_cache_task,
+                PAGES_LOCK_MAX_RETRIES,
+                lambda: build_filtered_pages_overview_cache_task.run(
+                    9,
+                    [['ca.33.op', 'in'], ['ca.33.value', '32']],
+                    'expected-hash',
+                ),
+            )
+
+        retry.assert_not_called()
+        self.assertIs(result, build_cache.return_value)
+
+    @patch('apps.pages.tasks.refresh_recent_projects_pages_analytics')
+    def test_scheduled_refresh_still_escalates_once_its_budget_is_spent(self, refresh):
+        refresh.return_value = {
+            'status': 'success',
+            'results': [self._lock_skip(101)],
+        }
+
+        with patch.object(
+            refresh_recent_pages_analytics_task,
+            'retry',
+            side_effect=RuntimeError('retry requested'),
+        ) as retry:
+            with self.assertRaisesRegex(RuntimeError, 'retry requested'):
+                self._run_with_retries(
+                    refresh_recent_pages_analytics_task,
+                    PAGES_LOCK_MAX_RETRIES,
+                    refresh_recent_pages_analytics_task.run,
+                )
+
+        retry.assert_called_once()
+        self.assertEqual(retry.call_args.kwargs['countdown'], PAGES_LOCK_RETRY_MAX_SECONDS)
+        self.assertIsInstance(retry.call_args.kwargs['exc'], PagesRebuildLockUnavailable)
+
     def test_all_lock_sensitive_tasks_share_the_bounded_retry_limit(self):
         for task in (
             refresh_recent_pages_analytics_task,
@@ -137,6 +364,9 @@ class PagesAnalyticsTaskRetryTests(SimpleTestCase):
             backfill_pages_analytics_task,
             aggregate_page_daily_metrics,
             build_pages_overview_cache_task,
+            build_filtered_pages_overview_cache_task,
+            build_filtered_companies_overview_cache_task,
+            build_filtered_users_overview_cache_task,
             build_companies_overview_cache_task,
             build_users_overview_cache_task,
             build_company_detail_cache_task,

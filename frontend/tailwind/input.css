@@ -1,19 +1,19 @@
-/* 1. Import your font at the very top. This part is still valid CSS. */
+@import "tailwindcss";
 
-@import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=auto");
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/InterVariable.woff2") format("woff2");
+}
 
-/* 2. Configure your theme directly in the CSS using @theme.
-      This replaces the need to edit tailwind.config.js for fonts, colors, etc.
-      By setting fontFamily.sans here, you are making 'Inter' the default font
-      for the font-sans utility, which is applied to the body by default.
-*/
-
-/* 3. Import the entire Tailwind engine with a single directive.
-      This one line includes all base styles, components, and utilities.
-*/
-
-@theme {
-
+/*
+ * These variables are consumed by Tailwind utilities, handwritten CSS, and
+ * chart JavaScript. `static` keeps that cross-layer contract in the output
+ * even when a token is not referenced by a class in a scanned source file.
+ */
+@theme static {
   --font-sans: "Inter", ui-sans-serif, system-ui;
   --color-c-blue: #4269D0;
   --color-c-orange: #EFB118;
@@ -25,29 +25,39 @@
   --color-c-light-blue: #97BBF5;
   --color-c-brown: #9C6B4E;
 
+  /* Default-palette tokens referenced directly by handwritten CSS. */
+  --color-orange-50: oklch(98% 0.016 73.684);
+  --color-orange-700: oklch(55.3% 0.195 38.402);
+  --color-amber-50: oklch(98.7% 0.022 95.277);
+  --color-amber-300: oklch(87.9% 0.169 91.605);
+  --color-amber-600: oklch(66.6% 0.179 58.318);
+  --color-amber-900: oklch(41.4% 0.112 45.904);
+  --color-sky-300: oklch(82.8% 0.111 230.318);
+  --color-yellow-500: oklch(79.5% 0.184 86.047);
+
   --breakpoint-3xl: 1920px;
   --breakpoint-4xl: 2560px;
-
 }
-
-@import "tailwindcss";
 
 @source inline("bg-c-blue/90 bg-c-orange/90 bg-c-red/90 bg-c-teal/90 bg-c-green/90 bg-c-rose/90 bg-c-purple/90 bg-c-light-blue/90 bg-c-brown/90");
 @source inline("bg-c-blue bg-c-orange bg-c-red bg-c-teal bg-c-green bg-c-rose bg-c-purple bg-c-light-blue bg-c-brown");
 @source inline("text-blue-700 text-yellow-700 text-red-700 text-teal-700 text-green-700 text-pink-700 text-violet-700 text-sky-700 text-amber-700 text-slate-600");
 
-
 @source "../../templates";
-@source "../../templates/account";
 @source "../../apps/tracker/templates/tracker";
+@source "../../apps/tracker/all_sessions_bubbles_view.py";
+@source "../../apps/tracker/constants.py";
+@source "../../apps/users/forms.py";
+@source "../../apps/users/templates/account";
 @source "../../apps/users/templates/users";
 @source "../../apps/projects/templates/projects";
 @source "../../apps/pages/templates/pages";
+@source "../../static/js/dropdowns.js";
+@source "../../static/js/modals.js";
 @source "../../static/js/pages";
 @source "../../static/js/companies";
 @source "../../static/js/users";
 
-/* 4 – Apply it once, everywhere */
 @layer base {
   html {
     min-width: 1024px;
@@ -193,6 +203,194 @@
 
 
 @layer components {
+  .page-shell {
+    padding-right: 2rem;
+    padding-left: 2rem;
+  }
+
+  @media (min-width: 1280px) {
+    .page-shell {
+      padding-right: 3rem;
+      padding-left: 3rem;
+    }
+  }
+
+  @media (min-width: 1920px) {
+    .page-shell {
+      padding-right: 4rem;
+      padding-left: 4rem;
+    }
+  }
+
+  @media (min-width: 2560px) {
+    .page-shell {
+      padding-right: 5rem;
+      padding-left: 5rem;
+    }
+  }
+
+  .status-badge {
+    --status-badge-border: var(--color-slate-300);
+    --status-badge-background: var(--color-white);
+    --status-badge-text: var(--color-slate-700);
+
+    border: 1px solid var(--status-badge-border);
+    background: var(--status-badge-background);
+    color: var(--status-badge-text);
+  }
+
+  .status-badge[data-status="trial_active"] {
+    --status-badge-border: var(--color-green-200);
+    --status-badge-background: var(--color-green-50);
+    --status-badge-text: var(--color-green-700);
+  }
+
+  .status-badge[data-status="trial_ends_soon"] {
+    --status-badge-border: var(--color-orange-200);
+    --status-badge-background: var(--color-orange-50);
+    --status-badge-text: var(--color-orange-700);
+  }
+
+  .status-badge[data-status="paid_plan"],
+  .status-badge[data-status="active"] {
+    --status-badge-border: var(--color-sky-200);
+    --status-badge-background: var(--color-sky-50);
+    --status-badge-text: var(--color-sky-700);
+  }
+
+  .status-badge[data-status="trial_ended"],
+  .status-badge[data-status="scheduled_for_deletion"] {
+    --status-badge-border: var(--color-red-200);
+    --status-badge-background: var(--color-red-50);
+    --status-badge-text: var(--color-red-700);
+  }
+
+  .status-badge[data-status="read_only"] {
+    --status-badge-background: var(--color-slate-100);
+  }
+
+  .status-badge[data-status="setup_required"] {
+    --status-badge-border: var(--color-amber-200);
+    --status-badge-background: var(--color-amber-100);
+    --status-badge-text: var(--color-amber-800);
+  }
+
+  .workspace-role-picker,
+  .workspace-role-picker [data-workspace-role-picker-enhanced] {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .workspace-role-picker-trigger {
+    display: flex;
+    width: 100%;
+    min-height: 2.75rem;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.375rem;
+    border: 1px solid var(--color-slate-200);
+    border-radius: 0.375rem;
+    background: var(--color-white);
+    color: var(--color-slate-700);
+    font-size: 0.875rem;
+    font-weight: 400;
+    padding: 0.625rem 0.75rem;
+    text-align: left;
+  }
+
+  .workspace-role-picker-trigger:hover,
+  .workspace-role-picker-trigger:focus-visible {
+    border-color: var(--color-slate-300);
+    background: var(--color-slate-50);
+    color: var(--color-slate-900);
+    outline: none;
+  }
+
+  .workspace-role-picker-trigger:focus-visible {
+    border-color: var(--color-blue-400);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-blue-400) 18%, transparent);
+  }
+
+  .workspace-role-picker-trigger-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .workspace-role-picker-trigger svg {
+    width: 20px;
+    height: 20px;
+    flex: none;
+    color: var(--color-slate-500);
+  }
+
+  .workspace-role-picker-menu {
+    position: absolute;
+    top: calc(100% + 0.375rem);
+    right: 0;
+    left: 0;
+    z-index: 60;
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--color-slate-200);
+    border-radius: 0.5rem;
+    background: var(--color-white);
+    box-shadow: 0 18px 40px rgb(15 23 42 / 14%);
+    padding: 0.375rem;
+    transform-origin: top;
+    transition-duration: 150ms;
+  }
+
+  .workspace-role-picker-menu.hidden {
+    display: none;
+  }
+
+  .workspace-role-picker-menu.workspace-role-picker-menu--above {
+    top: auto;
+    bottom: calc(100% + 0.375rem);
+    transform-origin: bottom;
+  }
+
+  .workspace-role-picker-option {
+    display: grid;
+    width: 100%;
+    gap: 0.2rem;
+    border: 0;
+    border-radius: 0.375rem;
+    background: transparent;
+    color: var(--color-slate-700);
+    padding: 0.5625rem 0.625rem;
+    text-align: left;
+  }
+
+  .workspace-role-picker-option:hover,
+  .workspace-role-picker-option[aria-selected="true"] {
+    background: var(--color-slate-50);
+    color: var(--color-slate-900);
+  }
+
+  .workspace-role-picker-option:focus {
+    background: var(--color-slate-50);
+    outline: none;
+  }
+
+  .workspace-role-picker-option:focus-visible {
+    background: var(--color-blue-50);
+    box-shadow: inset 0 0 0 2px var(--color-blue-400);
+  }
+
+  .workspace-role-picker-option-title {
+    color: var(--color-slate-900);
+    font-weight: 600;
+  }
+
+  .workspace-role-picker-option-copy {
+    color: var(--color-slate-500);
+    font-size: 0.8125rem;
+    line-height: 1.35;
+  }
+
   .day-bar-blue {
     @apply w-full bg-blue-400 group-hover:bg-blue-500 group-hover:outline group-hover:outline-blue-900 duration-200;
   }
@@ -223,4 +421,124 @@
 }
 .scrollable-x:active {
   cursor: grabbing;
+}
+
+/* Analytics preparing network loader */
+html.network-loader-active,
+html.network-loader-active * {
+  cursor: wait !important;
+}
+
+.network-loader {
+  --loader-color: #2498f3;
+  --loader-dot-opacity: 0.95;
+  --loader-line-width: 1.8;
+
+  display: grid;
+  width: 150px;
+  aspect-ratio: 30 / 23;
+  place-items: center;
+  color: var(--loader-color);
+  pointer-events: none;
+}
+
+.network-loader__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.network-loader__dot {
+  fill: currentColor;
+  opacity: var(--loader-dot-opacity);
+}
+
+.network-loader__line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: var(--loader-line-width);
+  stroke-linecap: round;
+  opacity: 0;
+  transition:
+    stroke-dashoffset 180ms ease-out,
+    opacity 120ms linear;
+}
+
+.network-loader__line.is-visible {
+  opacity: 0.95;
+  stroke-dashoffset: 0;
+}
+
+.network-loader__ring {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  opacity: 0;
+  transform: scale(0.55);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    opacity 140ms ease-out,
+    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.network-loader__ring.is-visible {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.network-loader__head {
+  opacity: 0;
+  transition:
+    transform 180ms ease-in-out,
+    opacity 100ms linear;
+}
+
+.network-loader__head.is-visible {
+  opacity: 1;
+}
+
+.network-loader__head-core {
+  fill: currentColor;
+}
+
+.network-loader__head-halo {
+  fill: currentColor;
+  opacity: 0.22;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: network-loader-pulse 720ms ease-in-out infinite;
+}
+
+.network-loader__line.is-fading,
+.network-loader__ring.is-fading,
+.network-loader__head.is-fading {
+  opacity: 0;
+  transition-duration: 360ms;
+}
+
+@keyframes network-loader-pulse {
+  0%,
+  100% {
+    opacity: 0.12;
+    transform: scale(0.78);
+  }
+
+  50% {
+    opacity: 0.3;
+    transform: scale(1.22);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .network-loader__line,
+  .network-loader__ring,
+  .network-loader__head {
+    transition-duration: 1ms;
+  }
+
+  .network-loader__head-halo {
+    animation: none;
+  }
 }

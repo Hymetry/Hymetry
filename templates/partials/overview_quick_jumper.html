@@ -1,0 +1,55 @@
+<div
+  id="{{ quick_jumper_root_id }}"
+  class="{{ quick_jumper_root_class }} overview-quick-jumper"
+  data-overview-quick-jumper>
+  <button
+    id="{{ quick_jumper_trigger_id }}"
+    type="button"
+    class="overview-quick-jumper__trigger"
+    aria-haspopup="dialog"
+    aria-expanded="false"
+    aria-controls="{{ quick_jumper_popover_id }}"
+    data-overview-quick-jumper-trigger>
+    <svg class="overview-quick-jumper__icon" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor" aria-hidden="true">
+      <path d="M781.69-136.92 530.46-388.16q-30 24.77-69 38.77-39 14-80.69 14-102.46 0-173.54-71.07-71.07-71.08-71.07-173.54t71.07-173.54q71.08-71.07 173.54-71.07t173.54 71.07q71.07 71.08 71.07 173.54 0 42.85-14.38 81.85-14.39 39-38.39 67.84l251.23 251.23-42.15 42.16ZM380.77-395.38q77.31 0 130.96-53.66 53.66-53.65 53.66-130.96t-53.66-130.96q-53.65-53.66-130.96-53.66t-130.96 53.66Q196.15-657.31 196.15-580t53.66 130.96q53.65 53.66 130.96 53.66Z" />
+    </svg>
+    <span>Find {{ quick_jumper_entity_label }}</span>
+  </button>
+
+  <div
+    id="{{ quick_jumper_popover_id }}"
+    class="overview-quick-jumper__popover"
+    role="dialog"
+    aria-label="Find {{ quick_jumper_entity_label }}"
+    data-overview-quick-jumper-popover
+    hidden>
+    <div class="overview-quick-jumper__search">
+      <label class="sr-only" for="{{ quick_jumper_input_id }}">Search {{ quick_jumper_entity_plural }}</label>
+      <svg class="overview-quick-jumper__search-icon" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor" aria-hidden="true">
+        <path d="M781.69-136.92 530.46-388.16q-30 24.77-69 38.77-39 14-80.69 14-102.46 0-173.54-71.07-71.07-71.08-71.07-173.54t71.07-173.54q71.08-71.07 173.54-71.07t173.54 71.07q71.07 71.08 71.07 173.54 0 42.85-14.38 81.85-14.39 39-38.39 67.84l251.23 251.23-42.15 42.16ZM380.77-395.38q77.31 0 130.96-53.66 53.66-53.65 53.66-130.96t-53.66-130.96q-53.65-53.66-130.96-53.66t-130.96 53.66Q196.15-657.31 196.15-580t53.66 130.96q53.65 53.66 130.96 53.66Z" />
+      </svg>
+      <input
+        id="{{ quick_jumper_input_id }}"
+        class="{{ quick_jumper_input_class }} overview-quick-jumper__input"
+        type="search"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-haspopup="listbox"
+        aria-expanded="false"
+        aria-controls="{{ quick_jumper_results_id }}"
+        autocomplete="off"
+        placeholder="Search {{ quick_jumper_entity_plural }}&hellip;" />
+      <button
+        type="button"
+        class="overview-quick-jumper__reset"
+        aria-label="Clear {{ quick_jumper_entity_label }} search"
+        data-overview-quick-jumper-reset
+        hidden>
+        <svg class="overview-quick-jumper__reset-icon" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor" aria-hidden="true">
+          <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+        </svg>
+      </button>
+    </div>
+    <div id="{{ quick_jumper_results_id }}" class="{{ quick_jumper_results_class }}" role="listbox" hidden></div>
+  </div>
+</div>

@@ -6,38 +6,12 @@
 {% block extra_js %}
   <link rel="stylesheet" href="{% static 'css/tracker/lib-player-styles.css' %}" />
   <link rel="stylesheet" href="{% static 'css/output.css' %}" />
+  <link rel="stylesheet" href="{% static 'css/tracker/recording.css' %}?v=20260720-2" />
   <script src="{% static 'js/tracker/lib-player.js' %}"></script>
-  <script src="{% static 'js/labella.min.js' %}"></script>
-  <script src="{% static 'js/dragscroll.js' %}"></script>
+  <script src="{% static 'js/tracker/replay-timeline.js' %}?v=20260720-2"></script>
+  <script src="{% static 'js/tracker/replay-stream.js' %}?v=20260720-1"></script>
+  <script src="{% static 'js/tracker/replay-playback-feedback.js' %}?v=20260720-1"></script>
 
-        <style>
-            #timeline {
-                /* default: no overlap */
-                --overlap: 0px;
-            }
-
-            /* no extra margin on the very first bubble */
-            #timeline > .bubble-box:first-child {
-                margin-left: 0;
-            }
-
-            /* every *next* bubble shifts left by –overlap */
-            #timeline > .bubble-box + .bubble-box {
-                margin-left: calc(var(--overlap) * -1);
-            }
-
-            /* Blue ring only while animating; no ring before/after */
-            @keyframes tab-glow-once {
-              0%   { box-shadow: none; }
-              45%  { box-shadow: 0 0 0 4px rgba(34,211,238,0.40); } /* ~0.4 intensity */
-              100% { box-shadow: none; }
-            }
-            .animate-tab-glow { animation: tab-glow-once 1000ms ease-in-out; }
-            @media (prefers-reduced-motion: reduce) {
-              .animate-tab-glow { animation: none; }
-            }
-        </style>
-  
 {% endblock %}
 
 {% block nav %}
@@ -78,42 +52,46 @@
             <!-- Loading spinner -->
             <div id="loadingSpinner" class="flex flex-col items-center justify-center">
               <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
-              <div class="text-gray-600 text-lg font-medium">Loading recording data...</div>
-              <div class="text-gray-400 text-sm mt-2">This may take a few moments</div>
+              <div class="text-gray-600 text-lg font-medium">Loading the start of this recording...</div>
+              <div class="text-gray-400 text-sm mt-2">Playback will begin while the rest loads</div>
+            </div>
+            <div id="playbackFeedback" class="replay-playback-feedback" role="status" aria-live="polite" aria-atomic="true" aria-hidden="true">
+              <div class="replay-playback-feedback__badge">
+                <svg id="playbackFeedbackPlayIcon" class="replay-playback-feedback__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M340-236.16v-487.68L723.07-480 340-236.16Z"/></svg>
+                <svg id="playbackFeedbackPauseIcon" class="replay-playback-feedback__icon hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M520-200v-560h200v560H520Zm-280 0v-560h200v560H240Z"/></svg>
+                <span id="playbackFeedbackLabel" class="replay-playback-feedback__label">Playing</span>
+              </div>
+            </div>
+            <div id="streamStatus" class="replay-stream-status hidden" role="status" aria-live="polite">
+              <div class="replay-stream-status__card">
+                <div id="streamStatusSpinner" class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                <div id="streamStatusMessage" class="font-medium text-slate-700">Buffering recording...</div>
+                <div id="streamStatusActions" class="hidden flex items-center gap-2">
+                  <button id="retryStreamBtn" type="button" class="px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700">Retry</button>
+                  <button id="legacyReplayBtn" type="button" class="px-3 py-1.5 bg-white text-slate-700 border border-slate-300 rounded hover:bg-slate-50">Load complete recording</button>
+                </div>
+              </div>
             </div>
             <!-- Player will be inserted here by rrweb -->
           </div>
         </div>
 
         <!-- Centered Custom Control Panel -->
-        <div id="controlPanelWrapper" class="flex justify-center mb-8 flex-shrink-0 hidden">
-          <div class="rounded-xl bg-white px-4 shadow-lg z-10">
-            <div class="flex w-fit items-center gap-4">
-              <button id="playBtn" class="flex-shrink-0 w-12 h-12 rounded-full bg-blue-600 text-white flex items-center justify-center hover:bg-blue-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 cursor-pointer">
+        <div id="controlPanelWrapper" class="flex w-full justify-center mb-8 flex-shrink-0 hidden">
+          <div class="replay-control-panel rounded-xl bg-white px-4 shadow-lg z-10">
+            <div class="replay-control-panel__row flex items-center gap-4">
+              <button id="playBtn" type="button" aria-label="Play recording" aria-pressed="false" class="flex-shrink-0 w-12 h-12 rounded-full bg-blue-600 text-white flex items-center justify-center hover:bg-blue-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 cursor-pointer">
                 <svg id="playIcon" xmlns="http://www.w3.org/2000/svg" height="32" viewBox="0 -960 960 960" width="32" fill="currentColor"><path d="M340-236.16v-487.68L723.07-480 340-236.16Z"/></svg>
                 <svg id="pauseIcon" class="w-6 h-6 hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5"/></svg>
               </button>
 
-                             <div id="timelineContainer" class="border-y-8 border-white hover:bg-blue-50 transition-colors duration-150 h-20 flex items-center relative cursor-pointer">
-                 <span id="currentPositionLine" class="absolute inset-y-1 w-px bg-red-600 z-20 pointer-events-none transform-gpu will-change-[left]"></span>
-                 <div id="timeline" class="relative z-10 flex flex-1">
-                  <!-- Timeline bubbles -->
-                  {% if session_bubbles_data %}{% for bubble in session_bubbles_data %}{% if not bubble.is_gap %}
-                    <div class="bubble-box" data-title="{{ bubble.breakdown }}" data-minute="{{ forloop.counter }}" data-dot="{{ bubble.color.2 }}"><span class="circle {{ bubble.color.2 }}" style="--size: {{ bubble.size }}px"></span></div>
-                  {% else %}
-                    <div class="bubble-box invisible"></div>
-                  {% endif %}{% endfor %}{% endif %}
-                </div>
-                <input id="progressSlider" type="range" min="0" max="100" value="0" class="range-slider appearance-none absolute left-0 right-0 top-1/2 -translate-y-1/2 h-1 w-full rounded cursor-pointer opacity-0 pointer-events-none" />
+              <div id="timelineContainer" class="replay-timeline-container relative min-w-0 flex-1 cursor-pointer">
+                <div id="timeline" class="replay-timeline" aria-label="Replay timeline"></div>
+                <span id="hoverPositionLine" class="replay-timeline-hover-marker" aria-hidden="true" hidden></span>
+                <span id="currentPositionLine" class="replay-timeline-playhead absolute pointer-events-none transform-gpu will-change-[left]" aria-hidden="true"></span>
               </div>
 
-                             <span id="timeDisplay" class="whitespace-nowrap text-slate-600 text-sm font-mono tracking-tight">00:00 / 00:00</span>
-              
-              <!-- Skip Inactivity Checkbox
-              <div class="flex items-center gap-2">
-                <input type="checkbox" checked id="skipInactivity" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2">
-                <label for="skipInactivity" class="text-sm text-gray-700">Skip Inactivity</label>
-              </div>-->
+              <span id="timeDisplay" class="whitespace-nowrap text-slate-600 text-sm font-mono tracking-tight">00:00 / 00:00</span>
             </div>
           </div>
         </div>
@@ -132,10 +110,57 @@
       let tab_switches = [];
       let initial_tab_id = 'unknown';
       let totalDuration = 0;
+      let rrwebDuration = 0;
       let currentTime = 0;
       let isPlaying = false;
-      let inactivityRanges = [];
-      const INACTIVITY_THRESHOLD_MS = 3000; // treat gaps >= 3s as inactivity
+      let analyticsTimeline = { segments: [] };
+      let replayTimeline = null;
+      let streamController = null;
+      let bootstrapAbortController = null;
+      let streamingEnabled = false;
+      let nextCursor = null;
+      let seekCursor = null;
+      let hasMoreEvents = false;
+      let loadedThroughMs = 0;
+      let segmentStartMs = 0;
+      let seekableFromMs = 0;
+      let streamConfig = {};
+      let recordingMetadata = {};
+      let destroyed = false;
+      let playerMutationObserver = null;
+      let resizeRaf = null;
+      let seekRequestId = 0;
+      let playbackFeedback = null;
+      const resizeObservers = [];
+
+      const streamUrl = "{% if is_demo_view %}{% url 'demo_replay_stream' session_id=session_id %}{% else %}{% url 'w:replay_stream' workspace_slug=project.workspace.slug project_id=project_id session_id=session_id %}{% endif %}";
+      const legacyDataUrl = "{% if is_demo_view %}{% url 'demo_get_consolidated_data' session_id=session_id %}{% else %}{% url 'w:get_consolidated_data' workspace_slug=project.workspace.slug project_id=project_id session_id=session_id %}{% endif %}";
+
+      function teardownReplay() {
+        if (destroyed) return;
+        destroyed = true;
+        bootstrapAbortController?.abort();
+        playerMutationObserver?.disconnect();
+        resizeObservers.forEach(observer => observer.disconnect());
+        if (resizeRaf) cancelAnimationFrame(resizeRaf);
+        playbackFeedback?.destroy();
+        playbackFeedback = null;
+        replayTimeline?.destroy();
+        if (streamController) {
+          streamController.destroy();
+        } else {
+          window.ReplayStream.destroyRrwebPlayer(player);
+        }
+        player = null;
+      }
+
+      window.addEventListener('pagehide', teardownReplay, { once: true });
+      window.addEventListener('pageshow', (event) => {
+        // pagehide also runs when the browser places this page in BFCache. Its
+        // replay instance has deliberately been destroyed, so rebuild it on
+        // Back/Forward instead of exposing a permanently inert cached page.
+        if (event.persisted && destroyed) window.location.reload();
+      });
 
       // Current tab badge highlight
       const badge = document.getElementById('current-tab');
@@ -153,13 +178,21 @@
 
       // Helper functions
       const $ = id => document.getElementById(id);
-      
+      playbackFeedback = window.ReplayPlaybackFeedback.create({
+        element: $('playbackFeedback'),
+        playIcon: $('playbackFeedbackPlayIcon'),
+        pauseIcon: $('playbackFeedbackPauseIcon'),
+        label: $('playbackFeedbackLabel')
+      });
+
       function setPlaying(flag) {
-        isPlaying = flag;
-        $('playIcon').classList.toggle('hidden', flag);
-        $('pauseIcon').classList.toggle('hidden', !flag);
+        isPlaying = Boolean(flag);
+        $('playIcon').classList.toggle('hidden', isPlaying);
+        $('pauseIcon').classList.toggle('hidden', !isPlaying);
+        $('playBtn').setAttribute('aria-label', isPlaying ? 'Pause recording' : 'Play recording');
+        $('playBtn').setAttribute('aria-pressed', String(isPlaying));
       }
-      
+
       // Back button functionality - should work immediately
       function safeGoBack() {
         if (history.length > 1 && document.referrer.startsWith(window.location.origin)) {
@@ -170,57 +203,114 @@
       }
       
       function updateUI() {
-        // Update progress slider
-        const pct = totalDuration ? (currentTime / totalDuration) * 100 : 0;
-        $('progressSlider').value = pct;
+        const displayedTime = window.ReplayTimeline.analyticalDisplayTime(
+          currentTime,
+          totalDuration
+        );
+        const pct = totalDuration ? (displayedTime / totalDuration) * 100 : 0;
         $('currentPositionLine').style.left = pct + '%';
+        replayTimeline?.setCurrentTime(displayedTime);
         
         // Update time display
         const fmt = ms => {
           const s = Math.floor(ms / 1000), m = Math.floor(s / 60);
           return m.toString().padStart(2, '0') + ':' + (s % 60).toString().padStart(2, '0');
         };
-        $('timeDisplay').textContent = `${fmt(currentTime)} / ${fmt(totalDuration)}`;
+        $('timeDisplay').textContent = `${fmt(displayedTime)} / ${fmt(totalDuration)}`;
       }
 
-      // Build inactivity ranges based on gaps between consecutive events
-      function computeInactivityRanges() {
-        inactivityRanges = [];
-        if (!events || events.length === 0) {
-          return;
-        }
-        for (let i = 1; i < events.length; i++) {
-          const prevTs = events[i - 1]?.timestamp ?? 0;
-          const currTs = events[i]?.timestamp ?? prevTs;
-          const gap = currTs - prevTs;
-          if (gap >= INACTIVITY_THRESHOLD_MS) {
-            inactivityRanges.push({ start: prevTs, end: currTs });
-          }
-        }
-      }
-      
       // Set up back button immediately - should work during loading
       const backBtn = document.getElementById('backBtn');
       if (backBtn) {
         backBtn.addEventListener('click', safeGoBack);
       }
       
-      // Load consolidated data via Ajax
+      // Load a bounded bootstrap. The legacy endpoint remains available while
+      // old and new application instances overlap during deployment.
       let consolidatedData = null;
+
+      async function fetchJson(url, signal) {
+        const response = await fetch(url, { signal });
+        let result = {};
+        try {
+          result = await response.json();
+        } catch (_) {}
+        return { response, result };
+      }
+
+      function canUseLegacyFallback(response, result) {
+        return response.status === 404 || [
+          'event_too_large',
+          'initializer_too_large',
+          'initializer_too_many_events',
+          'insufficient_initializer',
+          'streaming_unavailable'
+        ].includes(result?.code);
+      }
+
+      async function loadBootstrap() {
+        const forceLegacy = new URLSearchParams(window.location.search).get('legacy') === '1';
+        bootstrapAbortController = new AbortController();
+        if (!forceLegacy) {
+          const streamed = await fetchJson(streamUrl, bootstrapAbortController.signal);
+          if (streamed.response.ok) return streamed.result.data;
+          if (!canUseLegacyFallback(streamed.response, streamed.result)) {
+            throw new Error(streamed.result.error || 'Failed to load recording data');
+          }
+        }
+
+        const legacy = await fetchJson(legacyDataUrl, bootstrapAbortController.signal);
+        if (!legacy.response.ok) {
+          throw new Error(legacy.result.error || 'Failed to load recording data');
+        }
+        return legacy.result.data;
+      }
       
       try {
-        const response = await fetch("{% if is_demo_view %}{% url 'demo_get_consolidated_data' session_id=session_id %}{% else %}{% url 'w:get_consolidated_data' workspace_slug=project.workspace.slug project_id=project_id session_id=session_id %}{% endif %}");
-        const result = await response.json();
-        
-        if (!response.ok) {
-          throw new Error(result.error || 'Failed to load recording data');
-        }
-        
-        consolidatedData = result.data;
+        consolidatedData = await loadBootstrap();
+        if (destroyed) return;
+        streamingEnabled = Number(consolidatedData.protocol_version) === 1;
         events = consolidatedData.events || [];
         human_tab_dict = consolidatedData.human_tab_dict || {};
         tab_switches = consolidatedData.tab_switches || [];
         initial_tab_id = consolidatedData.initial_tab_id || 'unknown';
+        analyticsTimeline = consolidatedData.analytics_timeline || { segments: [] };
+        recordingMetadata = consolidatedData.recording_metadata || {};
+        nextCursor = consolidatedData.next_cursor || null;
+        seekCursor = consolidatedData.seek_cursor || null;
+        hasMoreEvents = Boolean(streamingEnabled && consolidatedData.has_more && nextCursor);
+        loadedThroughMs = Math.max(
+          0,
+          Number(consolidatedData.loaded_through_ms) || 0
+        );
+        segmentStartMs = Math.max(
+          0,
+          Number(consolidatedData.segment_start_ms) || 0
+        );
+        seekableFromMs = Math.max(
+          segmentStartMs,
+          Number(consolidatedData.seekable_from_ms) || 0
+        );
+        streamConfig = consolidatedData.stream_config || {};
+        if (consolidatedData.replay_available === false) {
+          const reason = consolidatedData.replay_unavailable_reason;
+          throw new Error(
+            reason === 'insufficient_events'
+              ? 'This recording does not contain enough events to initialize replay.'
+              : 'This recording is incomplete because its initial page snapshot was not captured.'
+          );
+        }
+        if (!events || events.length < 2) {
+          throw new Error('This recording does not contain enough bootstrap events to initialize replay.');
+        }
+        totalDuration = Math.max(
+          0,
+          Number(analyticsTimeline.durationMs ?? consolidatedData.total_duration) || 0
+        );
+        rrwebDuration = Math.max(
+          0,
+          Number(consolidatedData.rrweb_duration ?? consolidatedData.rrwebDurationMs) || 0
+        );
         
         // Hide loading spinner and show control panel
         const loadingSpinner = document.getElementById('loadingSpinner');
@@ -240,6 +330,7 @@
         }
         
       } catch (error) {
+        if (error?.name === 'AbortError' || destroyed) return;
         console.error('Failed to load consolidated data:', error);
         
         // Show error message
@@ -251,12 +342,13 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
               </svg>
               <div class="text-lg font-medium mb-2">Failed to load recording data</div>
-              <div class="text-sm text-gray-500">${error.message}</div>
+              <div id="replayLoadErrorDetail" class="text-sm text-gray-500"></div>
               <button onclick="window.location.reload()" class="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
                 Retry
               </button>
             </div>
           `;
+          document.getElementById('replayLoadErrorDetail').textContent = error.message;
         }
         return; // Stop execution if data loading failed
       }
@@ -265,276 +357,6 @@
       initializePlayer();
       
       function initializePlayer() {
-      // Page labels functionality
-      let pageLabelsContainer = null; // holds the page labels
-      let activeTimelineForLabels = null;
-
-      const COLOR_CACHE = {}; // Cache for computed background colors
-
-      const BG_TEXT_COLOR = {
-          "bg-c-blue": "#ffffff",
-          "bg-c-orange": "#713f12",
-          "bg-c-red": "#ffffff",
-          "bg-c-teal": "#ffffff",
-          "bg-c-green": "#ffffff",
-          "bg-c-rose": "#ffffff",
-          "bg-c-purple": "#ffffff",
-          "bg-c-light-blue": "#1e3a8a",
-          "bg-c-brown": "#ffffff",
-          "bg-gray-200": "#000000"
-      };
-
-      // find first Tailwind bg-* class on an element, strip opacity suffix ("/90")
-      function getBaseBgClass(el, fallbackClass) {
-          if (!el) return fallbackClass || null;
-          const cls = Array.from(el.classList || []).find((c) => c.startsWith("bg-")) || fallbackClass || null;
-          return cls ? cls.replace(/\/\d+$/, "") : null;
-      }
-
-      /**
-       * [OPTIMIZED] Reads the actual CSS color for a Tailwind bg-* class.
-       * Results are cached to prevent re-calculating the same color, which significantly
-       * improves performance on repeated hovers.
-       */
-      function cssColorFromBgClass(bgClass) {
-          if (COLOR_CACHE[bgClass]) {
-              return COLOR_CACHE[bgClass];
-          }
-
-          const tmp = document.createElement("div");
-          tmp.className = bgClass;
-          tmp.style.position = "absolute";
-          tmp.style.left = "-9999px";
-          tmp.style.visibility = 'hidden'; // Better than off-screen positioning
-          document.body.appendChild(tmp);
-          const color = getComputedStyle(tmp).backgroundColor;
-          tmp.remove();
-
-          COLOR_CACHE[bgClass] = color; // Save to cache
-          return color;
-      }
-
-      function applyChipTheme(el, bgClass) {
-          if (!bgClass || !el) return;
-
-          const bgColor = cssColorFromBgClass(bgClass);
-          el.style.backgroundColor = bgColor;
-          el.style.color = BG_TEXT_COLOR[bgClass] || "#ffffff";
-
-          // Text shadow for contrast
-          el.style.textShadow =
-              "0 0 1px rgba(0,0,0,0.4), 0 0 4px rgba(0,0,0,0.2)";
-
-          // Box shadow so tooltip stands out from background
-          el.style.boxShadow =
-              "0 4px 12px rgba(0,0,0,0.25), 0 2px 6px rgba(0,0,0,0.2)";
-      }
-
-      function showPageLabels(timelineContainer) {
-          hidePageLabels(); // clear overlay
-
-          if (!timelineContainer) return;
-
-          const bubbles = Array.from(timelineContainer.querySelectorAll(".bubble-box:not(.invisible)[data-title]"));
-          if (!bubbles.length) return;
-
-          // Ensure overlay + SVG for connectors
-          if (!pageLabelsContainer) {
-              pageLabelsContainer = document.createElement("div");
-              pageLabelsContainer.id = "page-labels-container";
-              pageLabelsContainer.innerHTML = `<svg id="label-connectors" style="position:fixed;top:0;left:0;width:100%;height:100%;
-      pointer-events:none;z-index:9998;"></svg>`;
-              document.body.appendChild(pageLabelsContainer);
-          }
-          const svgConnectors = document.getElementById("label-connectors");
-          svgConnectors.innerHTML = "";
-
-          // --- 1) Build runs and group by page title (one label per title) ---
-          const groups = new Map(); // title -> { title, anchors:[...], el, idealX, xPacked, levelY, bgClass }
-          let lastTitle = null;
-
-          bubbles.forEach((bubble) => {
-              const title = bubble.dataset.title;
-              if (!title) return;
-
-              // anchor only at the start of each consecutive run
-              if (title !== lastTitle) {
-                  const rect = bubble.getBoundingClientRect();
-                  const circle = bubble.querySelector(".circle");
-                  const size = parseFloat(getComputedStyle(circle).getPropertyValue("--size")) || 28;
-                  const r = size / 2;
-
-                  if (!groups.has(title)) {
-                      const baseBgClass = getBaseBgClass(circle) || "bg-gray-200"; // strip "/90"
-                      groups.set(title, {
-                          title,
-                          anchors: [],
-                          el: null,
-                          idealX: 0,
-                          xPacked: 0,
-                          levelY: null,
-                          bgClass: baseBgClass
-                      });
-                  }
-                  groups.get(title).anchors.push({
-                      bubbleEl: bubble,
-                      x: rect.left + rect.width / 2, // anchor X
-                      cy: rect.top + rect.height / 2,
-                      r
-                  });
-              }
-              lastTitle = title;
-          });
-
-          const labelsData = Array.from(groups.values());
-          if (!labelsData.length) return;
-
-          // --- 2) Ideal X = median of run anchors ---
-          labelsData.forEach((g) => {
-              const xs = g.anchors.map((a) => a.x).sort((a, b) => a - b);
-              g.idealX =
-                  xs.length % 2 ? xs[(xs.length - 1) / 2] : (xs[xs.length / 2 - 1] + xs[xs.length / 2]) / 2;
-          });
-
-          // --- 3) Create DOM nodes & theme them (solid background + readable text, no border) ---
-          labelsData.forEach((g) => {
-              const el = document.createElement("div");
-              el.className = "page-label";
-              el.textContent = g.title;
-              el.title = g.title;
-              el.style.maxWidth = "280px";
-              el.style.whiteSpace = "nowrap";
-              el.style.overflow = "hidden";
-              el.style.textOverflow = "ellipsis";
-              pageLabelsContainer.appendChild(el);
-              g.el = el;
-
-              // Apply theme now (uses solid color, no border)
-              applyChipTheme(g.el, g.bgClass);
-          });
-
-          // --- 4) Geometry + helpers ---
-          labelsData.sort((a, b) => a.idealX - b.idealX);
-          const chartRect = timelineContainer.getBoundingClientRect();
-          const timelineRect = timelineContainer.getBoundingClientRect();
-          const LANES_TOP = [timelineRect.top - 35, timelineRect.top - 70]; // near, far
-          const LANES_BOT = [timelineRect.bottom - 5, timelineRect.bottom - 10]; // near, far
-          const spacing = 8;
-
-          const runLabella = (items, usePackedAsIdeal = false) => {
-              if (!items.length) return [];
-              const force = new labella.Force({
-                  minPos: chartRect.left,
-                  maxPos: chartRect.right,
-                  nodeSpacing: spacing
-              });
-              const nodes = items.map(
-                  (lbl) => new labella.Node(usePackedAsIdeal ? lbl.xPacked : lbl.idealX, lbl.el.offsetWidth, lbl)
-              );
-              force.nodes(nodes).compute();
-              return nodes;
-          };
-
-          // --- 5) Global pass for packed X ---
-          const allNodes = runLabella(labelsData);
-          allNodes.forEach((n) => (n.data.xPacked = n.currentPos));
-
-          // --- 6) Weave into 2 lanes; repack lanes; promote to 4 if dense ---
-          const ordered = allNodes
-              .slice()
-              .sort((a, b) => a.currentPos - b.currentPos)
-              .map((n) => n.data);
-          const topNear = [],
-              botNear = [];
-          ordered.forEach((d, i) => (i % 2 === 0 ? topNear : botNear).push(d));
-
-          let lanes = [
-              { nodes: runLabella(topNear, true), y: LANES_TOP[0] },
-              { nodes: runLabella(botNear, true), y: LANES_BOT[0] }
-          ];
-
-          const tooTight = (nodes) => {
-              if (!nodes.length) return false;
-              const totalW = nodes.reduce((s, n) => s + n.width, 0) + spacing * (nodes.length - 1);
-              const avail = chartRect.right - chartRect.left;
-              return totalW > avail * 0.95;
-          };
-          if (tooTight(lanes[0].nodes) || tooTight(lanes[1].nodes)) {
-              const splitWeave = (nodes) => {
-                  const list = nodes
-                      .slice()
-                      .sort((a, b) => a.currentPos - b.currentPos)
-                      .map((n) => n.data);
-                  const a = [],
-                      b = [];
-                  list.forEach((d, i) => (i % 2 === 0 ? a : b).push(d));
-                  return [runLabella(a, true), runLabella(b, true)];
-              };
-              const [t0, t1] = splitWeave(lanes[0].nodes);
-              const [b0, b1] = splitWeave(lanes[1].nodes);
-              lanes = [
-                  { nodes: t0, y: LANES_TOP[0] },
-                  { nodes: t1, y: LANES_TOP[1] },
-                  { nodes: b0, y: LANES_BOT[0] },
-                  { nodes: b1, y: LANES_BOT[1] }
-              ];
-          }
-
-          // --- 7) Commit label positions ---
-          lanes.forEach((l) => {
-              l.nodes.forEach((n) => {
-                  const g = n.data;
-                  g.levelY = l.y;
-                  const left = n.currentPos - n.width / 2;
-                  g.el.style.left = `${left}px`;
-                  g.el.style.top = `${l.y}px`;
-              });
-          });
-
-          // --- 8) Connect all runs to the single label (solid stroke color) ---
-          labelsData.forEach((g) => {
-              if (!g.el || g.levelY == null) return;
-
-              const labelRect = g.el.getBoundingClientRect();
-              const strokeColor = cssColorFromBgClass(g.bgClass); // 100% opacity color
-
-              g.anchors.forEach((a) => {
-                  const isAbove = g.levelY < timelineRect.top;
-                  const startX = a.x;
-                  const startY = isAbove ? a.cy - a.r : a.cy + a.r;
-                  const endX = labelRect.left + labelRect.width / 2;
-                  const endY = isAbove ? labelRect.bottom : labelRect.top;
-
-                  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-                  const d = `M ${startX} ${startY} Q ${startX} ${endY} ${endX} ${endY}`;
-                  path.setAttribute("d", d);
-                  path.setAttribute("stroke", strokeColor);
-                  path.setAttribute("stroke-width", "2");
-                  path.setAttribute("fill", "none");
-                  svgConnectors.appendChild(path);
-                  g.connector = path;
-              });
-          });
-
-          // --- 9) Fade in ---
-          requestAnimationFrame(() => {
-              labelsData.forEach((g) => {
-                  if (!g.el || g.levelY == null) return;
-                  g.el.classList.add("visible");
-              });
-              svgConnectors.querySelectorAll("path").forEach((p) => p.classList.add("visible"));
-          });
-      }
-
-      function hidePageLabels() {
-          if (pageLabelsContainer) {
-              // Remove all label divs and SVG paths
-              pageLabelsContainer.querySelectorAll(".page-label").forEach((el) => el.remove());
-              const svg = document.getElementById("label-connectors");
-              if (svg) svg.innerHTML = "";
-          }
-      }
-      //console.log('tab_switches', tab_switches)
       // Toast notification functions
       function showTabSwitchToast(message) {
         const toast = document.getElementById('tabSwitchToast');
@@ -562,6 +384,12 @@
       const DEFAULT_ASPECT = 16 / 9;
       function getRecordingMeta() {
         try {
+          const viewport = recordingMetadata?.viewport;
+          if (viewport?.width && viewport?.height) {
+            const width = Math.floor(viewport.width);
+            const height = Math.floor(viewport.height);
+            return { width, height, aspect: width / height };
+          }
           const metaEvent = (events || []).find(ev => ev && ev.type === 4 && ev.data && ev.data.width && ev.data.height);
           if (metaEvent && metaEvent.data.width && metaEvent.data.height) {
             const width = Math.floor(metaEvent.data.width);
@@ -661,16 +489,15 @@
       }
 
       // Observe player loading to stop page loading progress
-      const observer = new MutationObserver((mutations, obs) => {
+      playerMutationObserver = new MutationObserver((mutations, obs) => {
         // Wait for rrwebPlayer to render some DOM content
         const hasSnapshot = playerContainer.querySelector('iframe, .rr-player, .rrweb-sandbox');
 
         if (hasSnapshot) {
-          window.stop();
           obs.disconnect();
         }
       });
-      observer.observe(playerContainer, { childList: true, subtree: true });
+      playerMutationObserver.observe(playerContainer, { childList: true, subtree: true });
       
       // Compute initial size for the player
       layoutPlayerArea();
@@ -687,25 +514,146 @@
         return;
       }
 
-      // Initialize total duration and UI BEFORE setting up event listeners
-      if (events.length > 0) {
-        const lastEvent = events[events.length - 1];
-        totalDuration = lastEvent.timestamp || 0;
-        computeInactivityRanges();
+      // The control uses the independent analytical duration loaded above.
+      // rrwebDuration is informational only and must not resize or clamp it.
+      if (!streamingEnabled && !rrwebDuration && events.length > 0) {
+        rrwebDuration = Math.max(0, Number(events[events.length - 1].timestamp) || 0);
       }
 
-      player = new rrwebPlayer({
-        target: playerContainer,
-        props: {
-          events: events,
-          width: initialSize.width,
-          height: initialSize.height,
-          mouseTail: true,
-          // Disable default controls
-          showController: false,
-          autoPlay: false
-        },
+      function createRrwebPlayer(segmentEvents) {
+        return new rrwebPlayer({
+          target: playerContainer,
+          props: {
+            events: segmentEvents,
+            width: initialSize.width,
+            height: initialSize.height,
+            mouseTail: true,
+            // Disable default controls
+            showController: false,
+            autoPlay: false,
+            // The analytical control represents the complete elapsed visit.
+            skipInactive: false
+          },
+        });
+      }
+
+      player = createRrwebPlayer(events);
+
+      function setStreamStatus(mode, message = '') {
+        const status = $('streamStatus');
+        const spinner = $('streamStatusSpinner');
+        const actions = $('streamStatusActions');
+        if (!status) return;
+        if (mode === 'hidden') {
+          status.classList.add('hidden');
+          return;
+        }
+        status.classList.remove('hidden');
+        spinner.classList.toggle('hidden', mode !== 'buffering');
+        actions.classList.toggle('hidden', mode !== 'error');
+        $('streamStatusMessage').textContent = message || (
+          mode === 'buffering' ? 'Buffering recording...' : 'Could not load more of this recording.'
+        );
+      }
+
+      async function fetchNextChunk(cursor, signal) {
+        const url = new URL(streamUrl, window.location.origin);
+        url.searchParams.set('cursor', cursor);
+        const { response, result } = await fetchJson(url.toString(), signal);
+        if (!response.ok) {
+          const error = new Error(result.error || 'Could not load more of this recording.');
+          error.code = result.code || (response.status === 404 ? 'unsupported_stream' : 'chunk_load_failed');
+          throw error;
+        }
+        return result.data;
+      }
+
+      async function fetchSeekBootstrap(targetMs, cursor, signal) {
+        const url = new URL(streamUrl, window.location.origin);
+        url.searchParams.set('seek_ms', String(targetMs));
+        url.searchParams.set('seek_cursor', cursor);
+        const { response, result } = await fetchJson(url.toString(), signal);
+        if (!response.ok) {
+          const error = new Error(result.error || 'Could not load the selected replay position.');
+          error.code = result.code || (response.status === 404 ? 'unsupported_stream' : 'seek_load_failed');
+          throw error;
+        }
+        return result.data;
+      }
+
+      $('legacyReplayBtn').addEventListener('click', (event) => {
+        event.stopPropagation();
+        const url = new URL(window.location.href);
+        url.searchParams.set('legacy', '1');
+        window.location.assign(url.toString());
       });
+      $('retryStreamBtn').addEventListener('click', (event) => {
+        event.stopPropagation();
+        streamController?.retry();
+      });
+
+      if (streamingEnabled) {
+        streamController = window.ReplayStream.createController({
+          player,
+          fetchChunk: fetchNextChunk,
+          initialCursor: nextCursor,
+          initialHasMore: hasMoreEvents,
+          initialLoadedThroughMs: loadedThroughMs,
+          segmentStartMs,
+          seekableFromMs,
+          seekCursor,
+          fullDurationMs: rrwebDuration,
+          prefetchThresholdMs: streamConfig.prefetch_threshold_ms,
+          appendBatchSize: streamConfig.append_batch_size,
+          fetchSeekBootstrap,
+          createPlayer: createRrwebPlayer,
+          onPlayerChange(nextPlayer, previousPlayer, bootstrap) {
+            player = nextPlayer;
+            tab_switches = Array.isArray(bootstrap.tab_switches)
+              ? bootstrap.tab_switches.slice()
+              : [];
+            initial_tab_id = bootstrap.initial_tab_id || initial_tab_id;
+            currentTime = window.ReplayTimeline.analyticalDisplayTime(
+              streamController.state.currentTimeMs,
+              totalDuration
+            );
+            attachPlayerListeners(nextPlayer);
+            layoutAndSize();
+            updateUI();
+            updateCurrentTab(initial_tab_id);
+            updateCurrentTabForTime(streamController.state.playerTimeMs);
+          },
+          onChunkMetadata(chunk) {
+            if (Array.isArray(chunk.tab_switches) && chunk.tab_switches.length) {
+              tab_switches.push(...chunk.tab_switches);
+            }
+          },
+          onChunk() {
+            updateCurrentTabForTime(streamController.state.playerTimeMs);
+          },
+          onBufferingChange(buffering) {
+            setStreamStatus(buffering ? 'buffering' : 'hidden');
+          },
+          onPlayingIntentChange(playing) {
+            setPlaying(playing);
+          },
+          onExhausted() {
+            setPlaying(false);
+            setStreamStatus('hidden');
+          },
+          onError(error) {
+            console.error('Failed to load replay chunk:', error);
+            setStreamStatus('error', error.message);
+          }
+        });
+        // Fetch exactly the next chunk immediately; later chunks are pulled as
+        // playback approaches the currently appended boundary.
+        streamController.start();
+      }
+
+      // rrweb owns the bootstrap array after construction; do not retain a
+      // second application-level copy while subsequent chunks are appended.
+      events = [];
 
       // set and resize player size when the container changes its size
       layoutAndSize();
@@ -714,11 +662,11 @@
       updateUI();
 
       // Respond to window resize with rAF debounce
-      let resizeRaf = null;
       function hasHorizontalScroll() {
           return document.documentElement.scrollWidth > document.documentElement.clientWidth;
       }
       window.addEventListener('resize', () => {
+        if (destroyed) return;
         if (hasHorizontalScroll()) {
               const doc = document.documentElement;
               window.scrollTo({
@@ -736,127 +684,92 @@
       if (window.ResizeObserver) {
         const ro = new ResizeObserver(() => layoutAndSize());
         ro.observe(playerParentContainer);
+        resizeObservers.push(ro);
         const mainEl = document.getElementById('mainContainer');
-        if (mainEl) new ResizeObserver(() => layoutAndSize()).observe(mainEl);
+        if (mainEl) {
+          const mainObserver = new ResizeObserver(() => layoutAndSize());
+          mainObserver.observe(mainEl);
+          resizeObservers.push(mainObserver);
+        }
         const panelEl = document.getElementById('controlPanelWrapper');
-        if (panelEl) new ResizeObserver(() => layoutAndSize()).observe(panelEl);
+        if (panelEl) {
+          const panelObserver = new ResizeObserver(() => layoutAndSize());
+          panelObserver.observe(panelEl);
+          resizeObservers.push(panelObserver);
+        }
       }
 
-      // Custom control variables (already declared at top level)
-
-      function findGapContaining(timeMs) {
-        if (!inactivityRanges || inactivityRanges.length === 0) {
-          return null;
-        }
-        for (const range of inactivityRanges) {
-          if (timeMs >= range.start && timeMs < range.end) {
-            return range;
-          }
-        }
-        return null;
-      }
-
-      function handleSeek(newTimeMs, options = { respectSkip: true }) {
-        console.log('handleSeek called:', { newTimeMs, totalDuration, playerExists: !!player });
-        
-        const skipEnabled = document.getElementById('skipInactivity')?.checked;
-        let target = Math.max(0, Math.min(newTimeMs, totalDuration));
-
-        if (options.respectSkip && skipEnabled) {
-          const gap = findGapContaining(target);
-          if (gap) {
-            target = Math.min(gap.end, totalDuration);
-          }
-        }
-
+      async function handleSeek(newTimeMs) {
+        const requestId = ++seekRequestId;
+        const target = window.ReplayTimeline.analyticalDisplayTime(
+          Number(newTimeMs) || 0,
+          totalDuration
+        );
         currentTime = target;
-        console.log('Seeking to:', target);
-        
-        try {
-          if (player && typeof player.goto === 'function') {
-          player.goto(target);
-            console.log('Player.goto called successfully');
-          } else {
-            console.error('Player not available or goto method missing:', player);
-          }
-        } catch (e) {
-          console.warn('goto failed:', e);
-        }
         updateUI();
-        updateCurrentTabForTime(target);
+        try {
+          const resolvedTime = streamController
+            ? await streamController.seek(target)
+            : window.ReplayTimeline.seekPlayer(player, target, totalDuration);
+          if (destroyed || requestId !== seekRequestId) return;
+          currentTime = resolvedTime;
+        } catch (error) {
+          if (destroyed || requestId !== seekRequestId) return;
+          console.warn('Replay seek failed:', error);
+          currentTime = target;
+        }
+        if (destroyed || requestId !== seekRequestId) return;
+        updateUI();
+        updateCurrentTabForTime(
+          streamController ? streamController.state.playerTimeMs : currentTime
+        );
       }
       
+      function togglePlayback(showFeedback = false) {
+        const shouldPlay = !isPlaying;
+        if (shouldPlay) {
+          if (streamController) streamController.play();
+          else {
+            player.play();
+            setPlaying(true);
+          }
+        } else {
+          if (streamController) streamController.pause();
+          else {
+            player.pause();
+            setPlaying(false);
+          }
+        }
+        if (showFeedback) playbackFeedback.show(shouldPlay);
+      }
+
       // Play/Pause functionality
       $('playBtn').addEventListener('click', () => {
-        if (isPlaying) {
-          player.pause();
-          setPlaying(false);
-        } else {
-          player.play();
-          setPlaying(true);
-        }
+        togglePlayback();
       });
-      
+
       // Player click functionality - pause/resume when clicking on the player
-      $('player').addEventListener('click', () => {
-        if (isPlaying) {
-          player.pause();
-          setPlaying(false);
-        } else {
-          player.play();
-          setPlaying(true);
-        }
+      $('player').addEventListener('click', (event) => {
+        if (event.target.closest('button, #streamStatus')) return;
+        togglePlayback(true);
       });
       
-      // Timeline click functionality - try multiple approaches
-      const timelineContainer = $('timelineContainer');
-      
-      // Approach 1: Direct click event
-      timelineContainer.addEventListener('click', (e) => {
-        const tl = $('timeline');
-        const { left, width } = tl.getBoundingClientRect();
-        const newTime = ((e.clientX - left) / width) * totalDuration;
-        handleSeek(newTime, { respectSkip: true });
+      replayTimeline = window.ReplayTimeline.create({
+        container: $('timeline'),
+        segments: analyticsTimeline.segments || [],
+        totalDuration,
+        hoverMarker: $('hoverPositionLine'),
+        onSeek: handleSeek
       });
-      
-      
-      // Approach 3: Event delegation on the parent
-      document.addEventListener('click', (e) => {
-        if (e.target.closest('#timelineContainer')) {
-          const tl = $('timeline');
-          const { left, width } = tl.getBoundingClientRect();
-          const newTime = ((e.clientX - left) / width) * totalDuration;
-          handleSeek(newTime, { respectSkip: true });
-        }
-      });
-      
-      // Approach 4: Direct click on timeline div
-      $('timeline').addEventListener('click', (e) => {
-        e.stopPropagation();
-        
-        const tl = $('timeline');
-        const { left, width } = tl.getBoundingClientRect();
-        const newTime = ((e.clientX - left) / width) * totalDuration;
-        handleSeek(newTime, { respectSkip: true });
-      });
-         
-      // Progress slider functionality
-      $('progressSlider').addEventListener('input', (e) => {
-        const percentage = e.target.value / 100;
-        const newTime = percentage * totalDuration;
-        currentTime = newTime;
-        updateUI();
-      });
-      
-      $('progressSlider').addEventListener('change', (e) => {
-        const percentage = e.target.value / 100;
-        const newTime = percentage * totalDuration;
-        handleSeek(newTime, { respectSkip: true });
-      });
+      updateUI();
       
       // Keyboard support
       document.addEventListener('keydown', (e) => {
-        if (['INPUT', 'TEXTAREA'].includes(e.target.tagName) || e.target.isContentEditable) return;
+        if (destroyed) return;
+        const interactiveTarget = e.target instanceof Element
+          ? e.target.closest('button, a, input, textarea, select, [contenteditable="true"], [role="button"], [role="link"]')
+          : null;
+        if (interactiveTarget || e.target.isContentEditable) return;
         
         const KEY_STEP = 5000; // 5 seconds per arrow press
         
@@ -866,48 +779,50 @@
         } else if (e.key === 'ArrowLeft') {
           e.preventDefault();
           const newTime = Math.max(0, currentTime - KEY_STEP);
-          handleSeek(newTime, { respectSkip: true });
+          handleSeek(newTime);
         } else if (e.key === 'ArrowRight') {
           e.preventDefault();
           const newTime = Math.min(totalDuration, currentTime + KEY_STEP);
-          handleSeek(newTime, { respectSkip: true });
+          handleSeek(newTime);
         }
       });
       
-      // Listen for player events
-      player.addEventListener('ui-update-current-time', (e) => {
-        const time = e.payload;
-        currentTime = time;
-        updateUI();
-        
-        // Update current tab based on the actual player position
-        updateCurrentTabForTime(time);
-      });
-      
-      // Add dashed vertical markers for tab switches
-        function addTransitionLines() {
-          const cont = $('timelineContainer');
-          if (!cont || !tab_switches || tab_switches.length === 0) {
-            return;
-          }
-          
-          const base = 0; // Start from 0 for consolidated timeline
-          const dur = totalDuration;
-          
-                     tab_switches.forEach((switchEvent, index) => {
-             const perc = (switchEvent.timestamp / dur) * 100;
-             const line = document.createElement('div');
-             line.className = 'absolute inset-y-1 w-px border-l border-dotted border-gray-500 opacity-50 z-15 pointer-events-none';
-             line.style.left = perc + '%';
-             line.style.transform = 'translateX(-50%)';
-             cont.appendChild(line);
-           });
+      function attachPlayerListeners(playerInstance) {
+        playerInstance.addEventListener('ui-update-current-time', (e) => {
+          if (destroyed || player !== playerInstance) return;
+          const rrwebTime = Number(e.payload) || 0;
+          streamController?.observeTime(rrwebTime);
+          const recordingTime = streamController
+            ? streamController.toRecordingTime(rrwebTime)
+            : rrwebTime;
+          currentTime = window.ReplayTimeline.analyticalDisplayTime(
+            streamController ? streamController.state.currentTimeMs : recordingTime,
+            totalDuration
+          );
+          updateUI();
+
+          // Tab-switch sidecars use the recording-global replay clock.
+          updateCurrentTabForTime(recordingTime);
+        });
+
+        playerInstance.addEventListener('ui-update-player-state', (e) => {
+          if (destroyed || player !== playerInstance) return;
+          if (streamController) streamController.observePlayerState(e.payload);
+          else setPlaying(e.payload === 'playing');
+        });
+
+        try {
+          playerInstance.getReplayer().on('finish', () => {
+            if (destroyed || player !== playerInstance) return;
+            if (streamController) streamController.finish();
+            else setPlaying(false);
+          });
+        } catch (error) {
+          console.warn('Could not attach replay boundary listener:', error);
         }
-        
-        // Call addTransitionLines after totalDuration is set
-        setTimeout(() => {
-          addTransitionLines();
-        }, 100);
+      }
+
+      attachPlayerListeners(player);
       
       // Current tab tracking
       let currentTabId = initial_tab_id || 'unknown';
@@ -916,7 +831,7 @@
       function updateCurrentTab(tabId) {
         currentTabId = tabId;
         if (currentTabElement) {
-          currentTabElement.textContent = human_tab_dict[tabId];
+          currentTabElement.textContent = human_tab_dict[tabId] || '?';
           highlightTabLabelBorder();
         } else {
           console.warn('Current tab element not found!');
@@ -997,232 +912,54 @@
       
       // Back button functionality (moved to top level for immediate availability)
       
-             // Skip Inactivity Checkbox
-       const skipInactivityCheckbox = document.getElementById('skipInactivity');
-       if (skipInactivityCheckbox) {
-         skipInactivityCheckbox.addEventListener('change', (e) => {
-           const isChecked = e.target.checked;
-           
-           // Use default rrweb player's toggleSkipInactive method
-           try {
-             player.toggleSkipInactive();
-           } catch (error) {
-           }
-
-           // If enabling skip and currently inside an inactive gap, jump out
-           if (isChecked) {
-             const gap = findGapContaining(currentTime);
-             if (gap) {
-               handleSeek(currentTime, { respectSkip: true });
-             }
-           }
-         });
-       }
-       
-       // Add hover event listeners for page labels
-      const timelineContainerForLabels = document.getElementById('timelineContainer');
-      
-      document.addEventListener(
-          "pointerenter",
-          (e) => {
-              if (!(e.target instanceof Element)) return;
-
-              // show page labels only when entering the timeline from OUTSIDE the timeline
-              if (e.target.closest("#timelineContainer")) {
-                  const from = e.relatedTarget; // element we came from
-                  if (from instanceof Element && timelineContainerForLabels.contains(from)) return; // moved within the same timeline → ignore
-                  if (activeTimelineForLabels === timelineContainerForLabels) return; // already active → ignore
-                  activeTimelineForLabels = timelineContainerForLabels;
-                  showPageLabels(timelineContainerForLabels);
-              }
-          },
-          true
-      );
-
-      document.addEventListener(
-          "pointerleave",
-          (e) => {
-              if (!(e.target instanceof Element)) return;
-
-              // when we leave the timeline entirely, clear labels + state
-              if (e.target.closest("#timelineContainer") && (!e.relatedTarget || !timelineContainerForLabels.contains(e.relatedTarget))) {
-                  hidePageLabels();
-                  if (activeTimelineForLabels === timelineContainerForLabels) activeTimelineForLabels = null;
-              }
-          },
-          true
-      );
-      
-      // Scroll synchronization functionality
-      const SCROLL_RESHOW_DELAY = 150; // how long we wait after the last real scroll
-
-      function bindTooltipScrollSync(container) {
-          let scrollTimer = null;   // debounce after real scrolls
-          let gestureTimer = null;  // failsafe when no scroll event fires
-          let duringGesture = false;
-          let didScroll = false;
-
-          const hideNow = () => {
-              if (activeTimelineForLabels === timelineContainerForLabels) hidePageLabels();
-          };
-
-          const restore = () => {
-              clearTimeout(scrollTimer);
-              clearTimeout(gestureTimer);
-              if (activeTimelineForLabels === timelineContainerForLabels) showPageLabels(timelineContainerForLabels);
-          };
-
-          // Called when a scroll gesture *begins* (pointer down, wheel, touchstart)
-          const onStart = () => {
-              duringGesture = true;
-              didScroll = false;
-              hideNow();
-
-              // Failsafe: if no 'scroll' event follows (edge/bounce), put labels back
-              clearTimeout(gestureTimer);
-              gestureTimer = setTimeout(() => {
-                  if (duringGesture && !didScroll) restore();
-              }, 120);
-          };
-
-          // Called whenever the element actually scrolls
-          const onScroll = () => {
-              if (activeTimelineForLabels !== timelineContainerForLabels) return;
-              didScroll = true;
-              hideNow();
-              clearTimeout(scrollTimer);
-              scrollTimer = setTimeout(restore, SCROLL_RESHOW_DELAY);
-          };
-
-          // Called when the gesture definitely ends
-          const onEnd = () => {
-              if (!duringGesture) return;
-              duringGesture = false;
-              if (!didScroll) {
-                  // We hid on start but never scrolled → restore immediately
-                  restore();
-              }
-          };
-
-          // Pointer drag-to-scroll
-          container.addEventListener("pointerdown", onStart, { passive: true });
-          container.addEventListener("pointerup", onEnd, { passive: true });
-          container.addEventListener("pointercancel", onEnd, { passive: true });
-          container.addEventListener("mouseleave", onEnd, { passive: true });
-
-          // Touch
-          container.addEventListener("touchstart", onStart, { passive: true });
-          container.addEventListener("touchend", onEnd, { passive: true });
-          container.addEventListener("touchcancel", onEnd, { passive: true });
-          container.addEventListener("touchmove", onScroll, { passive: true });
-
-          // Mouse wheel / trackpad: treat as a start; also handle "edge flick"
-          container.addEventListener(
-              "wheel",
-              (e) => {
-                  onStart();
-
-                  // If we're at an edge and wheel is pushing further out, no scroll will fire.
-                  const atLeft = container.scrollLeft <= 0;
-                  const atRight =
-                      Math.ceil(container.scrollLeft + container.clientWidth) >= container.scrollWidth;
-
-                  if ((atLeft && e.deltaX < 0) || (atRight && e.deltaX > 0)) {
-                      clearTimeout(gestureTimer);
-                      gestureTimer = setTimeout(restore, 120);
-                  }
-              },
-              { passive: true }
-          );
-
-          // Real scroll event (works for all inputs if scrolling actually happened)
-          container.addEventListener("scroll", onScroll, { passive: true });
-      }
-
-      // Bind scroll sync for the timeline container and add dragscroll functionality
-      if (timelineContainerForLabels) {
-          bindTooltipScrollSync(timelineContainerForLabels);
-          
-          // Add dragscroll functionality to the timeline container
-          timelineContainerForLabels.classList.add('dragscroll');
-          
-          // Check if timeline is scrollable and add visual indicator
-          if (timelineContainerForLabels.scrollWidth > timelineContainerForLabels.clientWidth) {
-              timelineContainerForLabels.classList.add('scrollable-x');
-          } else {
-              timelineContainerForLabels.classList.remove('scrollable-x');
-          }
-      }
-      
       // Auto-start the recording when page becomes active
        let hasAutoStarted = false;
 
        function startAutoPlay() {
-         if (!hasAutoStarted && !isPlaying && !document.hidden) {
+         if (!destroyed && player && !hasAutoStarted && !isPlaying && !document.hidden) {
            hasAutoStarted = true;
-           player.play();
-           setPlaying(true);
-         }
-       }
+            if (streamController) streamController.play();
+            else {
+              player.play();
+              setPlaying(true);
+            }
+          }
+        }
 
        // Start when page becomes visible
        document.addEventListener('visibilitychange', () => {
-         if (document.hidden && isPlaying) {
-           player.pause();
-           setPlaying(false);
-         } else if (!document.hidden && !hasAutoStarted) {
-           // Small delay to ensure everything is loaded
-           setTimeout(startAutoPlay, 500);
+          if (destroyed) return;
+          if (document.hidden && isPlaying) {
+            if (streamController) streamController.pause();
+            else {
+              player.pause();
+              setPlaying(false);
+            }
+          } else if (!document.hidden && !hasAutoStarted) {
+            setTimeout(startAutoPlay, 0);
          }
        });
 
        // Pause when window loses focus
        window.addEventListener('blur', () => {
+         if (destroyed) return;
          if (isPlaying) {
-           player.pause();
-           setPlaying(false);
-         }
-       });
+            if (streamController) streamController.pause();
+            else {
+              player.pause();
+              setPlaying(false);
+            }
+          }
+        });
 
-               // Start auto-play if page is already visible after initial load
+        // Start as soon as the bootstrap player exists; background chunks do
+        // not gate initial playback.
         if (!document.hidden) {
-          setTimeout(startAutoPlay, 1000);
+          setTimeout(startAutoPlay, 0);
         }
       } // End of initializePlayer function
       
     }); // End of DOMContentLoaded event listener
     </script>
 
-    <script type="module">
-        const timeline = document.getElementById("timeline");
-        const ticks = document.querySelectorAll("#timelineContainer .tick");
-
-                 const C = 28,
-             M = 40,
-             F = 270; // design constants (increased from 190 to account for back button w-16 = 64px + extra space)
-
-        function updateOverlap() {
-            const S = window.innerWidth;
-            const N = timeline.children.length;
-            if (N < 2) return;
-
-            // 1 . overlap per gap  ----------------------------------------------------
-            const m = Math.max(0, (C * N + 2 * M + F - S) / (N - 1));
-            timeline.style.setProperty("--overlap", `${m.toFixed(2)}px`);
-
-            // 2 . pixel distance between bubble centres ------------------------------
-            const gap = C - m; // how far we advance for each bubble
-
-            // 3 . reposition every guide-line ----------------------------------------
-            ticks.forEach((tick) => {
-                const i = Number(tick.dataset.index); // which bubble to align to
-                const left = i * gap + C / 2; // C/2 centres on the circle
-                tick.style.left = `${left}px`;
-            });
-        }
-
-        updateOverlap();
-        window.addEventListener("resize", updateOverlap);
-        new ResizeObserver(updateOverlap).observe(timeline);
-    </script>
 {% endblock %} 

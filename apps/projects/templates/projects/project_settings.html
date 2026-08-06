@@ -50,7 +50,7 @@
         <div class="w-full lg:flex-1 max-w-240">
           <header class="mb-8 flex flex-wrap items-center justify-between gap-3">
             <h1 class="text-3xl font-bold text-slate-900">Project setup</h1>
-            <span class="inline-flex items-center rounded-full px-3 py-1.5 text-sm font-medium {{ project_status_class }}">
+            <span class="status-badge inline-flex items-center rounded-full px-3 py-1.5 text-sm font-medium" data-status="{{ project_status_key }}">
               {{ project_status_label }}
             </span>
           </header>

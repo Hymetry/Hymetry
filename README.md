@@ -1,6 +1,6 @@
 # Hymetry OSS
 
-Hymetry is a self-hosted product analytics and session replay application. The OSS edition includes Pages, Companies, Users and session analytics, page-structure naming with AI, and screen recording.
+Hymetry is a self-hosted product analytics and session replay application. The OSS edition includes Pages, Companies, Users, Visits, streamed session replay, company attributes and segments, persistent analytics filters, page-structure naming with AI, and screen recording.
 
 The hosted demo remains available from **All projects** and opens on the hosted Hymetry domain in a new tab. Demo data is not installed into the OSS database.
 
@@ -28,7 +28,7 @@ The setup endpoint is sealed after the first administrator is created. Hymetry h
 python manage.py changepassword admin@example.com
 ```
 
-Data is persisted in Docker volumes for PostgreSQL, Redis, static files, and media. The `init` service applies the consolidated fresh-install migrations, seeds initial configuration once, and creates idempotent Celery schedules.
+Data is persisted in Docker volumes for PostgreSQL, Redis, static files, and media. The `init` service applies database migrations, seeds initial configuration once, and creates idempotent Celery schedules.
 
 ## Render
 
@@ -58,15 +58,26 @@ Without a valid workspace key, AI page naming is skipped; ingestion, analytics, 
 Important environment variables are documented in `.env.example`:
 
 - `DATABASE_URL`, `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`
+- `DJANGO_CACHE_URL` and `DJANGO_CACHE_KEY_PREFIX` for the shared analytics cache
 - `HYMETRY_DOMAIN` and `EDGE_URL` for explicit public URLs
 - `HOSTED_DEMO_URL` for the external demo link
 - `SECRET_KEY` and optional `OPENAI_KEY_ENCRYPTION_KEYS` for persistent encryption
+- `REPLAY_STREAM_*` settings for bounded replay bootstrap, chunking, prefetch, and append batches
 
 Tracking URLs keep host and path but discard query parameters and fragments before storage. Localhost, IP addresses, and internal single-label hosts are supported for self-hosted projects.
 
-## Development database
+## Database upgrades
 
-This branch is still under development and intentionally contains a fresh consolidated migration set. Existing OSS databases are not supported: create a new database rather than attempting to upgrade an older schema.
+New installations run the complete migration chain automatically. Incremental upgrade migrations support an existing OSS database whose application version is exactly commit `da90b398e6ed0069b1835d08314f7ac46c6ca8d8`.
+
+Before upgrading, back up the PostgreSQL database and keep the existing `SECRET_KEY` and any `OPENAI_KEY_ENCRYPTION_KEYS` unchanged. After updating the application, run:
+
+```console
+python manage.py migrate
+python manage.py bootstrap
+```
+
+The Docker Compose `init` service performs these commands during startup. Databases from other historical OSS revisions do not have a verified direct upgrade path; migrate them to the supported baseline first or start with a new database.
 
 ## Support and license
 

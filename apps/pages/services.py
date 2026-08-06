@@ -2,15 +2,19 @@ import copy
 import json
 import math
 import re
+import zlib
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from django.db.models import Max, Sum
+from django.db import transaction
+from django.db.models import Count, F, Max, Q, Sum
 from django.utils.text import slugify
 from django.utils import timezone as django_timezone
 
-from apps.pages import queries
+from apps.pages import analytics_memo, queries
+from apps.pages.analytics_memo import analytics_memo_scope
 from apps.pages.locks import project_advisory_lock
 from apps.pages.models import PageCompanyDailyMetric, PageDailyMetric, PageUserDailyMetric, ProductArea, RawPageActionDailyMetric
 from apps.pages.product_area_colors import (
@@ -26,21 +30,187 @@ DEFAULT_FILTERS_HASH = 'default'
 DEFAULT_SESSION_TIMEOUT_SECONDS = 30 * 60
 DEFAULT_EVENT_GAP_CAP_SECONDS = 30
 DEFAULT_OVERVIEW_RANGE_KEYS = ('last_7_days', 'last_30_days', 'last_90_days', 'last_180_days')
-OVERVIEW_PAYLOAD_SCHEMA_VERSION = 17
+# 24: Product area summary sparklines carry per-day values instead of
+# period-to-date totals. The keys are unchanged, so stored payloads stay
+# readable and would keep serving the old cumulative series until the version
+# forces them to be rebuilt.
+# 25: The fastest-growing card compares two period totals instead of plotting an
+# aligned growth sparkline, so the per-day aligned company prefixes are no
+# longer built or stored.
+OVERVIEW_PAYLOAD_SCHEMA_VERSION = 25
 CACHE_TTL = timedelta(hours=1)
-POWER_USER_VISITS_PER_WEEK = 9
-POWER_USER_ENGAGED_SECONDS_PER_WEEK = 1500
-POWER_USER_ACTIVE_DAYS_SHARE = 0.30
+OVERVIEW_CACHE_BINARY_MAGIC = b'HPO\x01'
+OVERVIEW_CACHE_COMPRESSION_LEVEL = 6
+POWER_USER_VISITS_PER_WEEK = 3
+POWER_USER_ENGAGED_SECONDS_PER_WEEK = 100
+POWER_USER_ACTIVE_DAYS_SHARE = 0.13
 POWER_USER_PRODUCT_AREAS = 2
 POWER_USER_MIN_INTERACTION = 0.20
+POWER_USER_DYNAMIC_MIN_COHORT_SIZE = 30
+POWER_USER_DYNAMIC_PERCENTILE = 0.90
+HEALTHY_USER_VISITS_PER_WEEK = 2
+HEALTHY_USER_ENGAGED_SECONDS_PER_WEEK = 60
+HEALTHY_USER_ACTIVE_DAYS_SHARE = 0.10
+PASSIVE_USER_ENGAGED_SECONDS = 60
 JSON_SCRIPT_ESCAPES = str.maketrans({
     '>': '\\u003E',
     '<': '\\u003C',
     '&': '\\u0026',
 })
 PRODUCT_AREA_SUMMARY_TREND_METRICS = ('companies', 'adoption', 'users', 'engaged')
-OVERVIEW_ROW_TREND_METRICS = ('companies', 'adoption', 'engaged')
+OVERVIEW_ROW_TREND_METRICS = ('companies', 'adoption', 'engaged', 'visits')
+PAGE_DETAIL_TREND_METRICS = (
+    'companies',
+    'adoption',
+    'users',
+    'penetration',
+    'visits',
+    'engaged',
+    'avg_visit',
+    'interaction',
+    'clicks_per_visit',
+)
 SYNTHETIC_USER_ID_RE = re.compile(r'^user[_-](?P<company>.+)_(?P<suffix>\d+)$')
+
+
+def _schedule_demo_project_cache_clear(project_id):
+    from apps.projects.demo import clear_demo_project_cache_for_project
+
+    transaction.on_commit(
+        lambda: clear_demo_project_cache_for_project(project_id),
+    )
+
+
+def bump_filtered_analytics_revision(project_id):
+    """Advance the revision shared by company-attribute overview variants."""
+
+    from apps.projects.models import Project
+
+    updated = Project.objects.filter(pk=project_id).update(
+        filtered_analytics_revision=F('filtered_analytics_revision') + 1,
+    )
+    if not updated:
+        raise ValueError(f'Project {project_id} does not exist.')
+    _schedule_demo_project_cache_clear(project_id)
+    return int(
+        Project.objects.values_list('filtered_analytics_revision', flat=True).get(
+            pk=project_id,
+        )
+    )
+
+
+def bump_analytics_facts_revision(project_id):
+    """Advance prepared-fact and filtered-payload revisions atomically."""
+
+    from apps.projects.models import Project
+
+    updated = Project.objects.filter(pk=project_id).update(
+        analytics_facts_revision=F('analytics_facts_revision') + 1,
+        filtered_analytics_revision=F('filtered_analytics_revision') + 1,
+    )
+    if not updated:
+        raise ValueError(f'Project {project_id} does not exist.')
+    _schedule_demo_project_cache_clear(project_id)
+    analytics_revision, filtered_revision = (
+        Project.objects
+        .values_list(
+            'analytics_facts_revision',
+            'filtered_analytics_revision',
+        )
+        .get(pk=project_id)
+    )
+    return {
+        'analytics_facts_revision': int(analytics_revision),
+        'filtered_analytics_revision': int(filtered_revision),
+    }
+
+
+def resolve_project_company_cohort(project_id, state):
+    """
+    Resolve one active filter state to the project's matching company IDs.
+
+    The universe is every company the project has ever recorded a daily fact
+    for, not just the requested window. Companies outside the window contribute
+    no facts either way, so the window cannot change the answer, and a
+    window-independent cohort stays valid across every range a single build
+    touches.
+    """
+
+    from apps.pages.models import PageCompanyDailyMetric
+    from apps.projects.company_attribute_filters import resolve_company_cohort
+
+    observed = (
+        PageCompanyDailyMetric.objects
+        .filter(project_id=project_id)
+        .exclude(company_id='')
+        .order_by()
+        .values_list('company_id', flat=True)
+        .distinct()
+    )
+    return frozenset(resolve_company_cohort(state, observed))
+
+
+def _delete_superseded_filtered_variants(project_id):
+    """
+    Drop filtered variants whose period window can no longer be requested.
+
+    Every range resolves against the project's current local day, so once that
+    day advances a variant built for the previous window is unreachable: no
+    request will ever match its dates again. Collecting them here keeps the
+    table proportional to the filters in current use rather than to every
+    filter ever applied.
+    """
+
+    from apps.pages.models import (
+        CompaniesOverviewCache,
+        PagesOverviewCache,
+        PagesScatterTooltipCache,
+        UsersOverviewCache,
+    )
+
+    project = get_project_info(project_id)
+    timezone_name = (project or {}).get('timezone') or 'UTC'
+    reachable = {
+        resolve_period(timezone_name, range_key=range_key)
+        for range_key in DEFAULT_OVERVIEW_RANGE_KEYS
+    }
+    reachable_ends = {end_date for _start, end_date in reachable}
+
+    deleted = {}
+    for name, cache_model in (
+        ('pages_overview', PagesOverviewCache),
+        ('pages_scatter_tooltips', PagesScatterTooltipCache),
+        ('companies_overview', CompaniesOverviewCache),
+        ('users_overview', UsersOverviewCache),
+    ):
+        count, _ = (
+            cache_model.objects
+            .filter(project_id=project_id)
+            .exclude(filters_hash=DEFAULT_FILTERS_HASH)
+            .exclude(end_date__in=reachable_ends)
+            .delete()
+        )
+        deleted[name] = count
+    return deleted
+
+
+def purge_expired_filtered_overview_caches(project_id, *, now=None):
+    """
+    Collect filtered variants that no request can reach any more.
+
+    Expiry deliberately does not decide this. A variant past its one-hour TTL is
+    still a correct answer for the window it was built for, and readers serve it
+    while a rebuild runs behind them; deleting on TTL would send every returning
+    user back to a preparing state each hour. Reachability is the durable
+    condition, and it turns over once per project-local day.
+    """
+
+    deleted = _delete_superseded_filtered_variants(project_id)
+    return {
+        'project_id': project_id,
+        'deleted': deleted,
+        'deleted_total': sum(deleted.values()),
+    }
 
 
 def weekly_scaled_threshold(base_value, period_days):
@@ -58,13 +228,81 @@ def passive_visits_threshold(period_days):
     return max(2, math.ceil(days / 14.0))
 
 
-def power_user_thresholds(period_days):
-    return {
+def _active_user_cohort_rows(rows):
+    if isinstance(rows, dict):
+        rows = rows.values()
+    return [
+        row
+        for row in (rows or [])
+        if row and any(
+            int(row.get(key) or 0) > 0
+            for key in ('visits', 'engaged_seconds', 'click_count', 'active_days')
+        )
+    ]
+
+
+def _cohort_percentile(rows, key, percentile):
+    values = sorted(max(0, int(row.get(key) or 0)) for row in rows)
+    if not values:
+        return 0
+    index = min(len(values) - 1, int(round((len(values) - 1) * percentile)))
+    return values[index]
+
+
+def power_user_thresholds(period_days, cohort_rows=None):
+    thresholds = {
         'visits': weekly_scaled_threshold(POWER_USER_VISITS_PER_WEEK, period_days),
         'engaged_seconds': weekly_scaled_threshold(POWER_USER_ENGAGED_SECONDS_PER_WEEK, period_days),
         'active_days': active_days_threshold(period_days, POWER_USER_ACTIVE_DAYS_SHARE),
         'product_areas': POWER_USER_PRODUCT_AREAS,
         'interaction': POWER_USER_MIN_INTERACTION,
+    }
+    cohort = _active_user_cohort_rows(cohort_rows)
+    if len(cohort) < POWER_USER_DYNAMIC_MIN_COHORT_SIZE:
+        return thresholds
+
+    thresholds['visits'] = max(
+        thresholds['visits'],
+        _cohort_percentile(cohort, 'visits', POWER_USER_DYNAMIC_PERCENTILE),
+    )
+    thresholds['engaged_seconds'] = max(
+        thresholds['engaged_seconds'],
+        _cohort_percentile(cohort, 'engaged_seconds', POWER_USER_DYNAMIC_PERCENTILE),
+    )
+    thresholds['active_days'] = min(
+        max(1, int(period_days or 1)),
+        max(
+            thresholds['active_days'],
+            _cohort_percentile(cohort, 'active_days', POWER_USER_DYNAMIC_PERCENTILE),
+        ),
+    )
+    return thresholds
+
+
+def project_power_user_thresholds(project_id, start_date, end_date):
+    period_days = (end_date - start_date).days + 1
+    rows = (
+        PageUserDailyMetric.objects
+        .filter(project_id=project_id, date__gte=start_date, date__lte=end_date)
+        .exclude(user_id__isnull=True)
+        .exclude(user_id='')
+        .values('user_id')
+        .annotate(
+            visits=Sum('visits_count'),
+            engaged_seconds=Sum('engaged_seconds'),
+            click_count=Sum('click_count'),
+            active_days=Count('date', filter=Q(visits_count__gt=0), distinct=True),
+        )
+    )
+    return power_user_thresholds(period_days, rows)
+
+
+def healthy_user_thresholds(period_days):
+    return {
+        'visits': weekly_scaled_threshold(HEALTHY_USER_VISITS_PER_WEEK, period_days),
+        'engaged_seconds': weekly_scaled_threshold(HEALTHY_USER_ENGAGED_SECONDS_PER_WEEK, period_days),
+        'active_days': active_days_threshold(period_days, HEALTHY_USER_ACTIVE_DAYS_SHARE),
+        'product_areas': 1,
     }
 
 
@@ -141,6 +379,39 @@ def _json_default(value):
     return str(value)
 
 
+def compress_overview_payload(payload):
+    """Encode an overview payload for low-overhead database transport."""
+
+    serialized = json.dumps(
+        payload or {},
+        default=_json_default,
+        ensure_ascii=False,
+        separators=(',', ':'),
+    ).encode('utf-8')
+    return OVERVIEW_CACHE_BINARY_MAGIC + zlib.compress(
+        serialized,
+        level=OVERVIEW_CACHE_COMPRESSION_LEVEL,
+    )
+
+
+def decompress_overview_payload(payload_compressed):
+    """Decode a payload produced by :func:`compress_overview_payload`."""
+
+    encoded = bytes(payload_compressed or b'')
+    if not encoded.startswith(OVERVIEW_CACHE_BINARY_MAGIC):
+        raise ValueError('Unsupported Pages overview cache payload.')
+    try:
+        serialized = zlib.decompress(
+            encoded[len(OVERVIEW_CACHE_BINARY_MAGIC):],
+        )
+        payload = json.loads(serialized)
+    except (UnicodeDecodeError, json.JSONDecodeError, zlib.error) as exc:
+        raise ValueError('Invalid Pages overview cache payload.') from exc
+    if not isinstance(payload, dict):
+        raise ValueError('Pages overview cache payload must decode to an object.')
+    return payload
+
+
 def to_json_script_text(payload):
     return json.dumps(payload, default=_json_default, separators=(',', ':')).translate(JSON_SCRIPT_ESCAPES)
 
@@ -208,6 +479,53 @@ def user_trait_email_lookup(project, start_date, end_date, *, user_ids=None):
     return emails
 
 
+def company_trait_domain_lookup(project, start_date, end_date, *, company_ids=None):
+    """Return the latest non-empty company domain per prepared company."""
+
+    from apps.tracker.models import AnalyticsEvent
+
+    project_id = getattr(project, 'id', None)
+    timezone_name = getattr(project, 'timezone', None)
+    if isinstance(project, dict):
+        project_id = project.get('id') or project.get('project_id')
+        timezone_name = project.get('timezone')
+    if not project_id:
+        return {}
+
+    normalized_company_ids = None
+    if company_ids is not None:
+        normalized_company_ids = [
+            str(company_id)
+            for company_id in company_ids
+            if company_id not in (None, '')
+        ]
+        if not normalized_company_ids:
+            return {}
+
+    start_ts, end_ts = _utc_bounds_for_local_dates(start_date, end_date, timezone_name or 'UTC')
+    queryset = (
+        AnalyticsEvent.objects
+        .filter(session__project_id=project_id, timestamp__gte=start_ts, timestamp__lt=end_ts)
+        .exclude(company_id__isnull=True)
+        .exclude(company_id='')
+        .filter(company_traits__domain__isnull=False)
+        .exclude(company_traits__domain='')
+        .order_by('-timestamp')
+    )
+    if normalized_company_ids is not None:
+        queryset = queryset.filter(company_id__in=normalized_company_ids)
+
+    domains = {}
+    for row in queryset.values('company_id', 'company_traits').iterator(chunk_size=2000):
+        company_id = str(row.get('company_id') or '').strip()
+        if not company_id or company_id in domains:
+            continue
+        domain = str((row.get('company_traits') or {}).get('domain') or '').strip()
+        if domain:
+            domains[company_id] = domain
+    return domains
+
+
 def _safe_date(value):
     if isinstance(value, date):
         return value
@@ -218,19 +536,41 @@ def _today_for_project(timezone_name):
     return django_timezone.now().astimezone(_project_zone(timezone_name)).date()
 
 
+PERIOD_DAYS_BY_RANGE_KEY = {
+    'last_7_days': 7,
+    'last_30_days': 30,
+    'last_90_days': 90,
+    'last_180_days': 180,
+}
+DEFAULT_PERIOD_DAYS = 30
+
+
+def period_days_for_range(range_key):
+    return PERIOD_DAYS_BY_RANGE_KEY.get(range_key, DEFAULT_PERIOD_DAYS)
+
+
 def resolve_period(project_timezone, range_key='last_30_days', start_date=None, end_date=None):
+    """
+    Resolve a range key to whole days that have already finished.
+
+    The window ends on the last complete project-local day, never on today.
+    Including a day still in progress would make every figure drift upward
+    through the day and make a period incomparable with the one before it: the
+    same dashboard would answer differently in the morning and in the evening,
+    and the newest point of every trend would sit in a permanent dip.
+
+    Fact preparation is unaffected and still covers today, so today's events are
+    already aggregated by the time that day closes and enters a window.
+    """
+
     if start_date and end_date:
         return _safe_date(start_date), _safe_date(end_date)
 
-    today = _today_for_project(project_timezone)
-    if range_key == 'last_7_days':
-        return today - timedelta(days=6), today
-    if range_key == 'last_90_days':
-        return today - timedelta(days=89), today
-    if range_key == 'last_180_days':
-        return today - timedelta(days=179), today
-
-    return today - timedelta(days=29), today
+    last_complete_day = _today_for_project(project_timezone) - timedelta(days=1)
+    return (
+        last_complete_day - timedelta(days=period_days_for_range(range_key) - 1),
+        last_complete_day,
+    )
 
 
 def previous_period(start_date, end_date):
@@ -250,11 +590,60 @@ def get_recent_analytics_project_ids(since_ts):
 
 
 def get_cached_overview_payload(project_id, range_key='last_30_days', filters_hash=DEFAULT_FILTERS_HASH):
-    row = queries.fetch_one(queries.FETCH_OVERVIEW_CACHE_SQL, [project_id, range_key, filters_hash])
+    params = [project_id, range_key, filters_hash]
+    row = queries.fetch_one(queries.FETCH_OVERVIEW_CACHE_SQL, params)
     if not row:
         return None
-    row['payload_json'] = _coerce_json(row.get('payload_json'))
+    if row.get('payload_compressed'):
+        try:
+            row['payload_json'] = decompress_overview_payload(
+                row['payload_compressed'],
+            )
+        except (TypeError, ValueError):
+            # Binary payloads are an optimization. Keep the canonical JSONB
+            # value as a recovery path for partial deploys or corrupt rows,
+            # without transferring it on healthy cache hits.
+            fallback = queries.fetch_one(
+                queries.FETCH_OVERVIEW_CACHE_JSON_FALLBACK_SQL,
+                params,
+            )
+            if not fallback:
+                return None
+            row['payload_json'] = _coerce_json(fallback.get('payload_json'))
+        row.pop('payload_compressed', None)
+    else:
+        row.pop('payload_compressed', None)
+        row['payload_json'] = _coerce_json(row.get('payload_json'))
+    # Pages stores its schema inside the payload rather than as a column. Lift
+    # it so every overview fetcher hands back the same shape and callers can
+    # check usability without knowing which surface they are on.
+    if isinstance(row.get('payload_json'), dict):
+        row['schema_version'] = row['payload_json'].get('schema_version')
+    else:
+        row['schema_version'] = None
     return row
+
+
+def is_current_overview_payload_schema(schema_version):
+    """Match the surface-level schema check Companies and Users already expose."""
+
+    try:
+        return int(schema_version) == OVERVIEW_PAYLOAD_SCHEMA_VERSION
+    except (TypeError, ValueError):
+        return False
+
+
+def get_cached_overview_metadata(project_id, range_key='last_30_days', filters_hash=DEFAULT_FILTERS_HASH):
+    """Freshness metadata for one Pages variant, without its payload."""
+
+    from apps.pages import filtered_overview
+
+    return filtered_overview.metadata_row(
+        queries.FETCH_PAGES_OVERVIEW_METADATA_SQL,
+        project_id,
+        range_key,
+        filters_hash,
+    )
 
 
 def get_cached_overview_payload_json(project_id, range_key='last_30_days', filters_hash=DEFAULT_FILTERS_HASH):
@@ -353,7 +742,15 @@ def rebuild_project_pages_analytics(
             [project_id, strict_start_utc, strict_end_utc, session_timeout_seconds],
         )
 
-        aggregate_page_daily_metrics(project_id, start_date, end_date, timezone_name, use_lock=False)
+        aggregate_page_daily_metrics(
+            project_id,
+            start_date,
+            end_date,
+            timezone_name,
+            use_lock=False,
+            bump_revision=False,
+        )
+        revisions = bump_analytics_facts_revision(project_id)
 
         cache_result = rebuild_project_analytics_caches(
             project_id,
@@ -366,31 +763,102 @@ def rebuild_project_pages_analytics(
         'project_id': project_id,
         'start_date': start_date.isoformat(),
         'end_date': end_date.isoformat(),
+        **revisions,
         'cache_results': cache_result['cache_results'],
         'companies_cache_results': cache_result['companies_cache_results'],
         'users_cache_results': cache_result['users_cache_results'],
     }
 
 
+def _rebuild_memo_floors(project_id, range_keys):
+    """
+    Describe the span the planned at-risk reads will collectively cover.
+
+    Each range is charted over its selected and its previous window, so the
+    rebuild asks for eight spans that nest inside one another rather than
+    sharing an edge. Their union is one span reaching from the oldest history
+    the longest previous window needs up to the newest day charted, and one
+    read over it answers all eight.
+
+    Returns an empty plan when the project or its period cannot be resolved, in
+    which case each read simply loads its own span as before.
+    """
+
+    from apps.pages.company_analytics import at_risk_history_floor
+
+    if not range_keys:
+        return {}
+    project = get_project_info(project_id)
+    if not project:
+        return {}
+
+    project_timezone = project.get('timezone') or 'UTC'
+    starts = []
+    ends = []
+    for range_key in range_keys:
+        start_date, end_date = resolve_period(project_timezone, range_key=range_key)
+        previous_start, previous_end = previous_period(start_date, end_date)
+        for window_start, window_end in (
+            (start_date, end_date),
+            (previous_start, previous_end),
+        ):
+            starts.append(at_risk_history_floor(window_start, window_end))
+            ends.append(window_end)
+    if not starts:
+        return {}
+    return {'at_risk_facts': (min(starts), max(ends))}
+
+
 def rebuild_project_analytics_caches(project_id, *, range_keys=DEFAULT_OVERVIEW_RANGE_KEYS, include_user_details=False):
     from apps.pages.company_analytics import build_companies_overview_cache
+    from apps.pages.models import (
+        CompaniesOverviewCache,
+        PagesOverviewCache,
+        PagesScatterTooltipCache,
+        UsersOverviewCache,
+    )
     from apps.pages.user_analytics import build_users_overview_cache
+
+    # Filtered variants deliberately survive a fact rebuild. Deleting them here
+    # made every variant cold on each hourly refresh, and nothing rebuilds them
+    # afterwards because a scheduled job cannot reconstruct a filter expression
+    # from its hash. New facts are staleness, not incorrectness: readers compare
+    # the stored facts revision and refresh such a row behind the response,
+    # while the stored window still bounds how old a served payload can be.
+    #
+    # Variants for a window that has already rolled past are unreachable, so
+    # they are collected here rather than left to accumulate.
+    _delete_superseded_filtered_variants(project_id)
 
     selected_range_keys = DEFAULT_OVERVIEW_RANGE_KEYS if range_keys is None else tuple(range_keys)
     cache_results = []
     companies_cache_results = []
     users_cache_results = []
 
-    for range_key in selected_range_keys:
-        cache_results.append(build_pages_overview_cache(project_id, range_key=range_key))
-        companies_cache_results.append(build_companies_overview_cache(project_id, range_key=range_key))
-        users_cache_results.append(
-            build_users_overview_cache(
-                project_id,
-                range_key=range_key,
-                include_user_details=include_user_details,
+    # The ranges read the same facts, and some of those facts do not vary with
+    # the range at all. Sharing them across the loop is safe because a rebuild
+    # only writes cache rows, so no builder here can invalidate what an earlier
+    # range read.
+    #
+    # The ranges arrive narrowest first, so a read that could have been shared
+    # would otherwise be too narrow to reuse and be redone, wider, every range.
+    # Declaring the widest bound up front lets the first read serve them all.
+    with analytics_memo_scope(floors=_rebuild_memo_floors(project_id, selected_range_keys)):
+        for range_key in selected_range_keys:
+            cache_results.append(build_pages_overview_cache(project_id, range_key=range_key))
+            companies_cache_results.append(build_companies_overview_cache(project_id, range_key=range_key))
+            users_cache_results.append(
+                build_users_overview_cache(
+                    project_id,
+                    range_key=range_key,
+                    include_user_details=include_user_details,
+                )
             )
-        )
+            # Benchmark indexes hold sorted peer values and their positions for
+            # every company and day of one range, so keeping all of them would
+            # grow with companies x days x metrics x ranges. Nothing after this
+            # range reads its own, unlike the fact reads that span the loop.
+            analytics_memo.forget('benchmark_series_index')
 
     obsolete_cache_purge = (
         purge_obsolete_analytics_cache_rows(project_id, range_keys=selected_range_keys)
@@ -511,7 +979,15 @@ def refresh_recent_projects_pages_analytics(
     }
 
 
-def aggregate_page_daily_metrics(project_id, start_date, end_date, timezone_name=None, *, use_lock=True):
+def aggregate_page_daily_metrics(
+    project_id,
+    start_date,
+    end_date,
+    timezone_name=None,
+    *,
+    use_lock=True,
+    bump_revision=True,
+):
     project = get_project_info(project_id)
     if not project:
         raise ValueError(f'Project {project_id} does not exist.')
@@ -538,6 +1014,7 @@ def aggregate_page_daily_metrics(project_id, start_date, end_date, timezone_name
                 end_date,
                 timezone_name,
                 use_lock=False,
+                bump_revision=bump_revision,
             )
 
     _run_daily_delete(project_id, start_date, end_date)
@@ -549,13 +1026,21 @@ def aggregate_page_daily_metrics(project_id, start_date, end_date, timezone_name
     queries.execute(queries.INSERT_RAW_PAGE_DAILY_METRICS_SQL, common_params)
     queries.execute(queries.INSERT_RAW_PAGE_ACTION_DAILY_METRICS_SQL, common_params)
     queries.execute(queries.INSERT_PROJECT_DAILY_METRICS_SQL, common_params)
+    revisions = (
+        bump_analytics_facts_revision(project_id)
+        if bump_revision
+        else None
+    )
 
-    return {
+    result = {
         'status': 'success',
         'project_id': project_id,
         'start_date': date_params[1].isoformat(),
         'end_date': date_params[2].isoformat(),
     }
+    if revisions is not None:
+        result.update(revisions)
+    return result
 
 
 def _to_int(value):
@@ -611,28 +1096,46 @@ def _direction(value, threshold):
 
 
 def _format_signed(value, suffix):
-    numeric = _to_float(value)
-    rounded = int(numeric + 0.5) if numeric >= 0 else int(numeric - 0.5)
+    rounded = _round_integer_for_display(value)
     prefix = '+' if rounded > 0 else ''
     return f'{prefix}{rounded}{suffix}'
 
 
+def _format_signed_decimal(value, suffix, decimal_places=1):
+    rounded = _decimal_for_display(value, decimal_places)
+    prefix = '+' if rounded > 0 else ''
+    return f'{prefix}{rounded:.{decimal_places}f}{suffix}'
+
+
+def _decimal_for_display(value, decimal_places=0):
+    decimal_places = max(0, int(decimal_places or 0))
+    quantum = Decimal('1').scaleb(-decimal_places)
+    return Decimal(str(_to_float(value))).quantize(quantum, rounding=ROUND_HALF_UP)
+
+
+def _round_integer_for_display(value):
+    return int(_decimal_for_display(value))
+
+
+def _format_decimal_for_display(value, decimal_places=0):
+    decimal_places = max(0, int(decimal_places or 0))
+    return f'{_decimal_for_display(value, decimal_places):.{decimal_places}f}'
+
+
 def _format_duration(seconds):
-    seconds = _to_int(seconds)
+    seconds = max(0, _round_integer_for_display(seconds))
+    if seconds < 60:
+        return f'{seconds}s'
     hours = seconds // 3600
-    minutes = round((seconds % 3600) / 60)
+    minutes = (seconds % 3600) // 60
     if hours > 0:
         return f'{hours}h {minutes}m' if minutes else f'{hours}h'
-    return f'{minutes}m'
+    remaining_seconds = seconds % 60
+    return f'{minutes}m {remaining_seconds:02d}s'
 
 
 def _format_duration_kpi(seconds):
-    seconds = _to_int(seconds)
-    hours = seconds // 3600
-    if hours > 0:
-        return f'{hours}h'
-    minutes = round(seconds / 60)
-    return f'{minutes}m'
+    return _format_duration(seconds)
 
 
 def _page_rule_id(row):
@@ -661,6 +1164,103 @@ def _trend_values(row, metric):
         for point in row.get('relative_change_series', {}).get(metric, [])
         if isinstance(point, dict)
     ]
+
+
+def _daily_adoption_values_from_relative_series(row, period='current'):
+    relative_change_series = (
+        row.get('relative_change_series')
+        if isinstance(row, dict)
+        else None
+    )
+    if not isinstance(relative_change_series, dict):
+        return []
+
+    adoption_points = relative_change_series.get('adoption') or []
+    visit_points = relative_change_series.get('visits') or []
+    visit_points_by_date = {
+        point.get('date'): point
+        for point in visit_points
+        if isinstance(point, dict) and point.get('date')
+    }
+    values = []
+    for index, adoption_point in enumerate(adoption_points):
+        if not isinstance(adoption_point, dict):
+            continue
+        point_date = adoption_point.get('date')
+        visit_point = visit_points_by_date.get(point_date)
+        if not isinstance(visit_point, dict) and index < len(visit_points):
+            visit_point = visit_points[index]
+        visits = (
+            visit_point.get(period)
+            if isinstance(visit_point, dict)
+            else 0
+        )
+        values.append(
+            _to_float(adoption_point.get(period))
+            if _to_float(visits) > 0
+            else None
+        )
+    return values
+
+
+def _daily_metric_values_from_relative_series(row, metric, period='current'):
+    relative_change_series = (
+        row.get('relative_change_series')
+        if isinstance(row, dict)
+        else None
+    )
+    if not isinstance(relative_change_series, dict):
+        return []
+    return [
+        _to_float(point.get(period))
+        for point in relative_change_series.get(metric) or []
+        if isinstance(point, dict)
+    ]
+
+
+def _with_compact_daily_kpi_trends(row):
+    row = dict(row)
+    existing = row.get('daily_kpi_trends')
+    adoption = existing.get('adoption') if isinstance(existing, dict) else None
+    companies = existing.get('companies') if isinstance(existing, dict) else None
+    if (
+        isinstance(adoption, dict)
+        and isinstance(adoption.get('current'), list)
+        and isinstance(adoption.get('previous'), list)
+        and isinstance(companies, dict)
+        and isinstance(companies.get('current'), list)
+        and isinstance(companies.get('previous'), list)
+    ):
+        return row
+
+    daily_kpi_trends = dict(existing) if isinstance(existing, dict) else {}
+    current_adoption = _daily_adoption_values_from_relative_series(row, 'current')
+    previous_adoption = _daily_adoption_values_from_relative_series(row, 'previous')
+    if current_adoption or previous_adoption:
+        daily_kpi_trends['adoption'] = {
+            'current': current_adoption,
+            'previous': previous_adoption,
+        }
+
+    current_companies = _daily_metric_values_from_relative_series(
+        row,
+        'companies',
+        'current',
+    )
+    previous_companies = _daily_metric_values_from_relative_series(
+        row,
+        'companies',
+        'previous',
+    )
+    if current_companies or previous_companies:
+        daily_kpi_trends['companies'] = {
+            'current': current_companies,
+            'previous': previous_companies,
+        }
+
+    if daily_kpi_trends:
+        row['daily_kpi_trends'] = daily_kpi_trends
+    return row
 
 
 def _weighted_percent_change(rows, value_key, delta_key):
@@ -695,6 +1295,7 @@ def _ensure_change_row_contract(row):
     row['page_rule_ids'] = [str(value) for value in _page_rule_aliases(row)]
     row['page_name'] = page_name
     row['page_group'] = page_group
+    row['page_display_key'] = _page_display_key(row)
     row.setdefault('trend_values', _trend_values(row, 'companies'))
 
     delta_fields = {
@@ -733,31 +1334,43 @@ def _ensure_change_row_contract(row):
 def _strip_relative_change_series(row):
     slim_row = dict(row)
     slim_row.pop('relative_change_series', None)
+    slim_row.pop('_period_to_date_trends', None)
+    slim_row.pop('_daily_trends', None)
     return slim_row
 
 
-def _with_compact_trends(row, metrics=PRODUCT_AREA_SUMMARY_TREND_METRICS):
+def _with_compact_trends(row, metrics=PRODUCT_AREA_SUMMARY_TREND_METRICS, *, prefer_daily=False):
     row = dict(row)
     existing = row.get('trends')
     if isinstance(existing, dict) and all(isinstance(existing.get(metric), list) for metric in metrics):
         return row
 
+    period_to_date_trends = row.get('_period_to_date_trends')
+    daily_trends = row.get('_daily_trends') if prefer_daily else None
     relative_change_series = row.get('relative_change_series')
-    if not isinstance(relative_change_series, dict):
+    if (
+        not isinstance(period_to_date_trends, dict)
+        and not isinstance(daily_trends, dict)
+        and not isinstance(relative_change_series, dict)
+    ):
         return row
 
     trends = dict(existing) if isinstance(existing, dict) else {}
     for metric in metrics:
         if isinstance(trends.get(metric), list):
             continue
-        points = relative_change_series.get(metric) or []
-        values = [
-            _to_float(point.get('current'))
-            for point in points
-            if isinstance(point, dict)
-        ]
+        values = daily_trends.get(metric) if isinstance(daily_trends, dict) else None
+        if not isinstance(values, list):
+            values = period_to_date_trends.get(metric) if isinstance(period_to_date_trends, dict) else None
+        if not isinstance(values, list):
+            points = relative_change_series.get(metric) or []
+            values = [
+                _to_float(point.get('current'))
+                for point in points
+                if isinstance(point, dict)
+            ]
         if values:
-            trends[metric] = values
+            trends[metric] = [_to_float(value) for value in values]
 
     if trends:
         row['trends'] = trends
@@ -765,11 +1378,20 @@ def _with_compact_trends(row, metrics=PRODUCT_AREA_SUMMARY_TREND_METRICS):
 
 
 def _strip_for_product_area_summary(row):
-    return _strip_relative_change_series(_with_compact_trends(row))
+    # This table's sparklines read as activity over the period rather than
+    # progress towards the headline, so they use the per-day series. The
+    # period-to-date series stays available to the surfaces built around it.
+    return _strip_relative_change_series(
+        _with_compact_trends(row, prefer_daily=True),
+    )
 
 
 def _strip_for_overview_row(row):
-    return _strip_relative_change_series(_with_compact_trends(row, OVERVIEW_ROW_TREND_METRICS))
+    return _strip_relative_change_series(
+        _with_compact_daily_kpi_trends(
+            _with_compact_trends(row, OVERVIEW_ROW_TREND_METRICS),
+        ),
+    )
 
 
 def _median(values):
@@ -789,15 +1411,28 @@ def _date_range(start_date, end_date):
         day += timedelta(days=1)
 
 
-def _summary_by_area(project_id, start_date, end_date):
+def _analytics_params(project_id, start_date, end_date, *, cohort=None, **extra):
+    """Named bind parameters shared by the analytical Pages queries."""
+
+    params = {
+        'project_id': project_id,
+        'start_date': start_date,
+        'end_date': end_date,
+        **extra,
+    }
+    if cohort is not None:
+        params['cohort'] = list(cohort)
+    return params
+
+
+def _analytics_sql(unfiltered_sql, filtered_sql, cohort):
+    return filtered_sql if cohort is not None else unfiltered_sql
+
+
+def _summary_by_area(project_id, start_date, end_date, *, cohort=None):
     rows = queries.fetch_all(
-        queries.AREA_SUMMARY_SQL,
-        [
-            project_id, start_date, end_date,
-            project_id, start_date, end_date,
-            project_id, start_date, end_date,
-            project_id, start_date, end_date,
-        ],
+        _analytics_sql(queries.AREA_SUMMARY_SQL, queries.AREA_SUMMARY_FILTERED_SQL, cohort),
+        _analytics_params(project_id, start_date, end_date, cohort=cohort),
     )
     return {row['product_area_key']: row for row in rows}
 
@@ -831,8 +1466,37 @@ def _page_display_group(row):
     )
 
 
+def _page_product_area_identity(row):
+    name = str(
+        row.get('product_area_name')
+        or row.get('productAreaName')
+        or row.get('product_area')
+        or row.get('productArea')
+        or row.get('page_group')
+        or ''
+    ).strip()
+    key = str(
+        row.get('product_area_key')
+        or row.get('productAreaKey')
+        or row.get('product_area_id')
+        or row.get('productAreaId')
+        or ''
+    ).strip()
+    if not key:
+        key = slugify(name) or 'unassigned'
+    if not name:
+        name = key or 'Unassigned'
+    return key, name
+
+
 def _page_display_key(row):
-    return str(_page_display_name(row) or '').strip().casefold()
+    product_area_key, _product_area_name = _page_product_area_identity(row)
+    # Keep Python-generated/fallback keys aligned with PostgreSQL LOWER() in
+    # PAGE_DISPLAY_* queries.  casefold() is broader (for example, ß -> ss)
+    # and could otherwise merge rows which the SQL aggregates keep separate.
+    normalized_area_key = str(product_area_key or 'unassigned').strip().lower() or 'unassigned'
+    normalized_page_name = str(_page_display_name(row) or '').strip().lower()
+    return f'{normalized_area_key}::{normalized_page_name}'
 
 
 def _page_rule_aliases(row):
@@ -885,27 +1549,22 @@ def _collapse_page_metric_representatives(rows):
     return collapsed
 
 
-def _summary_by_page(project_id, start_date, end_date):
+def _summary_by_page(project_id, start_date, end_date, *, cohort=None):
     rows = queries.fetch_all(
-        queries.PAGE_SUMMARY_SQL,
-        [
-            project_id, start_date, end_date,
-            project_id, start_date, end_date,
-            project_id, start_date, end_date,
-            project_id, start_date, end_date,
-        ],
+        _analytics_sql(queries.PAGE_SUMMARY_SQL, queries.PAGE_SUMMARY_FILTERED_SQL, cohort),
+        _analytics_params(project_id, start_date, end_date, cohort=cohort),
     )
     return {_page_metric_key(row): row for row in rows}
 
 
-def _summary_by_display_page(project_id, start_date, end_date):
+def _summary_by_display_page(project_id, start_date, end_date, *, cohort=None):
     rows = queries.fetch_all(
-        queries.PAGE_DISPLAY_SUMMARY_SQL,
-        [
-            project_id, start_date, end_date,
-            project_id, start_date, end_date,
-            project_id, start_date, end_date,
-        ],
+        _analytics_sql(
+            queries.PAGE_DISPLAY_SUMMARY_SQL,
+            queries.PAGE_DISPLAY_SUMMARY_FILTERED_SQL,
+            cohort,
+        ),
+        _analytics_params(project_id, start_date, end_date, cohort=cohort),
     )
     return {row['page_display_key']: row for row in rows}
 
@@ -922,10 +1581,14 @@ def _treemap_page_rows(project_id, start_date, end_date, previous_start, previou
     )
 
 
-def _project_distinct_counts(project_id, start_date, end_date):
+def _project_distinct_counts(project_id, start_date, end_date, *, cohort=None):
     row = queries.fetch_one(
-        queries.PROJECT_DISTINCT_COUNTS_SQL,
-        [project_id, start_date, end_date, project_id, start_date, end_date],
+        _analytics_sql(
+            queries.PROJECT_DISTINCT_COUNTS_SQL,
+            queries.PROJECT_DISTINCT_COUNTS_FILTERED_SQL,
+            cohort,
+        ),
+        _analytics_params(project_id, start_date, end_date, cohort=cohort),
     )
     return row or {'active_companies_count': 0, 'active_users_count': 0}
 
@@ -938,26 +1601,38 @@ def _has_period_comparison_data(rows_by_key, counts):
     )
 
 
-def _penetration_denominators(project_id, start_date, end_date):
+def _penetration_denominators(project_id, start_date, end_date, *, cohort=None):
     rows = queries.fetch_all(
-        queries.PENETRATION_DENOMINATOR_SQL,
-        [project_id, start_date, end_date, project_id, start_date, end_date],
+        _analytics_sql(
+            queries.PENETRATION_DENOMINATOR_SQL,
+            queries.PENETRATION_DENOMINATOR_FILTERED_SQL,
+            cohort,
+        ),
+        _analytics_params(project_id, start_date, end_date, cohort=cohort),
     )
     return {row['product_area_key']: _to_int(row['active_users_in_adopted_companies']) for row in rows}
 
 
-def _page_penetration_denominators(project_id, start_date, end_date):
+def _page_penetration_denominators(project_id, start_date, end_date, *, cohort=None):
     rows = queries.fetch_all(
-        queries.PAGE_PENETRATION_DENOMINATOR_SQL,
-        [project_id, start_date, end_date, project_id, start_date, end_date],
+        _analytics_sql(
+            queries.PAGE_PENETRATION_DENOMINATOR_SQL,
+            queries.PAGE_PENETRATION_DENOMINATOR_FILTERED_SQL,
+            cohort,
+        ),
+        _analytics_params(project_id, start_date, end_date, cohort=cohort),
     )
     return {_page_metric_key(row): _to_int(row['active_users_in_adopted_companies']) for row in rows}
 
 
-def _display_page_penetration_denominators(project_id, start_date, end_date):
+def _display_page_penetration_denominators(project_id, start_date, end_date, *, cohort=None):
     rows = queries.fetch_all(
-        queries.PAGE_DISPLAY_PENETRATION_DENOMINATOR_SQL,
-        [project_id, start_date, end_date, project_id, start_date, end_date],
+        _analytics_sql(
+            queries.PAGE_DISPLAY_PENETRATION_DENOMINATOR_SQL,
+            queries.PAGE_DISPLAY_PENETRATION_DENOMINATOR_FILTERED_SQL,
+            cohort,
+        ),
+        _analytics_params(project_id, start_date, end_date, cohort=cohort),
     )
     return {
         row['page_display_key']: _to_int(row['active_users_in_adopted_companies'])
@@ -965,21 +1640,14 @@ def _display_page_penetration_denominators(project_id, start_date, end_date):
     }
 
 
-def _daily_area_rows(project_id, start_date, end_date):
+def _daily_area_rows(project_id, start_date, end_date, *, cohort=None):
     rows = queries.fetch_all(
-        queries.DAILY_AREA_METRICS_SQL,
-        [
-            project_id,
-            start_date,
-            end_date,
-            project_id,
-            start_date,
-            end_date,
-            project_id,
-            start_date,
-            end_date,
-            project_id,
-        ],
+        _analytics_sql(
+            queries.DAILY_AREA_METRICS_SQL,
+            queries.DAILY_AREA_METRICS_FILTERED_SQL,
+            cohort,
+        ),
+        _analytics_params(project_id, start_date, end_date, cohort=cohort),
     )
     data = {}
     for row in rows:
@@ -987,71 +1655,34 @@ def _daily_area_rows(project_id, start_date, end_date):
     return data
 
 
-def _daily_page_rows(project_id, start_date, end_date):
-    rows = queries.fetch_all(queries.DAILY_PAGE_METRICS_SQL, [project_id, start_date, end_date])
+def _daily_page_rows(project_id, start_date, end_date, *, cohort=None):
+    rows = queries.fetch_all(
+        _analytics_sql(
+            queries.DAILY_PAGE_METRICS_SQL,
+            queries.DAILY_PAGE_METRICS_FILTERED_SQL,
+            cohort,
+        ),
+        _analytics_params(project_id, start_date, end_date, cohort=cohort),
+    )
     data = {}
     for row in rows:
         data[(row['date'], _page_metric_key(row))] = row
     return data
 
 
-def _daily_display_page_rows(project_id, start_date, end_date):
+def _daily_display_page_rows(project_id, start_date, end_date, *, cohort=None):
     rows = queries.fetch_all(
-        queries.DAILY_PAGE_DISPLAY_METRICS_SQL,
-        [
-            project_id, start_date, end_date,
-            project_id, start_date, end_date,
-            project_id, start_date, end_date,
-            project_id,
-        ],
+        _analytics_sql(
+            queries.DAILY_PAGE_DISPLAY_METRICS_SQL,
+            queries.DAILY_PAGE_DISPLAY_METRICS_FILTERED_SQL,
+            cohort,
+        ),
+        _analytics_params(project_id, start_date, end_date, cohort=cohort),
     )
     return {
         (row['date'], row['page_display_key']): row
         for row in rows
     }
-
-
-def _daily_page_rows_for_rows(project_id, start_date, end_date, rows):
-    page_rule_ids = sorted({
-        page_rule_id
-        for page_rule_id in (_coerce_int_or_none(row.get('page_rule_id')) for row in rows or [])
-        if page_rule_id is not None
-    })
-    if not page_rule_ids:
-        return _daily_page_rows(project_id, start_date, end_date)
-
-    daily_rows = queries.fetch_all(
-        queries.DAILY_PAGE_METRICS_FOR_RULES_SQL,
-        [project_id, start_date, end_date, page_rule_ids],
-    )
-    data = {}
-    for row in daily_rows:
-        data[(row['date'], _page_metric_key(row))] = row
-    return data
-
-
-class BulkPageDetailContext:
-    def __init__(self, project_id, start_date, end_date):
-        self.project_id = project_id
-        self.start_date = start_date
-        self.end_date = end_date
-        self._daily_rows_cache = {}
-
-    def daily_page_rows_for_rows(self, rows):
-        page_rule_ids = tuple(sorted({
-            page_rule_id
-            for page_rule_id in (_coerce_int_or_none(row.get('page_rule_id')) for row in rows or [])
-            if page_rule_id is not None
-        }))
-        key = page_rule_ids or ('__all__',)
-        if key not in self._daily_rows_cache:
-            self._daily_rows_cache[key] = _daily_page_rows_for_rows(
-                self.project_id,
-                self.start_date,
-                self.end_date,
-                rows,
-            )
-        return self._daily_rows_cache[key]
 
 
 def _daily_metric_value(row, metric):
@@ -1118,31 +1749,178 @@ def _relative_change_series(row_key, current_start, current_end, previous_start,
     return series
 
 
-def _build_change_rows(project_id, start_date, end_date, previous_start, previous_end, *, grain='page'):
-    if grain == 'product_area':
-        current = _summary_by_area(project_id, start_date, end_date)
-        previous = _summary_by_area(project_id, previous_start, previous_end)
-        current_penetration_denominators = _penetration_denominators(project_id, start_date, end_date)
-        previous_penetration_denominators = _penetration_denominators(project_id, previous_start, previous_end)
-        daily_current = _daily_area_rows(project_id, start_date, end_date)
-        daily_previous = _daily_area_rows(project_id, previous_start, previous_end)
-    elif grain == 'display_page':
-        current = _summary_by_display_page(project_id, start_date, end_date)
-        previous = _summary_by_display_page(project_id, previous_start, previous_end)
-        current_penetration_denominators = _display_page_penetration_denominators(project_id, start_date, end_date)
-        previous_penetration_denominators = _display_page_penetration_denominators(project_id, previous_start, previous_end)
-        daily_current = _daily_display_page_rows(project_id, start_date, end_date)
-        daily_previous = _daily_display_page_rows(project_id, previous_start, previous_end)
-    else:
-        current = _summary_by_page(project_id, start_date, end_date)
-        previous = _summary_by_page(project_id, previous_start, previous_end)
-        current_penetration_denominators = _page_penetration_denominators(project_id, start_date, end_date)
-        previous_penetration_denominators = _page_penetration_denominators(project_id, previous_start, previous_end)
-        daily_current = _daily_page_rows(project_id, start_date, end_date)
-        daily_previous = _daily_page_rows(project_id, previous_start, previous_end)
+def _period_to_date_identity_events(project_id, start_date, end_date, grain, *, cohort=None):
+    rows = queries.fetch_all(
+        queries.cumulative_identity_first_seen_sql(grain, filtered=cohort is not None),
+        _analytics_params(project_id, start_date, end_date, cohort=cohort),
+    )
+    events = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+    for row in rows:
+        kind = str(row.get('kind') or '')
+        row_key = str(row.get('row_key') or '')
+        first_date = row.get('first_date')
+        if isinstance(first_date, str):
+            try:
+                first_date = date.fromisoformat(first_date)
+            except ValueError:
+                continue
+        if not kind or not isinstance(first_date, date):
+            continue
+        identities_count = row.get('identities_count')
+        events[kind][row_key][first_date] += max(
+            0,
+            1 if identities_count is None else _to_int(identities_count),
+        )
+    return events
 
-    current_counts = _project_distinct_counts(project_id, start_date, end_date)
-    previous_counts = _project_distinct_counts(project_id, previous_start, previous_end)
+
+def _running_identity_counts(events_by_date, dates):
+    total = 0
+    values = []
+    for current_date in dates:
+        total += _to_int((events_by_date or {}).get(current_date))
+        values.append(total)
+    return values
+
+
+def _attach_period_to_date_trends(
+    rows,
+    project_id,
+    start_date,
+    end_date,
+    daily_rows,
+    *,
+    grain,
+    cohort=None,
+):
+    rows = list(rows or [])
+    if not rows:
+        return rows
+
+    dates = list(_date_range(start_date, end_date))
+    identity_events = _period_to_date_identity_events(
+        project_id,
+        start_date,
+        end_date,
+        grain,
+        cohort=cohort,
+    )
+    project_companies = _running_identity_counts(
+        identity_events.get('project_company', {}).get('', {}),
+        dates,
+    )
+
+    for row in rows:
+        if grain == 'product_area':
+            row_key = str(row.get('row_key') or row.get('product_area_key') or 'unassigned')
+        elif grain == 'display_page':
+            row_key = str(row.get('row_key') or row.get('page_display_key') or _page_display_key(row))
+        else:
+            row_key = str(row.get('row_key') or _page_metric_key(row))
+        company_counts = _running_identity_counts(
+            identity_events.get('company', {}).get(row_key, {}),
+            dates,
+        )
+        user_counts = _running_identity_counts(
+            identity_events.get('user', {}).get(row_key, {}),
+            dates,
+        )
+        penetration_denominators = _running_identity_counts(
+            identity_events.get('penetration', {}).get(row_key, {}),
+            dates,
+        )
+        running_visits = 0
+        running_engaged = 0
+        running_clicks = 0
+        running_visits_with_click = 0
+        trends = {
+            metric: []
+            for metric in PAGE_DETAIL_TREND_METRICS
+        }
+        # Read straight off the daily rows rather than differencing the running
+        # totals. A running distinct count only moves when an identity is seen
+        # for the first time, so its day-over-day difference is "newly seen",
+        # not "active that day" — the two disagree for every returning company.
+        daily_trends = {
+            metric: []
+            for metric in PRODUCT_AREA_SUMMARY_TREND_METRICS
+        }
+
+        for index, current_date in enumerate(dates):
+            daily_row = daily_rows.get((current_date, row_key), {}) if isinstance(daily_rows, dict) else {}
+            running_visits += _to_int(daily_row.get('visits_count'))
+            running_engaged += _to_int(daily_row.get('engaged_seconds'))
+            running_clicks += _to_int(daily_row.get('click_count'))
+            running_visits_with_click += _to_int(daily_row.get('visits_with_click_count'))
+            companies = company_counts[index] if index < len(company_counts) else 0
+            users = user_counts[index] if index < len(user_counts) else 0
+            active_companies = project_companies[index] if index < len(project_companies) else 0
+            penetration_denominator = (
+                penetration_denominators[index]
+                if index < len(penetration_denominators)
+                else 0
+            )
+
+            trends['companies'].append(companies)
+            trends['adoption'].append(_bounded_pct(companies, active_companies))
+            trends['users'].append(users)
+            trends['penetration'].append(_pct(users, penetration_denominator))
+            trends['visits'].append(running_visits)
+            trends['engaged'].append(running_engaged)
+            trends['avg_visit'].append(_ratio(running_engaged, running_visits))
+            trends['interaction'].append(_pct(running_visits_with_click, running_visits))
+            trends['clicks_per_visit'].append(_ratio(running_clicks, running_visits))
+
+            daily_companies = _to_int(daily_row.get('companies_count_daily'))
+            daily_trends['companies'].append(daily_companies)
+            daily_trends['adoption'].append(
+                _bounded_pct(daily_companies, _to_int(daily_row.get('active_companies_count'))),
+            )
+            daily_trends['users'].append(_to_int(daily_row.get('users_count_daily')))
+            daily_trends['engaged'].append(_to_int(daily_row.get('engaged_seconds')))
+
+        row['_period_to_date_trends'] = trends
+        row['_daily_trends'] = daily_trends
+        row['trend_values'] = list(trends['companies'])
+
+    return rows
+
+
+def _build_change_rows(
+    project_id,
+    start_date,
+    end_date,
+    previous_start,
+    previous_end,
+    *,
+    grain='page',
+    cohort=None,
+    include_previous_only=False,
+):
+    if grain == 'product_area':
+        current = _summary_by_area(project_id, start_date, end_date, cohort=cohort)
+        previous = _summary_by_area(project_id, previous_start, previous_end, cohort=cohort)
+        current_penetration_denominators = _penetration_denominators(project_id, start_date, end_date, cohort=cohort)
+        previous_penetration_denominators = _penetration_denominators(project_id, previous_start, previous_end, cohort=cohort)
+        daily_current = _daily_area_rows(project_id, start_date, end_date, cohort=cohort)
+        daily_previous = _daily_area_rows(project_id, previous_start, previous_end, cohort=cohort)
+    elif grain == 'display_page':
+        current = _summary_by_display_page(project_id, start_date, end_date, cohort=cohort)
+        previous = _summary_by_display_page(project_id, previous_start, previous_end, cohort=cohort)
+        current_penetration_denominators = _display_page_penetration_denominators(project_id, start_date, end_date, cohort=cohort)
+        previous_penetration_denominators = _display_page_penetration_denominators(project_id, previous_start, previous_end, cohort=cohort)
+        daily_current = _daily_display_page_rows(project_id, start_date, end_date, cohort=cohort)
+        daily_previous = _daily_display_page_rows(project_id, previous_start, previous_end, cohort=cohort)
+    else:
+        current = _summary_by_page(project_id, start_date, end_date, cohort=cohort)
+        previous = _summary_by_page(project_id, previous_start, previous_end, cohort=cohort)
+        current_penetration_denominators = _page_penetration_denominators(project_id, start_date, end_date, cohort=cohort)
+        previous_penetration_denominators = _page_penetration_denominators(project_id, previous_start, previous_end, cohort=cohort)
+        daily_current = _daily_page_rows(project_id, start_date, end_date, cohort=cohort)
+        daily_previous = _daily_page_rows(project_id, previous_start, previous_end, cohort=cohort)
+
+    current_counts = _project_distinct_counts(project_id, start_date, end_date, cohort=cohort)
+    previous_counts = _project_distinct_counts(project_id, previous_start, previous_end, cohort=cohort)
     comparison_available = _has_period_comparison_data(previous, previous_counts)
 
     max_values = defaultdict(int)
@@ -1159,11 +1937,17 @@ def _build_change_rows(project_id, start_date, end_date, previous_start, previou
         'clicks_per_visit',
     )
 
-    for row_key, row in current.items():
+    row_keys = list(current)
+    if include_previous_only:
+        row_keys.extend(row_key for row_key in previous if row_key not in current)
+
+    for row_key in row_keys:
+        row = current.get(row_key, {})
         previous_row = previous.get(row_key, {})
-        product_area_key = row.get('product_area_key') or row_key or 'unassigned'
-        product_area_name = row.get('product_area_name') or product_area_key
-        page_name = row.get('page_name') or product_area_name
+        identity_row = row or previous_row
+        product_area_key = identity_row.get('product_area_key') or row_key or 'unassigned'
+        product_area_name = identity_row.get('product_area_name') or product_area_key
+        page_name = identity_row.get('page_name') or product_area_name
         visits = _to_int(row.get('visits_count'))
         previous_visits = _to_int(previous_row.get('visits_count'))
         engaged = _to_int(row.get('engaged_seconds'))
@@ -1199,21 +1983,24 @@ def _build_change_rows(project_id, start_date, end_date, previous_start, previou
 
         prepared.append({
             'row_key': row_key,
-            'product_area_id': row.get('product_area_id'),
+            'product_area_id': identity_row.get('product_area_id'),
             'product_area_key': product_area_key,
             'product_area_name': product_area_name,
-            'page_rule_id': row.get('page_rule_id'),
-            'page_rule_ids': row.get('page_rule_ids') or _page_rule_aliases(row),
+            'page_rule_id': identity_row.get('page_rule_id'),
+            'page_rule_ids': identity_row.get('page_rule_ids') or _page_rule_aliases(identity_row),
             'page_name': page_name,
             'page_group': product_area_name,
-            'page_count': _to_int(row.get('page_count') or 1),
+            'page_count': _to_int(identity_row.get('page_count') or 1),
             'comparison_available': comparison_available,
             'comparisonAvailable': comparison_available,
             'companies_count': companies,
+            'previous_companies_count': previous_companies,
             'adoption_pct': adoption,
+            'previous_adoption_pct': previous_adoption,
             'users_count': users,
             'penetration_pct': penetration,
             'visits_count': visits,
+            'previous_visits_count': previous_visits,
             'engaged_seconds': engaged,
             'engaged_label': _format_duration(engaged),
             'avg_visit_seconds': avg_visit,
@@ -1246,6 +2033,8 @@ def _build_change_rows(project_id, start_date, end_date, previous_start, previou
                 for metric_name in metric_names
             },
         })
+        if row_key not in current:
+            prepared[-1]['_previous_only'] = True
 
     for row in prepared:
         row['bars'] = {
@@ -1264,23 +2053,48 @@ def _build_change_rows(project_id, start_date, end_date, previous_start, previou
         }
         _ensure_change_row_contract(row)
 
+    _attach_period_to_date_trends(
+        prepared,
+        project_id,
+        start_date,
+        end_date,
+        daily_current,
+        grain=grain,
+        cohort=cohort,
+    )
     prepared.sort(key=lambda item: (-item['visits_count'], item['page_name']))
     return prepared, current_counts, previous_counts
 
 
-def _daily_adopted_pages_trend(rows):
-    dates = []
-    adopted_by_date = defaultdict(int)
-    for row in rows:
-        for point in row['relative_change_series'].get('companies', []):
-            point_date = point.get('date')
-            if not point_date:
-                continue
-            if point_date not in dates:
-                dates.append(point_date)
-            if _to_int(point.get('current')) > 0:
-                adopted_by_date[point_date] += 1
-    return [adopted_by_date[point_date] for point_date in dates]
+def _period_to_date_trend_values(row, metric):
+    if not isinstance(row, dict):
+        return []
+
+    period_to_date = row.get('_period_to_date_trends')
+    if isinstance(period_to_date, dict) and isinstance(period_to_date.get(metric), list):
+        return list(period_to_date.get(metric) or [])
+
+    compact = row.get('trends')
+    if isinstance(compact, dict) and isinstance(compact.get(metric), list):
+        return [_to_float(value) for value in compact.get(metric) or []]
+
+    return _trend_values(row, metric)
+
+
+def _daily_adopted_pages_trend(rows, period='current'):
+    trends = [
+        _compact_daily_metric_values(row, 'companies', period)
+        for row in rows
+    ]
+    length = max((len(trend) for trend in trends), default=0)
+    return [
+        sum(
+            1
+            for trend in trends
+            if index < len(trend) and _to_float(trend[index]) > 0
+        )
+        for index in range(length)
+    ]
 
 
 def _daily_trend_dates(rows, metric):
@@ -1293,102 +2107,269 @@ def _daily_trend_dates(rows, metric):
     return dates
 
 
-def _daily_median_adoption_trend(rows):
-    dates = []
-    adoption_by_date = defaultdict(list)
-    for row in rows:
-        for point in row['relative_change_series'].get('adoption', []):
-            point_date = point.get('date')
-            if not point_date:
-                continue
-            if point_date not in dates:
-                dates.append(point_date)
-            current_value = _to_float(point.get('current'))
-            if current_value > 0:
-                adoption_by_date[point_date].append(current_value)
-    return [round(_median(adoption_by_date[point_date]), 1) for point_date in dates]
+def _compact_daily_adoption_values(row, period='current'):
+    compact = row.get('daily_kpi_trends') if isinstance(row, dict) else None
+    adoption = compact.get('adoption') if isinstance(compact, dict) else None
+    values = adoption.get(period) if isinstance(adoption, dict) else None
+    if isinstance(values, list):
+        return [
+            None if value is None else _to_float(value)
+            for value in values
+        ]
+    return _daily_adoption_values_from_relative_series(row, period)
 
 
-def _build_kpis(rows, previous_rows_by_key, current_active_companies, previous_active_companies, *, comparison_available=True):
-    adopted_pages = sum(1 for row in rows if row['companies_count'] > 0)
-    previous_adopted_pages = sum(1 for row in previous_rows_by_key.values() if _to_int(row.get('companies_count')) > 0)
-    median_adoption = _median([row['adoption_pct'] for row in rows if row['visits_count'] > 0])
-    previous_median_adoption = _median([
-        _bounded_pct(row.get('companies_count'), previous_active_companies)
-        for row in previous_rows_by_key.values()
-        if _to_int(row.get('visits_count')) > 0
-    ])
-    most_used = max(rows, key=lambda row: row['engaged_seconds'], default=None)
+def _compact_daily_metric_values(row, metric, period='current'):
+    compact = row.get('daily_kpi_trends') if isinstance(row, dict) else None
+    metric_values = compact.get(metric) if isinstance(compact, dict) else None
+    values = metric_values.get(period) if isinstance(metric_values, dict) else None
+    if isinstance(values, list):
+        return [_to_float(value) for value in values]
+    return _daily_metric_values_from_relative_series(row, metric, period)
 
+
+def _daily_average_adoption_trend(rows, period='current'):
+    row_values = [
+        _compact_daily_adoption_values(row, period)
+        for row in rows or []
+    ]
+    length = max((len(values) for values in row_values), default=0)
+    trend = []
+    for index in range(length):
+        eligible_values = [
+            _to_float(values[index])
+            for values in row_values
+            if index < len(values) and values[index] is not None
+        ]
+        trend.append(
+            round(sum(eligible_values) / len(eligible_values), 1)
+            if eligible_values
+            else 0
+        )
+    return trend
+
+
+def _average_trend_value(values, decimal_places=1):
+    values = [_to_float(value) for value in values or []]
+    if not values:
+        return 0
+    return round(sum(values) / len(values), decimal_places)
+
+
+def _daily_additive_trend_values(row, metric):
+    cumulative_values = _period_to_date_trend_values(row, metric)
+    daily_values = []
+    previous_value = 0
+    for cumulative_value in cumulative_values:
+        cumulative_value = _to_float(cumulative_value)
+        daily_values.append(max(0, cumulative_value - previous_value))
+        previous_value = cumulative_value
+    return daily_values
+
+
+def _growth_pct(current_companies, previous_companies):
+    previous_companies = _to_int(previous_companies)
+    if previous_companies <= 0:
+        return None
+    return (
+        (_to_int(current_companies) - previous_companies)
+        / previous_companies
+        * 100
+    )
+
+
+def _rounded_growth_pct(current_companies, previous_companies):
+    growth = _growth_pct(current_companies, previous_companies)
+    return None if growth is None else _round_integer_for_display(growth)
+
+
+PREVIOUS_PERIOD_BAR_LABEL = 'Previous period'
+SELECTED_PERIOD_BAR_LABEL = 'Selected period'
+
+
+def _build_fastest_growing_kpi(
+    fastest,
+    fastest_is_new,
+    previous_companies,
+    *,
+    comparison_available,
+):
+    kpi = {
+        'label': 'Fastest-growing',
+        'value': fastest['page_name'] if fastest else 'No data',
+        'delta': '',
+        'delta_value': 0,
+        'product_area_key': fastest.get('product_area_key') if fastest else '',
+        'page_rule_id': fastest.get('page_rule_id') if fastest else None,
+    }
+    if not fastest:
+        if comparison_available:
+            kpi['context_line'] = 'No qualifying page growth'
+        else:
+            kpi['delta'] = 'n/a'
+            kpi['context_line'] = 'Previous-period comparison unavailable'
+        return kpi
+
+    current_companies = _to_int(fastest.get('companies_count'))
+    previous_companies = _to_int(previous_companies)
+    is_new = fastest_is_new or (
+        previous_companies <= 0
+        and current_companies > 0
+    )
+    if not comparison_available:
+        kpi['delta'] = 'n/a'
+        kpi['context_line'] = 'Previous-period comparison unavailable'
+        return kpi
+
+    if is_new:
+        kpi['delta'] = 'New companies'
+        kpi['delta_value'] = 1
+        kpi['context_line'] = 'New in selected period; no previous-period baseline'
+        return kpi
+
+    displayed_growth = _rounded_growth_pct(
+        current_companies,
+        previous_companies,
+    )
+    # Two bars rather than a sparkline: the card answers "how many distinct
+    # companies used this page, before and now", so the series is the pair of
+    # period totals and nothing in between.
+    kpi.update({
+        'trend_values': [previous_companies, current_companies],
+        'trend_labels': [PREVIOUS_PERIOD_BAR_LABEL, SELECTED_PERIOD_BAR_LABEL],
+        'trend_format': 'number',
+        'trend_label': 'Companies',
+        'trend_scope': 'period_comparison',
+        'trend_delta_value': displayed_growth,
+    })
+    kpi['delta'] = _format_signed(displayed_growth, '%') + ' companies'
+    kpi['delta_value'] = displayed_growth
+    return kpi
+
+
+def _select_fastest_growing_row(rows, previous_companies_for_row):
     fastest = None
     fastest_growth = -math.inf
-    fastest_is_new = False
     strongest_new = None
-    for row in rows:
-        previous_row = previous_rows_by_key.get(row.get('row_key') or row.get('product_area_key'), {})
-        previous_companies = _to_int(previous_row.get('companies_count'))
-        current_companies = row['companies_count']
+
+    for row in rows or []:
+        previous_companies = _to_int(previous_companies_for_row(row))
+        current_companies = _to_int(row.get('companies_count'))
         if previous_companies < 3 and current_companies < 5:
             continue
         if previous_companies == 0 and current_companies > 0:
-            if strongest_new is None or current_companies > strongest_new['companies_count']:
+            if strongest_new is None or current_companies > _to_int(strongest_new.get('companies_count')):
                 strongest_new = row
             continue
-        growth = _delta_pct(current_companies, previous_companies)['value']
+
+        growth = _growth_pct(current_companies, previous_companies)
         if growth is not None and growth > fastest_growth:
             fastest = row
             fastest_growth = growth
 
-    if fastest is None:
-        fastest = strongest_new or (rows[0] if rows else None)
-        fastest_growth = None if strongest_new else 0
-        fastest_is_new = strongest_new is not None
+    if fastest is not None:
+        return fastest, fastest_growth, False
+    if strongest_new is not None:
+        return strongest_new, None, True
+    return None, None, False
 
-    adopted_delta = adopted_pages - previous_adopted_pages
-    median_delta = round(_to_float(median_adoption) - _to_float(previous_median_adoption), 1)
+
+def _build_kpis(rows, previous_rows_by_key, current_active_companies, previous_active_companies, *, comparison_available=True):
+    current_rows = [
+        row
+        for row in rows
+        if not row.get('_previous_only')
+    ]
+    daily_adopted_pages_trend = _daily_adopted_pages_trend(rows)
+    previous_daily_adopted_pages_trend = _daily_adopted_pages_trend(
+        rows,
+        'previous',
+    )
+    average_daily_adopted_pages = _average_trend_value(
+        daily_adopted_pages_trend,
+    )
+    previous_average_daily_adopted_pages = _average_trend_value(
+        previous_daily_adopted_pages_trend,
+    )
+    daily_adoption_trend = _daily_average_adoption_trend(rows)
+    previous_daily_adoption_trend = _daily_average_adoption_trend(rows, 'previous')
+    average_daily_adoption = _average_trend_value(daily_adoption_trend)
+    previous_average_daily_adoption = _average_trend_value(previous_daily_adoption_trend)
+    most_used = max(current_rows, key=lambda row: row['engaged_seconds'], default=None)
+    most_used_daily_engaged = (
+        _daily_additive_trend_values(most_used, 'engaged')
+        if most_used
+        else []
+    )
+    most_used_average_daily_engaged = _average_trend_value(
+        most_used_daily_engaged,
+        decimal_places=2,
+    )
+
+    def previous_companies_for_row(row):
+        previous_row = previous_rows_by_key.get(row.get('row_key') or row.get('product_area_key'), {})
+        return previous_row.get('companies_count')
+
+    fastest, _fastest_growth, fastest_is_new = _select_fastest_growing_row(
+        current_rows,
+        previous_companies_for_row,
+    )
+    fastest_kpi = _build_fastest_growing_kpi(
+        fastest,
+        fastest_is_new,
+        previous_companies_for_row(fastest) if fastest else 0,
+        comparison_available=comparison_available,
+    )
+
+    average_daily_adopted_pages_delta = round(
+        average_daily_adopted_pages - previous_average_daily_adopted_pages,
+        1,
+    )
+    average_daily_adoption_delta = round(
+        average_daily_adoption - previous_average_daily_adoption,
+        1,
+    )
     comparison_delta_label = None if comparison_available else 'n/a'
 
     return [
         {
-            'label': 'Adopted pages',
-            'value': str(adopted_pages),
-            'delta': comparison_delta_label or f'{_format_signed(adopted_delta, "")} vs previous',
-            'delta_value': adopted_delta if comparison_available else 0,
-            'trend_values': _daily_adopted_pages_trend(rows),
+            'label': 'Avg daily adopted pages',
+            'value': _format_decimal_for_display(average_daily_adopted_pages, 1),
+            'delta': comparison_delta_label or (
+                f'{_format_signed_decimal(average_daily_adopted_pages_delta, "", 1)} vs previous'
+            ),
+            'delta_value': average_daily_adopted_pages_delta if comparison_available else 0,
+            'trend_values': daily_adopted_pages_trend,
             'trend_labels': _daily_trend_dates(rows, 'companies'),
             'trend_format': 'number',
+            'trend_label': 'Adopted pages',
+            'trend_scope': 'daily',
         },
         {
-            'label': 'Median adoption',
-            'value': f'{round(median_adoption)}%',
-            'delta': comparison_delta_label or _format_signed(round(median_delta), ' pp'),
-            'delta_value': round(median_delta) if comparison_available else 0,
-            'trend_values': _daily_median_adoption_trend(rows),
+            'label': 'Avg daily adoption',
+            'value': f'{_round_integer_for_display(average_daily_adoption)}%',
+            'delta': comparison_delta_label or _format_signed(round(average_daily_adoption_delta), ' pp'),
+            'delta_value': round(average_daily_adoption_delta) if comparison_available else 0,
+            'trend_values': daily_adoption_trend,
             'trend_labels': _daily_trend_dates(rows, 'adoption'),
             'trend_format': 'percent',
+            'trend_label': 'Average page adoption',
+            'trend_scope': 'daily',
         },
         {
             'label': 'Most used page',
             'value': most_used['page_name'] if most_used else 'No data',
-            'delta': f"{_format_duration_kpi(most_used['engaged_seconds'])} engaged" if most_used else '',
+            'delta': f'{_format_duration_kpi(most_used_average_daily_engaged)} avg/day' if most_used else '',
             'delta_value': 0,
             'product_area_key': most_used['product_area_key'] if most_used else '',
             'page_rule_id': most_used.get('page_rule_id') if most_used else None,
-            'trend_values': [point['current'] for point in most_used['relative_change_series'].get('engaged', [])] if most_used else [],
+            'trend_values': most_used_daily_engaged,
             'trend_labels': [point['date'] for point in most_used['relative_change_series'].get('engaged', [])] if most_used else [],
             'trend_format': 'duration',
+            'trend_label': 'Daily engaged',
+            'trend_scope': 'daily',
         },
-        {
-            'label': 'Fastest-growing',
-            'value': fastest['page_name'] if fastest else 'No data',
-            'delta': comparison_delta_label or ('New companies' if fastest_is_new else (_format_signed(round(fastest_growth or 0), '%') + ' companies' if fastest else '')),
-            'delta_value': 0 if not comparison_available else (1 if fastest_is_new else (round(fastest_growth or 0) if fastest else 0)),
-            'product_area_key': fastest['product_area_key'] if fastest else '',
-            'page_rule_id': fastest.get('page_rule_id') if fastest else None,
-            'trend_values': [point['current'] for point in fastest['relative_change_series'].get('companies', [])] if fastest else [],
-            'trend_labels': [point['date'] for point in fastest['relative_change_series'].get('companies', [])] if fastest else [],
-            'trend_format': 'number',
-        },
+        fastest_kpi,
     ]
 
 
@@ -1397,14 +2378,18 @@ def _build_series(rows, metric):
     grouped_rows = {}
     for row in rows or []:
         key = _page_display_key(row)
+        product_area_key, product_area_name = _page_product_area_identity(row)
         current_total = _to_float(row.get(metric))
         group = grouped_rows.setdefault(
             key,
             {
+                'page_display_key': key,
                 'page_rule_id': row.get('page_rule_id') or _page_rule_id(row),
                 'page_rule_ids': [],
                 'page_name': _page_display_name(row),
                 'page_group': _page_display_group(row),
+                'product_area_key': product_area_key,
+                'product_area_name': product_area_name,
                 'total': 0,
                 'points': defaultdict(float),
                 'point_dates': [],
@@ -1423,6 +2408,8 @@ def _build_series(rows, metric):
             group['_lead_total'] = current_total
             group['page_rule_id'] = page_rule_id
             group['page_group'] = _page_display_group(row)
+            group['product_area_key'] = product_area_key
+            group['product_area_name'] = product_area_name
 
         for point in row.get('relative_change_series', {}).get(source_metric, []):
             point_date = point.get('date')
@@ -1442,10 +2429,13 @@ def _build_series(rows, metric):
     series = []
     for row in top_rows:
         series.append({
+            'page_display_key': row.get('page_display_key'),
             'page_rule_id': row.get('page_rule_id'),
             'page_rule_ids': row.get('page_rule_ids') or [],
             'page_name': row.get('page_name'),
             'page_group': row.get('page_group'),
+            'product_area_key': row.get('product_area_key'),
+            'product_area_name': row.get('product_area_name'),
             'total': _to_int(round(_to_float(row.get('total')))),
             'values': [_to_float(row.get('points', {}).get(label)) for label in labels],
         })
@@ -1466,6 +2456,8 @@ def _product_area_identity(item):
     key = (
         item.get('product_area_key')
         or item.get('productAreaKey')
+        or item.get('product_area_id')
+        or item.get('productAreaId')
         or item.get('key')
         or item.get('slug')
         or item.get('id')
@@ -1560,6 +2552,146 @@ def _project_product_area_options(project_id, observed_areas=None, *, include_un
     ]
 
 
+def apply_page_detail_product_area_colors(project_id, payload):
+    """Overlay live ProductArea colors onto a cached page-detail flow payload."""
+    if not isinstance(payload, dict):
+        return payload
+
+    page = dict(payload.get('page') or {})
+    flow = dict(payload.get('flow') or {})
+    previous_pages = [dict(item) for item in flow.get('previousPages') or [] if isinstance(item, dict)]
+    next_pages = [dict(item) for item in flow.get('nextPages') or [] if isinstance(item, dict)]
+    flow_links = [dict(item) for item in flow.get('links') or [] if isinstance(item, dict)]
+    sankey = dict(flow.get('sankey') or {})
+    sankey_links = [dict(item) for item in sankey.get('links') or [] if isinstance(item, dict)]
+    sankey_nodes = [dict(item) for item in sankey.get('nodes') or [] if isinstance(item, dict)]
+    observed_areas = []
+
+    def area_identity(key, name):
+        return {
+            'key': str(key or '').strip(),
+            'name': str(name or '').strip() or 'Unassigned',
+        }
+
+    def page_area(item):
+        return area_identity(
+            item.get('productAreaKey')
+            or item.get('product_area_key')
+            or item.get('productAreaId'),
+            item.get('productAreaName')
+            or item.get('product_area_name')
+            or item.get('productArea')
+            or item.get('product_area'),
+        )
+
+    def link_area(link, prefix):
+        camel_prefix = f'{prefix}ProductArea'
+        return area_identity(
+            link.get(f'{prefix}_product_area_key') or link.get(f'{camel_prefix}Key'),
+            link.get(f'{prefix}_product_area_name')
+            or link.get(f'{camel_prefix}Name')
+            or link.get(f'{prefix}_product_area')
+            or link.get(camel_prefix),
+        )
+
+    observed_areas.append(page_area(page))
+    for item in [*previous_pages, *next_pages]:
+        observed_areas.append(page_area(item))
+    for link in [*flow_links, *sankey_links]:
+        observed_areas.append(link_area(link, 'source'))
+        observed_areas.append(link_area(link, 'target'))
+
+    product_areas = _project_product_area_options(project_id, observed_areas)
+    color_lookup = build_product_area_color_lookup(product_areas, prefer_explicit=True)
+    area_by_page_name = {}
+
+    def resolved_area(area, index):
+        key, name = _product_area_identity(area)
+        color = product_area_color_from_lookup(
+            color_lookup,
+            {'key': key, 'name': name},
+            index,
+            prefer_explicit=True,
+        )
+        return {'key': key, 'name': name, 'color': color}
+
+    def decorate_link(link, index):
+        decorated = dict(link)
+        for offset, prefix in enumerate(('source', 'target')):
+            area = resolved_area(link_area(link, prefix), index + offset)
+            decorated[f'{prefix}_product_area_key'] = area['key']
+            decorated[f'{prefix}_product_area_name'] = area['name']
+            decorated[f'{prefix}_product_area'] = area['name']
+            decorated[f'{prefix}_product_area_color'] = area['color']
+            page_name = str(link.get(prefix) or '').strip()
+            if page_name:
+                area_by_page_name.setdefault(page_name.casefold(), area)
+        return decorated
+
+    flow_links = [decorate_link(link, index) for index, link in enumerate(flow_links)]
+    sankey_links = [decorate_link(link, index) for index, link in enumerate(sankey_links)]
+
+    current_area = resolved_area(page_area(page), 0)
+    page.update({
+        'productAreaId': current_area['key'],
+        'productAreaName': current_area['name'],
+        'productAreaColor': current_area['color'],
+    })
+    current_page_name = str(page.get('displayName') or page.get('pageName') or '').strip()
+    if current_page_name:
+        area_by_page_name[current_page_name.casefold()] = current_area
+
+    def decorate_flow_page(item, index):
+        decorated = dict(item)
+        page_name = str(item.get('pageName') or item.get('name') or '').strip()
+        item_area = page_area(item)
+        if item_area['name'] == 'Unassigned' and page_name:
+            item_area = area_by_page_name.get(page_name.casefold(), item_area)
+        area = resolved_area(item_area, index)
+        decorated.update({
+            'productAreaKey': area['key'],
+            'productAreaName': area['name'],
+            'productAreaColor': area['color'],
+        })
+        return decorated
+
+    previous_pages = [decorate_flow_page(item, index) for index, item in enumerate(previous_pages)]
+    next_pages = [decorate_flow_page(item, index) for index, item in enumerate(next_pages)]
+
+    decorated_nodes = []
+    for index, node in enumerate(sankey_nodes):
+        decorated = dict(node)
+        node_name = str(node.get('name') or '').strip()
+        node_area = page_area(node)
+        if node_area['name'] == 'Unassigned' and node_name:
+            node_area = area_by_page_name.get(node_name.casefold(), node_area)
+        area = resolved_area(node_area, index)
+        decorated.update({
+            'product_area_key': area['key'],
+            'product_area_name': area['name'],
+            'product_area_color': area['color'],
+            'color': area['color'],
+        })
+        decorated_nodes.append(decorated)
+
+    flow.update({
+        'previousPages': previous_pages,
+        'nextPages': next_pages,
+        'links': flow_links,
+        'sankey': {
+            **sankey,
+            'nodes': decorated_nodes,
+            'links': sankey_links,
+        },
+    })
+    return {
+        **payload,
+        'page': page,
+        'productAreas': product_areas,
+        'flow': flow,
+    }
+
+
 def _build_treemap(rows, active_companies_total=None, color_lookup=None):
     groups = {}
     total = 0
@@ -1594,7 +2726,7 @@ def _build_treemap(rows, active_companies_total=None, color_lookup=None):
             else _percent_change_value(engaged_seconds, row.get('previous_engaged_seconds'))
         )
         group = groups.setdefault(
-            page_group,
+            product_area_key,
             {
                 'name': page_group,
                 'page_group': page_group,
@@ -1657,13 +2789,24 @@ def _build_treemap(rows, active_companies_total=None, color_lookup=None):
     }
 
 
-def _build_sankey(project_id, timezone_name, start_date, end_date, color_lookup=None):
-    links = queries.fetch_all(queries.SANKEY_SQL, [project_id, timezone_name, start_date, timezone_name, end_date])
+def _build_sankey(project_id, timezone_name, start_date, end_date, color_lookup=None, *, cohort=None):
+    links = queries.fetch_all(
+        _analytics_sql(queries.SANKEY_SQL, queries.SANKEY_FILTERED_SQL, cohort),
+        _analytics_params(
+            project_id,
+            start_date,
+            end_date,
+            cohort=cohort,
+            timezone=timezone_name,
+        ),
+    )
     nodes = {}
     payload_links = []
     for index, link in enumerate(links):
-        source = link['from_page_name'] or link['from_page_key']
-        target = link['to_page_name'] or link['to_page_key']
+        source = link['from_page_key']
+        target = link['to_page_key']
+        source_label = link['from_page_name'] or source
+        target_label = link['to_page_name'] or target
         source_area = {
             'key': link.get('from_product_area_key') or 'unassigned',
             'name': link.get('from_product_area_name') or link.get('from_product_area_key') or 'Unassigned',
@@ -1686,6 +2829,7 @@ def _build_sankey(project_id, timezone_name, start_date, end_date, color_lookup=
         )
         nodes[source] = {
             'name': source,
+            'label': source_label,
             'page_key': link.get('from_page_key'),
             'product_area_key': link.get('from_product_area_key'),
             'product_area_name': link.get('from_product_area_name'),
@@ -1694,6 +2838,7 @@ def _build_sankey(project_id, timezone_name, start_date, end_date, color_lookup=
         }
         nodes[target] = {
             'name': target,
+            'label': target_label,
             'page_key': link.get('to_page_key'),
             'product_area_key': link.get('to_product_area_key'),
             'product_area_name': link.get('to_product_area_name'),
@@ -1703,6 +2848,8 @@ def _build_sankey(project_id, timezone_name, start_date, end_date, color_lookup=
         payload_links.append({
             'source': source,
             'target': target,
+            'sourceLabel': source_label,
+            'targetLabel': target_label,
             'source_page_key': link.get('from_page_key'),
             'target_page_key': link.get('to_page_key'),
             'source_product_area_key': source_area['key'],
@@ -1720,16 +2867,80 @@ def _build_sankey(project_id, timezone_name, start_date, end_date, color_lookup=
     return {'nodes': list(nodes.values()), 'links': payload_links}
 
 
-def _build_top_actions(project_id, start_date, end_date, previous_start, previous_end):
+def _build_two_way_movement(project_id, timezone_name, start_date, end_date, *, cohort=None):
     rows = queries.fetch_all(
-        queries.TOP_ACTIONS_SQL,
-        [
-            project_id, start_date, end_date,
-            project_id, previous_start, previous_end,
-            project_id, start_date, end_date,
-            project_id, previous_start, previous_end,
-        ],
+        _analytics_sql(queries.TWO_WAY_MOVEMENT_SQL, queries.TWO_WAY_MOVEMENT_FILTERED_SQL, cohort),
+        _analytics_params(
+            project_id,
+            start_date,
+            end_date,
+            cohort=cohort,
+            timezone=timezone_name,
+        ),
     )
+    payload_rows = []
+    for row in rows:
+        low_to_high = _to_int(row.get('low_to_high'))
+        high_to_low = _to_int(row.get('high_to_low'))
+        low_first = low_to_high >= high_to_low
+        page_a_prefix = 'page_low' if low_first else 'page_high'
+        page_b_prefix = 'page_high' if low_first else 'page_low'
+        reciprocity_pct = round(_to_float(row.get('reciprocity_pct')), 1)
+        label = 'Strong' if reciprocity_pct >= 70 else ('Moderate' if reciprocity_pct >= 40 else 'Mostly one-way')
+        payload_rows.append({
+            'page_a_id': str(row.get(f'{page_a_prefix}_id')),
+            'page_a_name': row.get(f'{page_a_prefix}_name') or 'Unnamed page',
+            'page_a_product_area_name': row.get(f'{page_a_prefix}_product_area_name') or 'Unassigned',
+            'page_b_id': str(row.get(f'{page_b_prefix}_id')),
+            'page_b_name': row.get(f'{page_b_prefix}_name') or 'Unnamed page',
+            'page_b_product_area_name': row.get(f'{page_b_prefix}_product_area_name') or 'Unassigned',
+            'a_to_b': low_to_high if low_first else high_to_low,
+            'b_to_a': high_to_low if low_first else low_to_high,
+            'total_transitions': _to_int(row.get('total_transitions')),
+            'reciprocal_volume': _to_int(row.get('reciprocal_volume')),
+            'reciprocity_pct': reciprocity_pct,
+            'direction_balance': round(_to_float(row.get('direction_balance')), 3),
+            'sessions_count': _to_int(row.get('sessions_count')),
+            'companies_count': _to_int(row.get('companies_count')),
+            'users_count': _to_int(row.get('users_count')),
+            'label': label,
+        })
+    return {'rows': payload_rows, 'limit': 10, 'total_pairs': len(payload_rows)}
+
+
+def _build_top_actions(
+    project_id,
+    start_date,
+    end_date,
+    previous_start,
+    previous_end,
+    *,
+    cohort=None,
+    timezone_name='UTC',
+):
+    if cohort is None:
+        rows = queries.fetch_all(
+            queries.TOP_ACTIONS_SQL,
+            [
+                project_id, start_date, end_date,
+                project_id, previous_start, previous_end,
+                project_id, start_date, end_date,
+                project_id, previous_start, previous_end,
+            ],
+        )
+    else:
+        rows = queries.fetch_all(
+            queries.TOP_ACTIONS_FILTERED_SQL,
+            _analytics_params(
+                project_id,
+                start_date,
+                end_date,
+                cohort=cohort,
+                timezone=timezone_name,
+                previous_start_date=previous_start,
+                previous_end_date=previous_end,
+            ),
+        )
     pages = {}
     for row in rows:
         page_key = row.get('page_key') or row.get('url_normalized')
@@ -1737,6 +2948,8 @@ def _build_top_actions(project_id, start_date, end_date, previous_start, previou
             page_key,
             {
                 'page_key': page_key,
+                'product_area_key': row.get('product_area_key') or '',
+                'product_area_name': row.get('product_area_name') or row.get('page_group') or '',
                 'url_normalized': row.get('url_normalized') or '',
                 'page_rule_id': row.get('page_rule_id'),
                 'page_group': row.get('page_group') or '',
@@ -1778,8 +2991,10 @@ def _build_top_actions_by_page_group(pages):
                 'element_key': action.get('element_key') or 'Unknown action',
                 'clicks': _to_int(action.get('clicks_count')),
                 'clicks_change_pct': _to_float(action.get('clicks_delta_pct')),
+                'clicks_change_label': action.get('clicks_delta_label'),
                 'visits_pct': _to_float(action.get('visits_pct')),
                 'visits_change_pp': _to_float(action.get('visits_pct_delta_pp')),
+                'visits_change_label': action.get('visits_pct_delta_label'),
             }
             for action in sorted(
                 page.get('actions') or [],
@@ -1791,6 +3006,9 @@ def _build_top_actions_by_page_group(pages):
             continue
         groups.append({
             'page_group': page.get('page_label') or page.get('url_normalized') or 'Unassigned',
+            'page_name': page.get('page_label') or page.get('url_normalized') or 'Unassigned',
+            'product_area_key': page.get('product_area_key') or '',
+            'product_area_name': page.get('product_area_name') or page.get('page_group') or 'Unassigned',
             'page_rule_id': str(page.get('page_rule_id') or page.get('page_key') or page.get('url_normalized') or ''),
             'actions': actions,
         })
@@ -1817,14 +3035,10 @@ def _build_top_clicked_elements(pages, limit=20):
     return sorted(elements.values(), key=lambda item: item['clicks'], reverse=True)[:limit]
 
 
-def _build_scatter(project_id, start_date, end_date, color_lookup=None):
+def _build_scatter(project_id, start_date, end_date, color_lookup=None, *, cohort=None):
     rows = queries.fetch_all(
-        queries.SCATTER_SQL,
-        [
-            project_id, start_date, end_date,
-            project_id, start_date, end_date,
-            project_id, start_date, end_date,
-        ],
+        _analytics_sql(queries.SCATTER_SQL, queries.SCATTER_FILTERED_SQL, cohort),
+        _analytics_params(project_id, start_date, end_date, cohort=cohort),
     )
     groups = {}
     for index, row in enumerate(rows):
@@ -1907,12 +3121,14 @@ def _empty_payload(project, range_key, start_date, end_date, previous_start, pre
         'rows': [],
         'change_aware_rows': [],
         'page_metrics_rows': [],
+        'kpi_daily_rows': [],
         'product_area_summary': [],
         'productAreas': [],
         'top_pages_by_visits_over_time': {'granularity': 'day', 'labels': [], 'series': []},
         'top_pages_by_engaged_time_over_time': {'granularity': 'day', 'labels': [], 'series': []},
         'engaged_time_treemap': {'total_engaged_seconds': 0, 'nodes': []},
         'sankey': {'nodes': [], 'links': []},
+        'two_way_movement': {'rows': [], 'limit': 10, 'total_pairs': 0},
         'top_actions_by_page': [],
         'top_actions_by_page_group': [],
         'company_engagement_by_product_area': [],
@@ -2000,6 +3216,8 @@ def overview_product_area_filter_options(payload):
 _PRODUCT_AREA_IDENTITY_FIELDS = (
     'product_area_key',
     'productAreaKey',
+    'product_area_id',
+    'productAreaId',
     'product_area_name',
     'productAreaName',
     'product_area',
@@ -2018,29 +3236,45 @@ def _has_product_area_identity(item, *, allow_name=False):
 
 def _overview_product_area_candidates(payload):
     candidates = []
-    candidate_by_token = {}
+    candidate_by_key = {}
+    candidate_indexes_by_name = defaultdict(set)
 
     def add(item, *, allow_name=False):
         if not _has_product_area_identity(item, allow_name=allow_name):
             return
 
         key, name = _product_area_identity(item)
-        tokens = {
-            _normalized_filter_token(key),
-            _normalized_filter_token(name),
-        }
-        tokens.discard('')
-        existing_index = next(
-            (candidate_by_token[token] for token in tokens if token in candidate_by_token),
-            None,
+        key_token = _normalized_filter_token(key)
+        name_token = _normalized_filter_token(name)
+        has_explicit_key = any(
+            str(item.get(field) or '').strip()
+            for field in (
+                'product_area_key',
+                'productAreaKey',
+                'product_area_id',
+                'productAreaId',
+                'key',
+                'slug',
+            )
         )
+        existing_index = candidate_by_key.get(key_token)
+        if existing_index is None and not has_explicit_key and name_token:
+            name_matches = candidate_indexes_by_name.get(name_token, set())
+            if len(name_matches) == 1:
+                existing_index = next(iter(name_matches))
+            elif len(name_matches) > 1:
+                # A name-only legacy item cannot be assigned safely when two
+                # real Product Areas intentionally share that display name.
+                return
         explicit_color = explicit_product_area_color(item)
         if existing_index is not None:
             candidate = candidates[existing_index]
             if explicit_color and not explicit_product_area_color(candidate):
                 candidate['color'] = explicit_color
-            for token in tokens:
-                candidate_by_token[token] = existing_index
+            if key_token:
+                candidate_by_key[key_token] = existing_index
+            if name_token:
+                candidate_indexes_by_name[name_token].add(existing_index)
             return
 
         candidate = {
@@ -2060,8 +3294,10 @@ def _overview_product_area_candidates(payload):
                 candidate[field] = item[field]
         candidate_index = len(candidates)
         candidates.append(candidate)
-        for token in tokens:
-            candidate_by_token[token] = candidate_index
+        if key_token:
+            candidate_by_key[key_token] = candidate_index
+        if name_token:
+            candidate_indexes_by_name[name_token].add(candidate_index)
 
     for item in payload.get('productAreas') or []:
         add(item, allow_name=True)
@@ -2280,17 +3516,31 @@ def _matches_product_area_filter(item, selection):
         return False
 
     key, name = _product_area_filter_identity(item)
-    values = [
-        key,
-        name,
+    explicit_key_values = [
         item.get('product_area_key'),
         item.get('productAreaKey'),
+        item.get('product_area_id'),
+        item.get('productAreaId'),
+        item.get('key'),
+        item.get('slug'),
+    ]
+    explicit_key_tokens = {
+        _normalized_filter_token(value)
+        for value in explicit_key_values
+        if str(value or '').strip()
+    }
+    if explicit_key_tokens:
+        return bool(explicit_key_tokens & selection['keys'])
+
+    legacy_values = [
+        key,
+        name,
         item.get('product_area_name'),
         item.get('productAreaName'),
         item.get('product_area'),
         item.get('page_group'),
     ]
-    tokens = {_normalized_filter_token(value) for value in values if str(value or '').strip()}
+    tokens = {_normalized_filter_token(value) for value in legacy_values if str(value or '').strip()}
     return bool(tokens & selection['keys'] or tokens & selection['names'])
 
 
@@ -2391,6 +3641,23 @@ def _filter_sankey_by_product_area(sankey, selection):
     }
 
 
+def _filter_two_way_movement_by_product_area(movement, selection):
+    if not isinstance(movement, dict):
+        return {'rows': [], 'limit': 10, 'total_pairs': 0}
+    rows = [
+        copy.deepcopy(row)
+        for row in movement.get('rows') or []
+        if isinstance(row, dict)
+        and _matches_product_area_filter(
+            {'product_area_name': row.get('page_a_product_area_name')}, selection,
+        )
+        and _matches_product_area_filter(
+            {'product_area_name': row.get('page_b_product_area_name')}, selection,
+        )
+    ]
+    return {**copy.deepcopy(movement), 'rows': rows, 'total_pairs': len(rows)}
+
+
 def _rescale_change_row_bars(rows):
     prepared = [
         _ensure_change_row_contract(dict(row))
@@ -2424,161 +3691,119 @@ def _rescale_change_row_bars(rows):
     return [_strip_relative_change_series(row) for row in prepared]
 
 
-def _filter_kpi_series_value(time_series, row):
-    if not isinstance(time_series, dict):
-        return []
-
-    page_rule_id = str(row.get('page_rule_id') or '')
-    page_name = str(row.get('page_name') or '')
-    for series in time_series.get('series') or []:
-        rule_ids = [str(value) for value in series.get('page_rule_ids') or []]
-        if (
-            page_rule_id
-            and (
-                str(series.get('page_rule_id') or '') == page_rule_id
-                or page_rule_id in rule_ids
-            )
-        ):
-            return series.get('values') or []
-        if page_name and str(series.get('page_name') or '') == page_name:
-            return series.get('values') or []
-    return []
-
-
-def _compact_trend_values(row, metric):
-    if not isinstance(row, dict):
-        return []
-
-    trends = row.get('trends')
-    if isinstance(trends, dict) and isinstance(trends.get(metric), list):
-        return [_to_float(value) for value in trends.get(metric) or []]
-
-    if metric == 'companies' and isinstance(row.get('trend_values'), list):
-        return [_to_float(value) for value in row.get('trend_values') or []]
-
-    return _trend_values(row, metric)
-
-
-def _adopted_pages_trend_from_rows(rows):
-    trends = [_compact_trend_values(row, 'companies') for row in rows]
-    trend_lengths = [len(trend) for trend in trends]
-    if not trend_lengths:
-        return []
-
-    length = max(trend_lengths)
-    values = []
-    for index in range(length):
-        values.append(sum(
-            1
-            for trend in trends
-            if _to_float(trend[index] if index < len(trend) else 0) > 0
-        ))
-    return values
-
-
-def _median_compact_trend_from_rows(rows, metric):
-    trends = [_compact_trend_values(row, metric) for row in rows]
-    trend_lengths = [len(trend) for trend in trends]
-    if not trend_lengths:
-        return []
-
-    values = []
-    for index in range(max(trend_lengths)):
-        point_values = []
-        for trend in trends:
-            if index >= len(trend):
-                continue
-            current_value = _to_float(trend[index])
-            if current_value > 0:
-                point_values.append(current_value)
-        values.append(round(_median(point_values), 1))
-    return values
-
-
-def _filtered_kpi_trend_values(row, metric, fallback_time_series=None):
-    values = _compact_trend_values(row, metric)
-    if values:
-        return values
-    if fallback_time_series:
-        return _filter_kpi_series_value(fallback_time_series, row)
-    return []
-
-
 def _build_filtered_kpis(payload, rows):
     if not rows:
         return []
 
+    current_rows = [
+        row
+        for row in rows
+        if not row.get('_previous_only')
+    ]
     comparison_available = any(
         row.get('comparison_available') is not False and row.get('comparisonAvailable') is not False
         for row in rows
     )
-    adopted_pages = sum(1 for row in rows if _to_int(row.get('companies_count')) > 0)
-    previous_adopted_pages = sum(
-        1
-        for row in rows
-        if _previous_metric_value(row.get('companies_count'), {'value': row.get('companies_change_pct'), 'label': '%'}) > 0
+    daily_adopted_pages_trend = _daily_adopted_pages_trend(rows)
+    previous_daily_adopted_pages_trend = _daily_adopted_pages_trend(
+        rows,
+        'previous',
     )
-    median_adoption = _median([_to_float(row.get('adoption_pct')) for row in rows if _to_int(row.get('visits_count')) > 0])
-    previous_median_adoption = _median([
-        max(0, _to_float(row.get('adoption_pct')) - _to_float(row.get('adoption_change_pp')))
-        for row in rows
-        if _to_int(row.get('visits_count')) > 0
-    ])
-    most_used = max(rows, key=lambda row: _to_int(row.get('engaged_seconds')), default=None)
-    fastest = max(rows, key=lambda row: _to_float(row.get('companies_change_pct')), default=None)
+    average_daily_adopted_pages = _average_trend_value(
+        daily_adopted_pages_trend,
+    )
+    previous_average_daily_adopted_pages = _average_trend_value(
+        previous_daily_adopted_pages_trend,
+    )
+    daily_adoption_trend = _daily_average_adoption_trend(rows)
+    previous_daily_adoption_trend = _daily_average_adoption_trend(rows, 'previous')
+    average_daily_adoption = _average_trend_value(daily_adoption_trend)
+    previous_average_daily_adoption = _average_trend_value(previous_daily_adoption_trend)
+    most_used = max(
+        current_rows,
+        key=lambda row: _to_int(row.get('engaged_seconds')),
+        default=None,
+    )
+    most_used_daily_engaged = (
+        _daily_additive_trend_values(most_used, 'engaged')
+        if most_used
+        else []
+    )
+    most_used_average_daily_engaged = _average_trend_value(
+        most_used_daily_engaged,
+        decimal_places=2,
+    )
+
+    def previous_companies_for_row(row):
+        if row.get('previous_companies_count') is not None:
+            return row.get('previous_companies_count')
+        return _previous_metric_value(
+            row.get('companies_count'),
+            {'value': row.get('companies_change_pct'), 'label': '%'},
+        )
+
+    fastest, _fastest_growth, fastest_is_new = _select_fastest_growing_row(
+        current_rows,
+        previous_companies_for_row,
+    )
     trend_labels = (payload.get('top_pages_by_visits_over_time') or {}).get('labels') or []
     comparison_delta_label = None if comparison_available else 'n/a'
-
-    adopted_delta = adopted_pages - previous_adopted_pages
-    median_delta = round(_to_float(median_adoption) - _to_float(previous_median_adoption), 1)
-    engaged_time_series = payload.get('top_pages_by_engaged_time_over_time') or {}
-    product_area_summary = payload.get('product_area_summary') or []
-    median_adoption_trend = (
-        _median_compact_trend_from_rows(rows, 'adoption')
-        or _median_compact_trend_from_rows(product_area_summary, 'adoption')
+    fastest_kpi = _build_fastest_growing_kpi(
+        fastest,
+        fastest_is_new,
+        previous_companies_for_row(fastest) if fastest else 0,
+        comparison_available=comparison_available,
     )
+
+    average_daily_adopted_pages_delta = round(
+        average_daily_adopted_pages - previous_average_daily_adopted_pages,
+        1,
+    )
+    average_daily_adoption_delta = round(
+        average_daily_adoption - previous_average_daily_adoption,
+        1,
+    )
+    engaged_time_series = payload.get('top_pages_by_engaged_time_over_time') or {}
 
     return [
         {
-            'label': 'Adopted pages',
-            'value': str(adopted_pages),
-            'delta': comparison_delta_label or f'{_format_signed(adopted_delta, "")} vs previous',
-            'delta_value': adopted_delta if comparison_available else 0,
-            'trend_values': _adopted_pages_trend_from_rows(rows),
+            'label': 'Avg daily adopted pages',
+            'value': _format_decimal_for_display(average_daily_adopted_pages, 1),
+            'delta': comparison_delta_label or (
+                f'{_format_signed_decimal(average_daily_adopted_pages_delta, "", 1)} vs previous'
+            ),
+            'delta_value': average_daily_adopted_pages_delta if comparison_available else 0,
+            'trend_values': daily_adopted_pages_trend,
             'trend_labels': trend_labels,
             'trend_format': 'number',
+            'trend_label': 'Adopted pages',
+            'trend_scope': 'daily',
         },
         {
-            'label': 'Median adoption',
-            'value': f'{round(median_adoption)}%',
-            'delta': comparison_delta_label or _format_signed(round(median_delta), ' pp'),
-            'delta_value': round(median_delta) if comparison_available else 0,
-            'trend_values': median_adoption_trend,
+            'label': 'Avg daily adoption',
+            'value': f'{_round_integer_for_display(average_daily_adoption)}%',
+            'delta': comparison_delta_label or _format_signed(round(average_daily_adoption_delta), ' pp'),
+            'delta_value': round(average_daily_adoption_delta) if comparison_available else 0,
+            'trend_values': daily_adoption_trend,
             'trend_labels': trend_labels,
             'trend_format': 'percent',
+            'trend_label': 'Average page adoption',
+            'trend_scope': 'daily',
         },
         {
             'label': 'Most used page',
             'value': most_used['page_name'] if most_used else 'No data',
-            'delta': f"{_format_duration_kpi(most_used['engaged_seconds'])} engaged" if most_used else '',
+            'delta': f'{_format_duration_kpi(most_used_average_daily_engaged)} avg/day' if most_used else '',
             'delta_value': 0,
             'product_area_key': most_used.get('product_area_key') if most_used else '',
             'page_rule_id': most_used.get('page_rule_id') if most_used else None,
-            'trend_values': _filtered_kpi_trend_values(most_used, 'engaged', engaged_time_series) if most_used else [],
+            'trend_values': most_used_daily_engaged,
             'trend_labels': (engaged_time_series or {}).get('labels') or [],
             'trend_format': 'duration',
+            'trend_label': 'Daily engaged',
+            'trend_scope': 'daily',
         },
-        {
-            'label': 'Fastest-growing',
-            'value': fastest['page_name'] if fastest else 'No data',
-            'delta': comparison_delta_label or (_format_signed(round(_to_float(fastest.get('companies_change_pct'))), '%') + ' companies' if fastest else ''),
-            'delta_value': round(_to_float(fastest.get('companies_change_pct'))) if comparison_available and fastest else 0,
-            'product_area_key': fastest.get('product_area_key') if fastest else '',
-            'page_rule_id': fastest.get('page_rule_id') if fastest else None,
-            'trend_values': _filtered_kpi_trend_values(fastest, 'companies') if fastest else [],
-            'trend_labels': trend_labels,
-            'trend_format': 'number',
-        },
+        fastest_kpi,
     ]
 
 
@@ -2603,6 +3828,11 @@ def filter_overview_payload_by_product_areas(payload, selected_keys):
         for row in payload.get('page_metrics_rows') or []
         if _matches_product_area_filter(row, selection)
     ])
+    kpi_daily_rows = [
+        copy.deepcopy(row)
+        for row in payload.get('kpi_daily_rows') or page_metrics_rows
+        if _matches_product_area_filter(row, selection)
+    ]
     product_area_summary = _rescale_change_row_bars([
         row
         for row in payload.get('product_area_summary') or []
@@ -2622,6 +3852,7 @@ def filter_overview_payload_by_product_areas(payload, selected_keys):
     payload['rows'] = rows
     payload['change_aware_rows'] = change_rows
     payload['page_metrics_rows'] = page_metrics_rows
+    payload['kpi_daily_rows'] = kpi_daily_rows
     payload['product_area_summary'] = product_area_summary
     payload['productAreas'] = [
         copy.deepcopy(area)
@@ -2641,12 +3872,18 @@ def filter_overview_payload_by_product_areas(payload, selected_keys):
         selection,
     )
     payload['sankey'] = _filter_sankey_by_product_area(payload.get('sankey'), selection)
+    payload['two_way_movement'] = _filter_two_way_movement_by_product_area(
+        payload.get('two_way_movement'), selection,
+    )
     payload['top_actions_by_page'] = top_actions
     payload['top_actions_by_page_group'] = _build_top_actions_by_page_group(top_actions)
     payload['company_engagement_by_product_area'] = company_engagement
     payload['company_engagement_by_page_group'] = _build_company_engagement_by_page_group(company_engagement)
     payload['top_clicked_elements'] = _build_top_clicked_elements(top_actions)
-    payload['kpis'] = _build_filtered_kpis(payload, page_metrics_rows or change_rows)
+    payload['kpis'] = _build_filtered_kpis(
+        payload,
+        kpi_daily_rows or page_metrics_rows or change_rows,
+    )
     payload['product_area_filter'] = {
         'selected_keys': [option['key'] for option in selection['options']],
         'selected_names': [option['name'] for option in selection['options']],
@@ -2670,6 +3907,8 @@ def normalize_overview_payload(payload):
     project = payload.setdefault('project', {})
 
     change_rows = payload.get('change_aware_rows')
+    if not isinstance(change_rows, list):
+        change_rows = payload.get('rows')
     change_rows = change_rows if isinstance(change_rows, list) else []
     full_change_rows = [
         _ensure_change_row_contract(dict(row))
@@ -2690,6 +3929,17 @@ def normalize_overview_payload(payload):
     payload['page_metrics_rows'] = [
         _strip_for_overview_row(row)
         for row in full_page_metrics_rows
+    ]
+    kpi_daily_rows = payload.get('kpi_daily_rows')
+    kpi_daily_rows = (
+        kpi_daily_rows
+        if isinstance(kpi_daily_rows, list)
+        else full_page_metrics_rows
+    )
+    payload['kpi_daily_rows'] = [
+        _strip_for_overview_row(_ensure_change_row_contract(dict(row)))
+        for row in kpi_daily_rows
+        if isinstance(row, dict)
     ]
 
     rows = payload.get('rows')
@@ -2725,6 +3975,7 @@ def normalize_overview_payload(payload):
         payload.setdefault('engaged_time_treemap', {'total_engaged_seconds': 0, 'nodes': []})
 
     payload.setdefault('sankey', {'nodes': [], 'links': []})
+    payload.setdefault('two_way_movement', {'rows': [], 'limit': 10, 'total_pairs': 0})
 
     top_actions = payload.get('top_actions_by_page')
     top_actions = top_actions if isinstance(top_actions, list) else []
@@ -2770,12 +4021,11 @@ def _detail_route(row):
 
 def _detail_format_value(value, value_type):
     if value_type == 'percent':
-        return f'{round(_to_float(value))}%'
+        return f'{_round_integer_for_display(value)}%'
     if value_type == 'duration':
         return _format_duration(_to_float(value))
     if value_type == 'ratio':
-        value = _to_float(value)
-        return f'{value:.1f}'
+        return _format_decimal_for_display(value, 1)
     return f'{_to_int(round(_to_float(value))):,}'
 
 
@@ -2978,6 +4228,9 @@ def _zero_detail_change_row(
         'clicks_per_visit': 0,
         'top_company_id': previous_row.get('top_company_id'),
         'top_company_name': previous_row.get('top_company_name') or '',
+        'previous_companies_count': previous_companies,
+        'previous_adoption_pct': previous_adoption,
+        'previous_visits_count': previous_visits,
         'deltas': {
             'companies': _delta_pct(0, previous_companies),
             'adoption': _delta_pp(0, previous_adoption),
@@ -2990,6 +4243,10 @@ def _zero_detail_change_row(
             'clicks_per_visit': _delta_pct(0, previous_clicks_per_visit),
         },
         'relative_change_series': {},
+        '_period_to_date_trends': {
+            metric: [0 for _current_date in _date_range(start_date, end_date)]
+            for metric in PAGE_DETAIL_TREND_METRICS
+        },
     }
     row['bars'] = {
         'companies': 0,
@@ -3038,48 +4295,21 @@ def _select_detail_peer_rows(rows, current_row, limit=10):
     return selected
 
 
-def _daily_detail_metric_value(row, metric_key):
-    if not row:
-        return None if metric_key in {'avg_visit', 'clicks_per_visit', 'interaction'} else 0
-
-    visits = _to_int(row.get('visits_count'))
-    if metric_key == 'companies':
-        return _to_int(row.get('companies_count_daily'))
-    if metric_key == 'users':
-        return _to_int(row.get('users_count_daily'))
-    if metric_key == 'visits':
-        return visits
-    if metric_key == 'engaged':
-        return _to_int(row.get('engaged_seconds'))
-    if metric_key == 'avg_visit':
-        return None if visits <= 0 else _ratio(row.get('engaged_seconds'), visits)
-    if metric_key == 'clicks_per_visit':
-        return None if visits <= 0 else _ratio(row.get('click_count'), visits)
-    if metric_key == 'interaction':
-        return None if visits <= 0 else _pct(row.get('visits_with_click_count'), visits)
-    if metric_key == 'adoption':
-        denominator = _to_int(row.get('active_companies_count'))
-        return _bounded_pct(row.get('companies_count_daily'), denominator)
-    if metric_key == 'penetration':
-        denominator = _to_int(row.get('active_users_count'))
-        return _bounded_pct(row.get('users_count_daily'), denominator)
-    return 0
-
-
-def _daily_detail_series(row, metric_key, start_date, end_date, daily_rows):
-    row_key = row.get('row_key') or _page_metric_key(row)
+def _period_to_date_detail_series(row, metric_key, start_date, end_date):
+    dates = list(_date_range(start_date, end_date))
+    values = _period_to_date_trend_values(row, metric_key)
     return [
         {
             'date': current_date.isoformat(),
-            'value': _daily_detail_metric_value(daily_rows.get((current_date, row_key)), metric_key),
+            'value': values[index] if index < len(values) else 0,
         }
-        for current_date in _date_range(start_date, end_date)
+        for index, current_date in enumerate(dates)
     ]
 
 
-def _detail_benchmark_series(rows, metric_key, start_date, end_date, daily_rows):
+def _detail_benchmark_series(rows, metric_key, start_date, end_date):
     source_series = [
-        _daily_detail_series(row, metric_key, start_date, end_date, daily_rows)
+        _period_to_date_detail_series(row, metric_key, start_date, end_date)
         for row in rows or []
     ]
     if not source_series:
@@ -3101,7 +4331,7 @@ def _detail_benchmark_series(rows, metric_key, start_date, end_date, daily_rows)
     return result
 
 
-def _detail_metric_payload(row, peers, benchmark_rows, metric_config, start_date, end_date, daily_rows):
+def _detail_metric_payload(row, peers, benchmark_rows, metric_config, start_date, end_date):
     metric_key = metric_config['key']
     value = row.get(metric_config['source'])
     delta = row.get('deltas', {}).get(metric_key, {})
@@ -3129,23 +4359,24 @@ def _detail_metric_payload(row, peers, benchmark_rows, metric_config, start_date
         'comparisonAvailable': comparison_available,
         'comparison_available': comparison_available,
         'valueType': metric_config['value_type'],
-        'dailySeries': _daily_detail_series(row, metric_key, start_date, end_date, daily_rows),
+        'dailySeries': _period_to_date_detail_series(row, metric_key, start_date, end_date),
         'peerSeries': [
             {
                 'pageId': peer.get('page_rule_id'),
                 'pageName': peer.get('page_name') or peer.get('page_rule_id'),
                 'productAreaName': peer.get('product_area_name') or peer.get('page_group'),
-                'dailySeries': _daily_detail_series(peer, metric_key, start_date, end_date, daily_rows),
+                'dailySeries': _period_to_date_detail_series(peer, metric_key, start_date, end_date),
             }
             for peer in peers
         ],
-        'benchmarkSeries': _detail_benchmark_series(benchmark_rows, metric_key, start_date, end_date, daily_rows),
+        'benchmarkSeries': _detail_benchmark_series(benchmark_rows, metric_key, start_date, end_date),
         'benchmarkEligiblePeerCount': len(benchmark_rows or []),
     }
 
 
 def _detail_related_page_payload(row, current_page_id):
     comparison_available = row.get('comparison_available', row.get('comparisonAvailable', True)) is not False
+    deltas = row.get('deltas') or {}
 
     return {
         'id': row.get('page_rule_id'),
@@ -3159,16 +4390,22 @@ def _detail_related_page_payload(row, current_page_id):
         'comparison_available': comparison_available,
         'companies': _to_int(row.get('companies_count')),
         'companiesChange': _to_float(row.get('companies_change_pct')),
+        'companiesChangeLabel': (deltas.get('companies') or {}).get('label'),
         'adoption': _to_float(row.get('adoption_pct')),
         'adoptionChange': _to_float(row.get('adoption_change_pp')),
+        'adoptionChangeLabel': (deltas.get('adoption') or {}).get('label'),
         'users': _to_int(row.get('users_count')),
         'usersChange': _to_float(row.get('users_change_pct')),
+        'usersChangeLabel': (deltas.get('users') or {}).get('label'),
         'visits': _to_int(row.get('visits_count')),
         'visitsChange': _to_float(row.get('visits_change_pct')),
+        'visitsChangeLabel': (deltas.get('visits') or {}).get('label'),
         'engaged': _to_int(row.get('engaged_seconds')),
         'engagedChange': _to_float(row.get('engaged_change_pct')),
+        'engagedChangeLabel': (deltas.get('engaged') or {}).get('label'),
         'interaction': _to_float(row.get('interaction_pct')),
         'interactionChange': _to_float(row.get('interaction_change_pp')),
+        'interactionChangeLabel': (deltas.get('interaction') or {}).get('label'),
         'engagedLabel': row.get('engaged_label') or _format_duration(row.get('engaged_seconds')),
     }
 
@@ -3218,26 +4455,29 @@ def _dedupe_detail_related_pages(rows, current_page_id):
         group['isCurrent'] = group.get('isCurrent') or str(page_id or '') == str(current_page_id or '')
         group['visits'] += visits
         group['engaged'] += engaged
-        group['_previous_visits'] += _previous_from_percent_change(visits, row.get('visitsChange'))
-        group['_previous_engaged'] += _previous_from_percent_change(engaged, row.get('engagedChange'))
+        group['_previous_visits'] += 0 if row.get('visitsChangeLabel') == 'New' else _previous_from_percent_change(visits, row.get('visitsChange'))
+        group['_previous_engaged'] += 0 if row.get('engagedChangeLabel') == 'New' else _previous_from_percent_change(engaged, row.get('engagedChange'))
 
         companies = _to_int(row.get('companies'))
         if companies > group['_companies_value']:
             group['_companies_value'] = companies
             group['companies'] = companies
             group['companiesChange'] = _to_float(row.get('companiesChange'))
+            group['companiesChangeLabel'] = row.get('companiesChangeLabel')
 
         adoption = _to_float(row.get('adoption'))
         if adoption > group['_adoption_value']:
             group['_adoption_value'] = adoption
             group['adoption'] = adoption
             group['adoptionChange'] = _to_float(row.get('adoptionChange'))
+            group['adoptionChangeLabel'] = row.get('adoptionChangeLabel')
 
         users = _to_int(row.get('users'))
         if users > group['_users_value']:
             group['_users_value'] = users
             group['users'] = users
             group['usersChange'] = _to_float(row.get('usersChange'))
+            group['usersChangeLabel'] = row.get('usersChangeLabel')
 
         weight = max(visits, 1)
         group['_interaction_weight'] += weight
@@ -3254,8 +4494,14 @@ def _dedupe_detail_related_pages(rows, current_page_id):
             group.pop('_interaction_total', None)
             group.pop('_interaction_change_total', None)
 
-        group['visitsChange'] = _percent_change_value(group.get('visits'), group.pop('_previous_visits', 0))
-        group['engagedChange'] = _percent_change_value(group.get('engaged'), group.pop('_previous_engaged', 0))
+        previous_visits = group.pop('_previous_visits', 0)
+        visits_delta = _delta_pct(group.get('visits'), previous_visits)
+        group['visitsChange'] = _to_float(visits_delta.get('value'))
+        group['visitsChangeLabel'] = visits_delta.get('label')
+        previous_engaged = group.pop('_previous_engaged', 0)
+        engaged_delta = _delta_pct(group.get('engaged'), previous_engaged)
+        group['engagedChange'] = _to_float(engaged_delta.get('value'))
+        group['engagedChangeLabel'] = engaged_delta.get('label')
         group['engagedLabel'] = _format_duration(group.get('engaged'))
         for field_name in ('_leader_visits', '_companies_value', '_adoption_value', '_users_value'):
             group.pop(field_name, None)
@@ -3347,6 +4593,7 @@ def _detail_user_name(user_name, user_id, company_name=''):
 
 
 def _build_detail_companies(project_id, row, start_date, end_date, previous_start, previous_end, limit=None):
+    comparison_available = row.get('comparison_available', row.get('comparisonAvailable', True)) is not False
     current_rows = _aggregate_company_detail_rows(project_id, row, start_date, end_date, limit=limit)
     company_ids = [item.get('company_id') for item in current_rows if item.get('company_id')]
     previous_rows = _aggregate_company_detail_rows(
@@ -3370,24 +4617,36 @@ def _build_detail_companies(project_id, row, start_date, end_date, previous_star
         previous_interaction = _pct(previous_item.get('visits_with_click'), previous_item.get('visits'))
         avg_user = _ratio(engaged, users)
         previous_avg_user = _ratio(previous_item.get('engaged'), previous_item.get('users'))
+        users_delta = _delta_pct(users, previous_item.get('users'))
+        visits_delta = _delta_pct(visits, previous_item.get('visits'))
+        engaged_delta = _delta_pct(engaged, previous_item.get('engaged'))
+        avg_user_delta = _delta_pct(avg_user, previous_avg_user)
+        interaction_delta = _delta_pp(interaction, previous_interaction)
 
         companies.append({
             'id': company_id,
             'companyId': company_id,
             'company': item.get('company_name_sample') or company_id or 'Unknown company',
+            'comparisonAvailable': comparison_available,
+            'comparison_available': comparison_available,
             'users': users,
-            'usersChange': _percent_delta_from_lookup(users, previous_by_company, company_id, 'users'),
+            'usersChange': _to_float(users_delta.get('value')),
+            'usersChangeLabel': users_delta.get('label'),
             'pagePenetration': 0,
             'pagePenetrationChange': 0,
             'visits': visits,
-            'visitsChange': _percent_delta_from_lookup(visits, previous_by_company, company_id, 'visits'),
+            'visitsChange': _to_float(visits_delta.get('value')),
+            'visitsChangeLabel': visits_delta.get('label'),
             'engagedSeconds': engaged,
-            'engagedChange': _percent_delta_from_lookup(engaged, previous_by_company, company_id, 'engaged'),
+            'engagedChange': _to_float(engaged_delta.get('value')),
+            'engagedChangeLabel': engaged_delta.get('label'),
             'engaged': _format_duration(engaged),
             'avgUser': _format_duration(avg_user),
-            'avgUserChange': _to_float(_delta_pct(avg_user, previous_avg_user)['value']),
+            'avgUserChange': _to_float(avg_user_delta.get('value')),
+            'avgUserChangeLabel': avg_user_delta.get('label'),
             'interaction': interaction,
-            'interactionChange': _to_float(_delta_pp(interaction, previous_interaction)['value']),
+            'interactionChange': _to_float(interaction_delta.get('value')),
+            'interactionChangeLabel': interaction_delta.get('label'),
             'clicks': clicks,
             'lastSeen': '-',
         })
@@ -3397,6 +4656,7 @@ def _build_detail_companies(project_id, row, start_date, end_date, previous_star
 
 
 def _build_detail_champions(project_id, row, start_date, end_date, previous_start, previous_end, limit=None):
+    comparison_available = row.get('comparison_available', row.get('comparisonAvailable', True)) is not False
     current_rows = _aggregate_user_detail_rows(project_id, row, start_date, end_date, limit=limit)
     user_ids = [item.get('user_id') for item in current_rows if item.get('user_id')]
     company_ids = [item.get('company_id') for item in current_rows if item.get('company_id')]
@@ -3418,6 +4678,10 @@ def _build_detail_champions(project_id, row, start_date, end_date, previous_star
         visits = _to_int(item.get('visits'))
         engaged = _to_int(item.get('engaged'))
         clicks = _to_int(item.get('clicks'))
+        previous_item = previous_by_user.get(user_id, {})
+        engaged_delta = _delta_pct(engaged, previous_item.get('engaged'))
+        visits_delta = _delta_pct(visits, previous_item.get('visits'))
+        clicks_delta = _delta_pct(clicks, previous_item.get('clicks'))
 
         champions.append({
             'id': user_id,
@@ -3425,14 +4689,19 @@ def _build_detail_champions(project_id, row, start_date, end_date, previous_star
             'companyId': company_id,
             'user': _detail_user_name(item.get('user_name_sample'), user_id, company_name if company_name != company_id else ''),
             'company': company_name,
+            'comparisonAvailable': comparison_available,
+            'comparison_available': comparison_available,
             'engagedSeconds': engaged,
-            'engagedChange': _percent_delta_from_lookup(engaged, previous_by_user, user_id, 'engaged'),
+            'engagedChange': _to_float(engaged_delta.get('value')),
+            'engagedChangeLabel': engaged_delta.get('label'),
             'engaged': _format_duration(engaged),
             'visits': visits,
-            'visitsChange': _percent_delta_from_lookup(visits, previous_by_user, user_id, 'visits'),
+            'visitsChange': _to_float(visits_delta.get('value')),
+            'visitsChangeLabel': visits_delta.get('label'),
             'avgVisit': _format_duration(_ratio(engaged, visits)),
             'clicks': clicks,
-            'clicksChange': _percent_delta_from_lookup(clicks, previous_by_user, user_id, 'clicks'),
+            'clicksChange': _to_float(clicks_delta.get('value')),
+            'clicksChangeLabel': clicks_delta.get('label'),
             'lastSeen': '-',
         })
 
@@ -3457,6 +4726,7 @@ def _aggregate_action_detail_rows(project_id, row, start_date, end_date, *, elem
 
 
 def _build_detail_actions(project_id, row, start_date, end_date, previous_start, previous_end, limit=20):
+    comparison_available = row.get('comparison_available', row.get('comparisonAvailable', True)) is not False
     current_rows = _aggregate_action_detail_rows(project_id, row, start_date, end_date, limit=limit)
     element_keys = [item.get('element_key') for item in current_rows if item.get('element_key')]
     previous_rows = _aggregate_action_detail_rows(
@@ -3479,17 +4749,27 @@ def _build_detail_actions(project_id, row, start_date, end_date, previous_start,
         clicks = _to_int(item.get('clicks'))
         users = _to_int(item.get('users'))
         companies = _to_int(item.get('companies'))
+        clicks_delta = _delta_pct(clicks, previous_item.get('clicks'))
+        visits_pct_delta = _delta_pp(visits_pct, previous_visits_pct)
+        users_delta = _delta_pct(users, previous_item.get('users'))
+        companies_delta = _delta_pct(companies, previous_item.get('companies'))
 
         actions.append({
             'action': action,
+            'comparisonAvailable': comparison_available,
+            'comparison_available': comparison_available,
             'clicks': clicks,
-            'clicksChange': _to_float(_delta_pct(clicks, previous_item.get('clicks'))['value']),
+            'clicksChange': _to_float(clicks_delta.get('value')),
+            'clicksChangeLabel': clicks_delta.get('label'),
             'visitsPct': visits_pct,
-            'visitsPctChange': _to_float(_delta_pp(visits_pct, previous_visits_pct)['value']),
+            'visitsPctChange': _to_float(visits_pct_delta.get('value')),
+            'visitsPctChangeLabel': visits_pct_delta.get('label'),
             'users': users,
-            'usersChange': _to_float(_delta_pct(users, previous_item.get('users'))['value']),
+            'usersChange': _to_float(users_delta.get('value')),
+            'usersChangeLabel': users_delta.get('label'),
             'companies': companies,
-            'companiesChange': _to_float(_delta_pct(companies, previous_item.get('companies'))['value']),
+            'companiesChange': _to_float(companies_delta.get('value')),
+            'companiesChangeLabel': companies_delta.get('label'),
             'trendValues': [],
         })
 
@@ -3565,6 +4845,14 @@ def _resolve_page_detail_context(project_id, page_rule_id, *, range_key='last_30
         if not current_counts.get('active_companies_count') and not current_counts.get('active_users_count'):
             current_counts = _project_distinct_counts(project_id, start_date, end_date)
         previous_counts = _project_distinct_counts(project_id, previous_start, previous_end)
+        _attach_period_to_date_trends(
+            rows,
+            project_id,
+            start_date,
+            end_date,
+            _daily_page_rows(project_id, start_date, end_date),
+            grain='page',
+        )
     else:
         rows, current_counts, previous_counts = _build_change_rows(
             project_id,
@@ -3612,7 +4900,6 @@ def _page_detail_context_for_row(
     current_counts,
     previous_counts,
     current_row,
-    bulk_context=None,
 ):
     return {
         'project': project,
@@ -3625,7 +4912,6 @@ def _page_detail_context_for_row(
         'current_counts': current_counts,
         'previous_counts': previous_counts,
         'current_row': current_row,
-        'bulk_context': bulk_context,
     }
 
 
@@ -3752,15 +5038,8 @@ def _build_page_detail_payload_from_context(project_id, range_key, context):
         ],
         key=lambda item: (-_to_int(item.get('visits_count')), item.get('page_name') or ''),
     )
-    daily_source_rows = [current_row, *peers, *benchmark_rows]
-    bulk_context = context.get('bulk_context')
-    daily_rows = (
-        bulk_context.daily_page_rows_for_rows(daily_source_rows)
-        if bulk_context
-        else _daily_page_rows_for_rows(project_id, start_date, end_date, daily_source_rows)
-    )
     detail_metrics = [
-        _detail_metric_payload(current_row, peers, benchmark_rows, metric, start_date, end_date, daily_rows)
+        _detail_metric_payload(current_row, peers, benchmark_rows, metric, start_date, end_date)
         for metric in PAGE_DETAIL_METRICS
     ]
     metrics = [
@@ -3865,7 +5144,6 @@ def hydrate_pages_detail_cache(
 
     cached_count = 0
     seen_page_ids = set()
-    bulk_context = BulkPageDetailContext(project_id, start_date, end_date)
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -3886,7 +5164,6 @@ def hydrate_pages_detail_cache(
             current_counts,
             previous_counts,
             row,
-            bulk_context=bulk_context,
         )
         payload = _build_page_detail_payload_from_context(project_id, range_key, context)
         if not payload:
@@ -3917,8 +5194,13 @@ def build_pages_overview_cache(
     range_key='last_30_days',
     start_date=None,
     end_date=None,
+    company_attribute_filter_state=None,
     use_lock=True,
 ):
+    filters_active = (
+        company_attribute_filter_state is not None
+        and company_attribute_filter_state.active
+    )
     if use_lock:
         with project_advisory_lock(project_id, namespace='pages-rebuild') as acquired:
             if not acquired:
@@ -3933,12 +5215,32 @@ def build_pages_overview_cache(
                 range_key=range_key,
                 start_date=start_date,
                 end_date=end_date,
+                company_attribute_filter_state=company_attribute_filter_state,
                 use_lock=False,
             )
 
     project = get_project_info(project_id)
     if not project:
         raise ValueError(f'Project {project_id} does not exist.')
+
+    from apps.projects.models import Project
+
+    expected_filtered_revision, expected_facts_revision = (
+        int(value)
+        for value in Project.objects
+        .values_list('filtered_analytics_revision', 'analytics_facts_revision')
+        .get(pk=project_id)
+    )
+    cohort = (
+        resolve_project_company_cohort(project_id, company_attribute_filter_state)
+        if filters_active
+        else None
+    )
+    filters_hash = (
+        company_attribute_filter_state.filters_hash
+        if filters_active
+        else DEFAULT_FILTERS_HASH
+    )
 
     timezone_name = project['timezone'] or 'UTC'
     start_date, end_date = resolve_period(timezone_name, range_key=range_key, start_date=start_date, end_date=end_date)
@@ -3948,15 +5250,29 @@ def build_pages_overview_cache(
     source = queries.fetch_one(queries.SOURCE_MAX_EVENT_TS_SQL, [project_id]) or {}
     source_max_event_ts = source.get('source_max_event_ts')
 
-    rows, current_counts, previous_counts = _build_change_rows(project_id, start_date, end_date, previous_start, previous_end)
-    page_metrics_rows, _, _ = _build_change_rows(
+    rows, current_counts, previous_counts = _build_change_rows(
+        project_id,
+        start_date,
+        end_date,
+        previous_start,
+        previous_end,
+        cohort=cohort,
+    )
+    page_kpi_rows, _, _ = _build_change_rows(
         project_id,
         start_date,
         end_date,
         previous_start,
         previous_end,
         grain='display_page',
+        cohort=cohort,
+        include_previous_only=True,
     )
+    page_metrics_rows = [
+        row
+        for row in page_kpi_rows
+        if not row.get('_previous_only')
+    ]
     product_area_rows, _, _ = _build_change_rows(
         project_id,
         start_date,
@@ -3964,8 +5280,9 @@ def build_pages_overview_cache(
         previous_start,
         previous_end,
         grain='product_area',
+        cohort=cohort,
     )
-    previous_rows = _summary_by_display_page(project_id, previous_start, previous_end)
+    previous_rows = _summary_by_display_page(project_id, previous_start, previous_end, cohort=cohort)
     product_areas = _project_product_area_options(project_id, product_area_rows)
     product_area_color_lookup = build_product_area_color_lookup(product_areas, prefer_explicit=True)
     payload = _empty_payload(project, range_key, start_date, end_date, previous_start, previous_end, generated_at, source_max_event_ts)
@@ -3976,18 +5293,28 @@ def build_pages_overview_cache(
     })
 
     if rows:
-        top_actions = _build_top_actions(project_id, start_date, end_date, previous_start, previous_end)
+        top_actions = _build_top_actions(
+            project_id,
+            start_date,
+            end_date,
+            previous_start,
+            previous_end,
+            cohort=cohort,
+            timezone_name=timezone_name,
+        )
         company_engagement = _build_scatter(
             project_id,
             start_date,
             end_date,
             product_area_color_lookup,
+            cohort=cohort,
         )
         overview_rows = [_strip_for_overview_row(row) for row in rows]
         overview_page_metrics_rows = [_strip_for_overview_row(row) for row in page_metrics_rows]
+        overview_page_kpi_rows = [_strip_for_overview_row(row) for row in page_kpi_rows]
         payload.update({
             'kpis': _build_kpis(
-                page_metrics_rows,
+                page_kpi_rows,
                 previous_rows,
                 _to_int(current_counts.get('active_companies_count')),
                 _to_int(previous_counts.get('active_companies_count')),
@@ -3996,6 +5323,7 @@ def build_pages_overview_cache(
             'rows': overview_rows,
             'change_aware_rows': overview_rows,
             'page_metrics_rows': overview_page_metrics_rows,
+            'kpi_daily_rows': overview_page_kpi_rows,
             'product_area_summary': [_strip_for_product_area_summary(row) for row in product_area_rows],
             'top_pages_by_visits_over_time': _build_series(page_metrics_rows, 'visits_count'),
             'top_pages_by_engaged_time_over_time': _build_series(page_metrics_rows, 'engaged_seconds'),
@@ -4010,6 +5338,14 @@ def build_pages_overview_cache(
                 start_date,
                 end_date,
                 product_area_color_lookup,
+                cohort=cohort,
+            ),
+            'two_way_movement': _build_two_way_movement(
+                project_id,
+                timezone_name,
+                start_date,
+                end_date,
+                cohort=cohort,
             ),
             'top_actions_by_page': top_actions,
             'top_actions_by_page_group': _build_top_actions_by_page_group(top_actions),
@@ -4019,13 +5355,65 @@ def build_pages_overview_cache(
         })
 
     payload = normalize_overview_payload(payload)
+    if filters_active:
+        # Both revisions are stored so a reader can tell an attribute edit,
+        # which invalidates the cohort, from a fact rebuild, which only ages it.
+        payload.setdefault('freshness', {}).update({
+            'filtered_analytics_revision': expected_filtered_revision,
+            'analytics_facts_revision': expected_facts_revision,
+        })
+        payload['company_attribute_filter'] = {
+            'filters_hash': filters_hash,
+            'active_count': company_attribute_filter_state.active_count,
+        }
+
+    # Page, Company and User detail caches are an unfiltered-only feature, so a
+    # filtered variant publishes its overview row and nothing else.
+    if filters_active:
+        cache_params = [
+            project_id,
+            range_key,
+            start_date,
+            end_date,
+            filters_hash,
+            json.dumps(payload, default=_json_default),
+            compress_overview_payload(payload),
+            source_max_event_ts,
+            generated_at,
+            expires_at,
+        ]
+        with transaction.atomic():
+            current_revision = int(
+                Project.objects.select_for_update()
+                .values_list('filtered_analytics_revision', flat=True)
+                .get(pk=project_id)
+            )
+            if current_revision != expected_filtered_revision:
+                return {
+                    'status': 'skipped',
+                    'reason': 'revision_changed',
+                    'project_id': project_id,
+                    'range_key': range_key,
+                }
+            queries.execute(queries.UPSERT_OVERVIEW_CACHE_SQL, cache_params)
+        purge_expired_filtered_overview_caches(project_id)
+        return {
+            'status': 'success',
+            'project_id': project_id,
+            'range_key': range_key,
+            'filters_hash': filters_hash,
+            'start_date': start_date.isoformat(),
+            'end_date': end_date.isoformat(),
+            'rows_count': len(page_metrics_rows),
+        }
+
     detail_cache_result = hydrate_pages_detail_cache(
         project_id,
         range_key=range_key,
         start_date=start_date,
         end_date=end_date,
         project=project,
-        rows=payload.get('change_aware_rows') or [],
+        rows=rows,
         current_counts=current_counts,
         previous_counts=previous_counts,
         generated_at=generated_at,
@@ -4041,6 +5429,7 @@ def build_pages_overview_cache(
             end_date,
             DEFAULT_FILTERS_HASH,
             json.dumps(payload, default=_json_default),
+            compress_overview_payload(payload),
             source_max_event_ts,
             generated_at,
             expires_at,

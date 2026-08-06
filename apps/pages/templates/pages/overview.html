@@ -4,7 +4,9 @@
 {% block title %}{% if is_demo_view %}Pages - {{ demo_project_display_name }}{% else %}Pages - {{ project.name }}{% endif %}{% endblock %}
 
 {% block extra_js %}
-  <link rel="stylesheet" href="{% static 'css/pages/overview.css' %}" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/pages/overview.css' %}?v=20260801-1" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/overview-quick-jumper.css' %}?v=20260722-3" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/company-attribute-filters.css' %}?v=20260727-6" type="text/css" />
 {% endblock %}
 
 {% block nav %}
@@ -30,31 +32,18 @@
     {% if not is_demo_view %}data-scatter-tooltips-url="{% url 'w:project_pages_scatter_tooltips' workspace_slug=project.workspace.slug project_id=project.id %}?range={{ pages_range_key }}"{% endif %}>
     <header class="mb-8">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div class="min-w-0">
-          <h1 class="text-3xl font-bold text-slate-900">Pages</h1>
-          <p class="mt-2 max-w-3xl text-slate-600">
-            Understand which pages/features are used, by whom, and how people move through them.
-          </p>
+        <div class="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-center" data-overview-title-group>
+          <h1 class="shrink-0 text-3xl font-bold text-slate-900">Pages</h1>
+
+          {% if not analytics_is_empty %}
+            {% include 'partials/overview_quick_jumper.html' with quick_jumper_root_id='page-search' quick_jumper_root_class='page-search' quick_jumper_trigger_id='page-search-trigger' quick_jumper_popover_id='page-search-popover' quick_jumper_input_id='pages-global-search' quick_jumper_input_class='page-search__input' quick_jumper_results_id='page-search-results' quick_jumper_results_class='page-search__dropdown' quick_jumper_entity_label='page' quick_jumper_entity_plural='pages' %}
+          {% endif %}
         </div>
 
-        <div class="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center">
-          {% if not analytics_is_empty %}
-          <div id="page-search" class="page-search">
-            <label for="pages-global-search" class="sr-only">Go to page</label>
-            <input
-              id="pages-global-search"
-              class="page-search__input"
-              type="search"
-              role="combobox"
-              aria-autocomplete="list"
-              aria-haspopup="listbox"
-              aria-expanded="false"
-              aria-controls="page-search-results"
-              autocomplete="off"
-              placeholder="Go to page&hellip;" />
-            <div id="page-search-results" class="page-search__dropdown" role="listbox" hidden></div>
-          </div>
+        <div class="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center" data-overview-filters>
+          {% include 'partials/company_scope_selector.html' %}
 
+          {% if not analytics_is_empty %}
           <div id="product-area-filter" class="product-area-filter">
             <span id="product-area-filter-title" class="sr-only">Filter product area</span>
             <button
@@ -108,6 +97,8 @@
           {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='pages-period-selector' analytics_period_selector_class='pages-period-selector inline-flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white' analytics_range_options=pages_range_options analytics_range_key=pages_range_key analytics_query_suffix=pages_filter_query_suffix %}
         </div>
       </div>
+      {% include 'partials/company_attribute_filter_summary.html' %}
+      {% include 'partials/company_segment_review_banner.html' %}
     </header>
 
     {% if analytics_is_empty %}
@@ -134,6 +125,10 @@
               class="shrink-0 whitespace-nowrap text-right text-sm font-medium"></div>
           </div>
           <div data-pages-kpi-trend class="mt-3 h-12 w-full" aria-hidden="true"></div>
+          <p
+            data-pages-kpi-context
+            class="mt-3"
+            hidden></p>
         </article>
       </template>
     </section>
@@ -142,7 +137,7 @@
       <div class="px-6 py-5">
         <div>
           <h2 class="text-lg font-semibold uppercase text-gray-600">Product area summary</h2>
-          <p class="mt-1 text-sm text-slate-500">Compare product-area reach, adoption, and engaged time across the selected period.</p>
+          <p class="mt-1 text-sm text-slate-500">Values summarize the whole selected period; the sparkline beside each one shows that metric's daily activity, on a shared scale down the column.</p>
         </div>
       </div>
 
@@ -150,12 +145,42 @@
         <table class="product-area-summary-table w-full table-auto text-left">
           <thead class="bg-white text-slate-600">
             <tr>
-              <th class="py-3 pl-0 font-normal">Product area</th>
-              <th class="product-area-pages-cell py-3 font-normal">Pages</th>
-              <th class="py-3 font-normal">Companies</th>
-              <th class="py-3 font-normal">Adoption</th>
-              <th class="py-3 font-normal">Users</th>
-              <th class="py-3 font-normal">Engaged</th>
+              <th class="py-3 pl-0 font-normal">
+                <span class="metric-header-tooltip" tabindex="0" aria-describedby="product-area-summary-tooltip-area">
+                  Product area
+                  <span id="product-area-summary-tooltip-area" class="metric-header-tooltip__content" role="tooltip">Product area included in this summary</span>
+                </span>
+              </th>
+              <th class="product-area-pages-cell py-3 font-normal">
+                <span class="metric-header-tooltip" tabindex="0" aria-describedby="product-area-summary-tooltip-pages">
+                  Pages
+                  <span id="product-area-summary-tooltip-pages" class="metric-header-tooltip__content" role="tooltip">Number of tracked pages in this product area</span>
+                </span>
+              </th>
+              <th class="py-3 font-normal">
+                <span class="metric-header-tooltip" tabindex="0" aria-describedby="product-area-summary-tooltip-companies">
+                  Companies
+                  <span id="product-area-summary-tooltip-companies" class="metric-header-tooltip__content" role="tooltip">Number of companies that used this product area during the selected period. The sparkline shows how many distinct companies used it on each day.</span>
+                </span>
+              </th>
+              <th class="py-3 font-normal">
+                <span class="metric-header-tooltip" tabindex="0" aria-describedby="product-area-summary-tooltip-adoption">
+                  Adoption
+                  <span id="product-area-summary-tooltip-adoption" class="metric-header-tooltip__content" role="tooltip">Share of active companies that used this product area during the selected period. The sparkline divides the companies using it that day by all companies active that day.</span>
+                </span>
+              </th>
+              <th class="py-3 font-normal">
+                <span class="metric-header-tooltip" tabindex="0" aria-describedby="product-area-summary-tooltip-users">
+                  Users
+                  <span id="product-area-summary-tooltip-users" class="metric-header-tooltip__content" role="tooltip">Number of users who used this product area during the selected period. The sparkline shows how many distinct users used it on each day.</span>
+                </span>
+              </th>
+              <th class="py-3 font-normal">
+                <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="product-area-summary-tooltip-engaged">
+                  Engaged
+                  <span id="product-area-summary-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent in this product area during the selected period. The sparkline shows the active time recorded on each day.</span>
+                </span>
+              </th>
             </tr>
           </thead>
           <tbody id="product-area-summary-body" class="text-slate-700"></tbody>
@@ -250,7 +275,7 @@
       <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div class="px-6 py-5">
           <h2 class="text-lg font-semibold uppercase text-gray-600">Top pages by visits over time</h2>
-          <p class="mt-1 text-sm text-slate-500">Shows how frequently the most opened pages are used over time.</p>
+          <p class="mt-1 text-sm text-slate-500">Daily visits for the five pages with the most visits during the selected period.</p>
         </div>
         <div class="px-6 py-5">
           <div id="top-pages-visits-time-chart" class="h-[320px] w-full"></div>
@@ -260,7 +285,7 @@
       <section class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div class="px-6 py-5">
           <h2 class="text-lg font-semibold uppercase text-gray-600">Top pages by time spent</h2>
-          <p class="mt-1 text-sm text-slate-500">Shows where users spend the most engaged time over time.</p>
+          <p class="mt-1 text-sm text-slate-500">Daily engaged time for the five pages with the most engaged time during the selected period.</p>
         </div>
         <div class="px-6 py-5">
           <div id="top-pages-engaged-time-chart" class="h-[320px] w-full"></div>
@@ -278,15 +303,55 @@
       </div>
     </section>
 
-    <section class="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-      <div class="px-6 py-5">
-        <h2 class="text-lg font-semibold uppercase text-gray-600">Most common page flows</h2>
-        <p class="mt-1 text-sm text-slate-500">Global transitions across common page paths in the selected period.</p>
-      </div>
-      <div class="px-6 py-5">
-        <div id="overview-flow-chart" class="h-[420px] w-full"></div>
-      </div>
-    </section>
+    <div class="pages-flow-and-movement-grid mt-6">
+      <section class="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div class="px-6 py-5">
+          <h2 class="text-lg font-semibold uppercase text-gray-600">Most common page flows</h2>
+          <p class="mt-1 text-sm text-slate-500">Global transitions across common page paths in the selected period.</p>
+        </div>
+        <div class="px-6 py-5">
+          <div id="overview-flow-chart" class="h-[420px] w-full"></div>
+        </div>
+      </section>
+
+      <section class="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" aria-labelledby="two-way-movement-title">
+        <div class="px-6 py-5">
+          <h2 id="two-way-movement-title" class="text-lg font-semibold uppercase text-gray-600">Two-way movement</h2>
+          <p id="two-way-movement-description" class="table-section-copy mt-1 text-sm text-slate-500">Pages users move between in both directions.</p>
+        </div>
+        <div class="two-way-movement-scroll overflow-x-auto px-6 pb-4">
+          <table class="two-way-movement-table text-left" aria-describedby="two-way-movement-description">
+            <colgroup>
+              <col class="two-way-col-pair" />
+              <col class="two-way-col-movement" />
+              <col class="two-way-col-reciprocity" />
+              <col class="two-way-col-sessions" />
+              <col class="two-way-col-companies" />
+            </colgroup>
+            <thead class="border-b border-gray-300 bg-white text-slate-600">
+              <tr>
+                <th class="py-3 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-metrics-sort-button" data-two-way-movement-sort="page_pair" aria-describedby="two-way-movement-tooltip-page-pair"><span class="two-way-movement__header-label">Page pair</span></button>
+                    <span id="two-way-movement-tooltip-page-pair" class="metric-header-tooltip__content" role="tooltip">Two pages users moved between in both directions during the selected period.</span>
+                  </span>
+                </th>
+                <th class="py-3 font-normal">
+                  <span class="metric-header-tooltip">
+                    <button type="button" class="page-metrics-sort-button" data-two-way-movement-sort="reciprocal_volume" aria-describedby="two-way-movement-tooltip-volume"><span class="two-way-movement__header-label">Two-way movement</span></button>
+                    <span id="two-way-movement-tooltip-volume" class="metric-header-tooltip__content" role="tooltip">Number shows back-and-forth movement. Bar split shows direction balance.</span>
+                  </span>
+                </th>
+                <th class="py-3 font-normal"><span class="metric-header-tooltip metric-header-tooltip--end"><button type="button" class="page-metrics-sort-button" data-two-way-movement-sort="reciprocity_pct" aria-describedby="two-way-movement-tooltip-reciprocity"><span class="two-way-movement__header-label">Reciprocity</span></button><span id="two-way-movement-tooltip-reciprocity" class="metric-header-tooltip__content" role="tooltip">How balanced the movement is between the two pages.</span></span></th>
+                <th class="py-3 font-normal"><span class="metric-header-tooltip metric-header-tooltip--end"><button type="button" class="page-metrics-sort-button" data-two-way-movement-sort="sessions_count" aria-describedby="two-way-movement-tooltip-sessions"><span class="two-way-movement__header-label">Sessions</span></button><span id="two-way-movement-tooltip-sessions" class="metric-header-tooltip__content" role="tooltip">Number of distinct sessions with movement between these two pages during the selected period.</span></span></th>
+                <th class="py-3 font-normal"><span class="metric-header-tooltip metric-header-tooltip--end"><button type="button" class="page-metrics-sort-button" data-two-way-movement-sort="companies_count" aria-describedby="two-way-movement-tooltip-companies"><span class="two-way-movement__header-label">Companies</span></button><span id="two-way-movement-tooltip-companies" class="metric-header-tooltip__content" role="tooltip">Number of distinct companies with movement between these two pages during the selected period.</span></span></th>
+              </tr>
+            </thead>
+            <tbody id="two-way-movement-table-body" class="text-slate-700"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
 
     <section class="mt-6 rounded-xl border border-slate-200 bg-slate-100 shadow-sm">
       <div class="px-6 py-5">
@@ -308,14 +373,19 @@
     {% endif %}
   </main>
 
+  {% include 'partials/company_attribute_filter_dialog.html' %}
+  <script src="{% static 'js/shared/company-attribute-filters.js' %}?v=20260727-5"></script>
+  <script src="{% static 'js/shared/company-segments.js' %}?v=20260727-7"></script>
   {% if not analytics_is_empty %}
   <script src="{% static 'echarts/lib/echarts.min.js' %}"></script>
   <script id="pages-overview-data" type="application/json">{{ pages_overview_payload_json }}</script>
   <script src="{% static 'js/shared/product-area-colors.js' %}"></script>
   <script src="{% static 'js/pages/page-details-helpers.js' %}"></script>
+  <script src="{% static 'js/shared/metric-dynamics.js' %}?v=20260802-1"></script>
   <script src="{% static 'js/pages/django-pages-data.js' %}?v=20260709-3"></script>
   <script src="{% static 'js/vendor/vega.min.js' %}"></script>
   <script src="{% static 'js/vendor/vega-embed.min.js' %}"></script>
-  <script src="{% static 'js/pages/pages-analytics.js' %}?v=20260714-1"></script>
+  <script src="{% static 'js/shared/overview-quick-jumper.js' %}?v=20260722-2"></script>
+  <script src="{% static 'js/pages/pages-analytics.js' %}?v=20260801-2"></script>
   {% endif %}
 {% endblock %}

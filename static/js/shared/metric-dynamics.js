@@ -11,6 +11,62 @@
   const BASELINE_POINT_COUNT = 5;
   const PERCENTAGE_METRICS = new Set(["adoption", "penetration", "interaction", "interaction_rate", "consistency"]);
 
+  // How a metric dynamics panel is drawn follows from what its points mean, not
+  // from which detail page it sits on.
+  //
+  // - cumulative_total: a running total. It can only climb, so a fitted trend
+  //   restates the shape already on screen; the fill carries the "so far" sense.
+  // - rate: a ratio recomputed over the elapsed period. It can move either way,
+  //   which is what makes a fitted trend worth reading, and a fill under a ratio
+  //   would imply an area that means nothing.
+  // - discrete_cumulative: a distinct count over the elapsed period. It holds a
+  //   level until something new is used, so it steps rather than slopes.
+  // - daily_state: an end-of-day state that holds until the next date. It steps
+  //   too, but it can fall, so the fitted trend still says something.
+  const METRIC_DYNAMICS_SHAPES = {
+    cumulative_total: { step: false, filled: true, selfTrend: false },
+    rate: { step: false, filled: false, selfTrend: true },
+    discrete_cumulative: { step: true, filled: true, selfTrend: false },
+    daily_state: { step: true, filled: false, selfTrend: true }
+  };
+  const RATE_METRICS = new Set([
+    "adoption",
+    "penetration",
+    "avg_visit",
+    "interaction",
+    "interaction_rate",
+    "clicks_per_visit",
+    "avg_per_user",
+    "intensity"
+  ]);
+  const DISCRETE_CUMULATIVE_METRICS = new Set(["adoption_breadth", "pages_used", "areas_used"]);
+  const DAILY_STATE_METRICS = new Set(["at_risk_users"]);
+
+  function getMetricDynamicsShapeName(metricType) {
+    const normalized = normalizeMetricType(metricType);
+
+    if (DAILY_STATE_METRICS.has(normalized)) {
+      return "daily_state";
+    }
+
+    if (DISCRETE_CUMULATIVE_METRICS.has(normalized)) {
+      return "discrete_cumulative";
+    }
+
+    if (RATE_METRICS.has(normalized)) {
+      return "rate";
+    }
+
+    // Everything else on these panels is a running total of counts or seconds.
+    return "cumulative_total";
+  }
+
+  function getMetricDynamicsShape(metricType) {
+    const name = getMetricDynamicsShapeName(metricType);
+
+    return { name, ...METRIC_DYNAMICS_SHAPES[name] };
+  }
+
   function normalizeMetricType(metricType) {
     return String(metricType || "")
       .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
@@ -153,86 +209,111 @@
     ));
   }
 
-  function clampInteger(value, minValue, maxValue) {
-    return Math.max(minValue, Math.min(maxValue, Math.round(Number(value) || 0)));
-  }
-
-  function straightTrendWindowSize(seriesLength, selectedPeriodDays) {
-    const length = Math.max(0, Number(seriesLength) || 0);
-    const days = Number(selectedPeriodDays) || length;
-    const maxWindowSize = Math.max(2, Math.floor(length / 2));
-    let desiredWindowSize;
-
-    if (days <= 7) {
-      desiredWindowSize = 2;
-    } else if (days <= 30) {
-      desiredWindowSize = 7;
-    } else if (days <= 90) {
-      desiredWindowSize = clampInteger(length * 0.2, 14, 21);
-    } else if (days <= 180) {
-      desiredWindowSize = 30;
-    } else {
-      desiredWindowSize = clampInteger(length * 0.2, 2, 30);
-    }
-
-    return Math.min(desiredWindowSize, maxWindowSize);
-  }
-
-  function firstWindowValues(values, windowSize) {
-    const result = [];
-
-    for (const value of values) {
-      if (Number.isFinite(value)) {
-        result.push(value);
-      }
-
-      if (result.length >= windowSize) {
-        break;
-      }
-    }
-
-    return result;
-  }
-
-  function lastWindowValues(values, windowSize) {
-    const result = [];
-
-    for (let index = values.length - 1; index >= 0; index -= 1) {
-      const value = values[index];
-
-      if (Number.isFinite(value)) {
-        result.unshift(value);
-      }
-
-      if (result.length >= windowSize) {
-        break;
-      }
-    }
-
-    return result;
-  }
-
-  function buildStraightTrendLine(series, selectedPeriodDays) {
+  function buildStraightTrendLine(series) {
     const values = coerceSeriesValues(series);
-    const validCount = finiteValues(values).length;
+    const points = values.reduce((result, value, index) => {
+      if (Number.isFinite(value)) {
+        result.push({ x: index, y: value });
+      }
 
-    if (validCount < MIN_BASELINE_POINTS) {
+      return result;
+    }, []);
+
+    if (points.length < MIN_BASELINE_POINTS) {
       return [];
     }
 
-    const windowSize = straightTrendWindowSize(values.length, selectedPeriodDays);
-    const startValue = median(firstWindowValues(values, windowSize));
-    const endValue = median(lastWindowValues(values, windowSize));
+    const meanX = points.reduce((total, point) => total + point.x, 0) / points.length;
+    const meanY = points.reduce((total, point) => total + point.y, 0) / points.length;
+    const sums = points.reduce((result, point) => {
+      const xOffset = point.x - meanX;
 
-    if (!Number.isFinite(startValue) || !Number.isFinite(endValue)) {
+      result.crossProduct += xOffset * (point.y - meanY);
+      result.squaredXOffset += xOffset * xOffset;
+      return result;
+    }, { crossProduct: 0, squaredXOffset: 0 });
+
+    if (!Number.isFinite(sums.crossProduct) || sums.squaredXOffset <= 0) {
       return [];
     }
 
-    if (values.length === 1) {
-      return [startValue];
+    const slope = sums.crossProduct / sums.squaredXOffset;
+    const intercept = meanY - slope * meanX;
+
+    return values.map((_, index) => intercept + slope * index);
+  }
+
+  function bindLineTrendHover(chart, lineSeriesCount, element = null) {
+    const count = Math.max(0, Math.floor(Number(lineSeriesCount) || 0));
+
+    if (
+      !chart
+      || !count
+      || typeof chart.on !== "function"
+      || typeof chart.dispatchAction !== "function"
+    ) {
+      return chart;
     }
 
-    return values.map((_, index) => startValue + ((endValue - startValue) * index) / (values.length - 1));
+    let activeSeriesIndex = null;
+    const mainSeriesIndexFor = (params) => {
+      const seriesIndex = Number(params?.seriesIndex);
+
+      if (
+        params?.seriesType !== "line"
+        || !Number.isInteger(seriesIndex)
+        || seriesIndex < 0
+        || seriesIndex >= count * 2
+      ) {
+        return null;
+      }
+
+      return seriesIndex < count ? seriesIndex : seriesIndex - count;
+    };
+    const clearActiveSeries = () => {
+      if (activeSeriesIndex === null) {
+        return;
+      }
+
+      const seriesIndex = activeSeriesIndex;
+      activeSeriesIndex = null;
+      chart.dispatchAction({
+        type: "downplay",
+        batch: [
+          { seriesIndex },
+          { seriesIndex: count * 2 + seriesIndex }
+        ]
+      });
+    };
+
+    chart.on("mouseover", (params) => {
+      const seriesIndex = mainSeriesIndexFor(params);
+
+      if (seriesIndex === null || seriesIndex === activeSeriesIndex) {
+        return;
+      }
+
+      clearActiveSeries();
+      activeSeriesIndex = seriesIndex;
+      chart.dispatchAction({
+        type: "highlight",
+        batch: [
+          { seriesIndex },
+          { seriesIndex: count * 2 + seriesIndex, notBlur: true }
+        ]
+      });
+    });
+
+    chart.on("mouseout", (params) => {
+      if (mainSeriesIndexFor(params) === activeSeriesIndex) {
+        clearActiveSeries();
+      }
+    });
+
+    chart.getZr?.()?.on?.("globalout", clearActiveSeries);
+    element?.addEventListener?.("pointerleave", clearActiveSeries);
+    element?.addEventListener?.("mouseleave", clearActiveSeries);
+    return chart;
   }
 
   function getPeerId(peer) {
@@ -307,12 +388,18 @@
     const explicitBenchmarkSeries = Array.isArray(options.benchmarkSeries)
       ? actualMetricSeries(coerceSeriesValues(options.benchmarkSeries), metricType, currentValues.length)
       : [];
-    const benchmarkActual = hasEnoughData(explicitBenchmarkSeries, minDataPoints)
+    const benchmarkEligiblePeerCount = Number(options.benchmarkEligiblePeerCount) || peerTraces.length;
+    const benchmarkActual = benchmarkEligiblePeerCount >= minPeerCount
+      && hasEnoughData(explicitBenchmarkSeries, minDataPoints)
       ? explicitBenchmarkSeries
       : peerTraces.length >= minPeerCount
       ? medianSeries(peerTraces.map((peer) => peer.data), currentValues.length)
       : [];
     const hasBenchmark = hasEnoughData(benchmarkActual, minDataPoints);
+    // The shape is advice for the metric dynamics panels, which decide whether
+    // to draw the self-trend. It is not applied here: other consumers use this
+    // fit as their main line rather than as an overlay.
+    const shape = getMetricDynamicsShape(metricType);
     const currentStraightTrend = buildStraightTrendLine(currentValues, options.selectedPeriodDays);
     const benchmarkStraightTrend = hasBenchmark
       ? buildStraightTrendLine(benchmarkActual, options.selectedPeriodDays)
@@ -328,14 +415,15 @@
       currentTrend: currentStraightTrend,
       benchmarkStraightTrendSeries: benchmarkStraightTrend,
       benchmark: benchmarkStraightTrend,
-      benchmarkEligiblePeerCount: Number(options.benchmarkEligiblePeerCount) || peerTraces.length,
+      benchmarkEligiblePeerCount,
       benchmarkUnavailableReason,
       peerSeriesList: options.showPeers ? peerTraces.map((peer) => ({ id: peer.id, name: peer.name, data: peer.data })) : [],
       peerTraces: options.showPeers ? peerTraces.map((peer) => ({ id: peer.id, name: peer.name, data: peer.data })) : [],
       hiddenPeerTraceCount: options.showPeers ? 0 : peerTraces.length,
       showPeers: Boolean(options.showPeers),
       metricType: normalizeMetricType(metricType),
-      isPercentage: isPercentageMetric(metricType)
+      isPercentage: isPercentageMetric(metricType),
+      shape
     };
   }
 
@@ -411,14 +499,15 @@
     MIN_BASELINE_POINTS,
     normalizeMetricType,
     isPercentageMetric,
+    getMetricDynamicsShape,
     coerceSeriesValues,
     median,
     getBaseline,
     normalizeSeries,
     medianSeries,
     rebaseBenchmarkSeries,
-    straightTrendWindowSize,
     buildStraightTrendLine,
+    bindLineTrendHover,
     buildMetricDynamicsSeries,
     getMetricDynamicsAxisBounds,
     setMetricDynamicsLoadingState

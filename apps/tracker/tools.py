@@ -4,7 +4,9 @@ from collections import defaultdict
 from django.utils import timezone
 from urllib.parse import urlencode, urljoin, urlparse
 
+from apps.tracker.analytics_replay_timeline import build_analytics_replay_timeline
 from apps.tracker.models import Session
+from apps.tracker.replayability import is_replayable_full_snapshot
 from config.runtime_url_values import runtime_urls
 
 
@@ -41,7 +43,7 @@ def replace_urls_with_proxy(events_data, base_url=None):
     """
     if isinstance(events_data, str):
         events_data = json.loads(events_data)
-    domain_url = runtime_urls.get_hymetry_domain()
+    domain_url = runtime_urls.get_hymetry_domain().rstrip('/')
 
     def get_event_base_url(obj):
         """Return the recorded page URL from an rrweb Meta event, when available."""
@@ -295,6 +297,9 @@ def is_valid_rrweb_event(event_data, valid_types=None):
         # Default valid rrweb event types: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14
         valid_types = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14}
     
+    if not isinstance(event_data, dict):
+        return False
+
     event_type = event_data.get('type')
     # Skip custom events like 'session_start'
     if isinstance(event_type, str):
@@ -561,7 +566,7 @@ def _notify_memory_checkpoint(memory_callback, stage, **details):
 
 
 def get_consolidated_timeline_data(request, session_id, allowed_project_ids=None, memory_callback=None):
-    """Get consolidated timeline data for single rrweb player with all tabs combined."""
+    """Get one rrweb stream plus its independent analytical control timeline."""
     session, events = get_session_and_events(
         request,
         session_id,
@@ -577,8 +582,9 @@ def get_consolidated_timeline_data(request, session_id, allowed_project_ids=None
     human_tab_dict = dict()
     label_generator =tab_labels()
     session_start_time = None
-    current_tab = None
-    first_tab = None  # Track the first tab separately
+    current_activity_tab = None
+    first_activity_tab = None
+    first_replay_tab = None
     first_page_url = None
     
 
@@ -601,32 +607,43 @@ def get_consolidated_timeline_data(request, session_id, allowed_project_ids=None
             
         tab_id = event.tab_id or 'unknown'
         timestamp = get_timestamp_for_sorting(event_data)
+        if first_replay_tab is None:
+            first_replay_tab = tab_id
         
         # Use the first event timestamp as session start time
         if session_start_time is None:
             session_start_time = timestamp
         
-        # Track the first tab we encounter
-        if first_tab is None:
-            update_human_tabs(human_tab_dict, tab_id, label_generator)
-            first_tab = tab_id
-        
         # Calculate relative timestamp
         relative_timestamp = timestamp - session_start_time if session_start_time else 0
-        
-        # Check for tab switch
-        if current_tab is not None and tab_id != current_tab:
-            # Add tab switch to list
-            tab_switches.append({
-                'from_tab': current_tab,
-                'to_tab': tab_id,
-                'timestamp': relative_timestamp,
-                'absolute_timestamp': timestamp
-            })
-            update_human_tabs(human_tab_dict, current_tab, label_generator)
-            update_human_tabs(human_tab_dict, tab_id, label_generator)
 
-        current_tab = tab_id
+        try:
+            activity_event_type = int(event_data.get('type'))
+        except (TypeError, ValueError):
+            activity_event_type = None
+        nested_event_data = event_data.get('data', {})
+        if not isinstance(nested_event_data, dict):
+            nested_event_data = {}
+        raw_source = nested_event_data.get('source') if activity_event_type == 3 else None
+        try:
+            activity_source = int(raw_source)
+        except (TypeError, ValueError):
+            activity_source = None
+        is_tab_activity = activity_event_type == 3 and activity_source in {1, 2, 5}
+        if is_tab_activity:
+            if first_activity_tab is None:
+                first_activity_tab = tab_id
+                update_human_tabs(human_tab_dict, tab_id, label_generator)
+            if current_activity_tab is not None and tab_id != current_activity_tab:
+                tab_switches.append({
+                    'from_tab': current_activity_tab,
+                    'to_tab': tab_id,
+                    'timestamp': relative_timestamp,
+                    'absolute_timestamp': timestamp
+                })
+                update_human_tabs(human_tab_dict, current_activity_tab, label_generator)
+                update_human_tabs(human_tab_dict, tab_id, label_generator)
+            current_activity_tab = tab_id
         
         # Normalize event for rrweb player
         event_type = event_data.get('type', 0)
@@ -662,26 +679,50 @@ def get_consolidated_timeline_data(request, session_id, allowed_project_ids=None
     
     # Sort events by timestamp to ensure proper order
     consolidated_events.sort(key=lambda x: x['timestamp'])
+    replay_available = any(map(is_replayable_full_snapshot, consolidated_events))
 
     # Replace external URLs with proxy URLs in consolidated events
     consolidated_events = replace_urls_with_proxy(consolidated_events, base_url=first_page_url)
+    replay_duration_ms = int(round(max(
+        (event.get('timestamp', 0) for event in consolidated_events),
+        default=0,
+    )))
+    replay_duration_ms = max(0, replay_duration_ms)
+    project = getattr(getattr(session, 'visitor', None), 'project', None)
+    analytics_timeline = build_analytics_replay_timeline(
+        project,
+        session,
+    )
+    analytics_duration_ms = max(
+        0,
+        int(analytics_timeline.get('durationMs') or 0),
+    )
     _notify_memory_checkpoint(
         memory_callback,
         'after_consolidate',
         replay_event_count=len(consolidated_events),
         tab_switch_count=len(tab_switches),
+        analytics_segment_count=len(analytics_timeline['segments']),
     )
     
     print(f"Consolidated {len(consolidated_events)} events, {len(tab_switches)} tab switches")
-    print(f"First tab: {first_tab}, Initial tab ID: {first_tab if first_tab else 'unknown'}")
+    initial_tab = first_activity_tab or first_replay_tab or 'unknown'
+    update_human_tabs(human_tab_dict, initial_tab, label_generator)
+    print(f"First activity tab: {first_activity_tab}, Initial tab ID: {initial_tab}")
 
     return {
         'events': consolidated_events,
         'tab_switches': tab_switches,
         'human_tab_dict': human_tab_dict,
-        'total_duration': 0,
+        'total_duration': analytics_duration_ms,
+        'rrweb_duration': replay_duration_ms,
         'session_start_time': session_start_time,
-        'initial_tab_id': first_tab if first_tab else 'unknown',
+        'initial_tab_id': initial_tab,
+        'analytics_timeline': analytics_timeline,
+        'replay_available': replay_available,
+        'replay_unavailable_reason': (
+            '' if replay_available else 'missing_full_snapshot'
+        ),
     }
 
 

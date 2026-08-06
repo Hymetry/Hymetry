@@ -1,4 +1,6 @@
 from django import forms
+from django.conf import settings
+from django.contrib.auth import password_validation
 from django.contrib.auth.forms import AuthenticationForm, PasswordChangeForm
 
 from apps.projects.models import Project
@@ -64,10 +66,11 @@ class ProfilePasswordForm(PasswordChangeForm):
             field.widget.attrs.update({
                 'class': 'shadow-sm appearance-none border rounded w-full py-3 px-3 text-gray-700 leading-tight focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500'
             })
-
-
-from django import forms
-from django.contrib.auth import password_validation
+        if 'new_password1' in self.fields:
+            self.fields['new_password1'].widget.attrs.update({
+                'minlength': str(settings.PASSWORD_MIN_LENGTH),
+                'maxlength': str(settings.PASSWORD_MAX_LENGTH),
+            })
 
 
 class SinglePasswordResetForm(forms.Form):
@@ -75,6 +78,8 @@ class SinglePasswordResetForm(forms.Form):
         label="New password",
         widget=forms.PasswordInput,
         strip=False,
+        min_length=settings.PASSWORD_MIN_LENGTH,
+        max_length=settings.PASSWORD_MAX_LENGTH,
         help_text=password_validation.password_validators_help_text_html(),
     )
 

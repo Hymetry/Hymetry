@@ -1,27 +1,47 @@
+import logging
 import threading
+import time
+from collections import OrderedDict
 from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils.safestring import mark_safe
 
-from apps.pages import services
+from apps.pages import filtered_overview, services
 from apps.pages.table_pagination import paginate_cached_rows
-from apps.pages.tasks import build_pages_overview_cache_task, hydrate_pages_scatter_tooltips_cache_task
+from apps.pages.tasks import (
+    build_pages_overview_cache_task,
+    hydrate_pages_scatter_tooltips_cache_task,
+)
+from apps.projects import analytics_filter_state
 from apps.projects.access import get_accessible_project_or_404
+from apps.projects.company_attribute_filter_support import (
+    build_company_attribute_filter_context,
+    canonical_company_scope_redirect,
+)
 from apps.projects.decorators import require_project_member
 from apps.projects.demo import DEMO_PROJECT_DISPLAY_NAME, get_demo_project
-from apps.projects.url_helpers import project_route
+from apps.projects.company_attribute_filters import (
+    load_company_attribute_filter_attributes,
+    parse_company_attribute_filters,
+)
+from apps.projects.company_segments import (
+    company_segment_urls,
+    demo_company_segment_urls,
+    resolve_company_scope,
+)
+from apps.projects.url_helpers import preserved_period_query_suffix, project_route
 
 
 PAGES_RANGE_OPTIONS = (
-    ('last_7_days', 'Last 7 days'),
-    ('last_30_days', 'Last 30 days'),
-    ('last_90_days', 'Last 90 days'),
-    ('last_180_days', 'Last 180 days'),
+    ('last_7_days', 'Last 7 complete days'),
+    ('last_30_days', 'Last 30 complete days'),
+    ('last_90_days', 'Last 90 complete days'),
+    ('last_180_days', 'Last 180 complete days'),
 )
 SUPPORTED_RANGES = {key for key, _ in PAGES_RANGE_OPTIONS}
 PAGES_RANGE_LABELS = dict(PAGES_RANGE_OPTIONS)
@@ -37,6 +57,17 @@ PRODUCT_AREA_QUERY_PARAM = 'product_area'
 PAGE_METRICS_TABLE_PAGE_SIZE = 10
 PAGE_DETAIL_COMPANIES_TABLE_PAGE_SIZE = 20
 PAGE_DETAIL_CHAMPIONS_TABLE_PAGE_SIZE = 20
+PAGES_TOP_ACTION_GROUP_LIMIT = 8
+PAGES_TOP_ACTIONS_PER_GROUP_LIMIT = 5
+PAGES_OVERVIEW_SANKEY_MAX_LINKS = 12
+PAGES_OVERVIEW_SANKEY_MAX_NODES = 10
+FILTERED_REBUILD_DISPATCH_DEDUP_SECONDS = 60
+FILTERED_REBUILD_DISPATCH_DEDUP_MAX_ENTRIES = 2048
+
+
+logger = logging.getLogger(__name__)
+_filtered_rebuild_dispatch_lock = threading.Lock()
+_filtered_rebuild_dispatches = OrderedDict()
 
 
 PAGE_METRICS_SORT_GETTERS = {
@@ -189,8 +220,11 @@ def _product_area_filter_label(options):
     return 'Filter product area...'
 
 
-def _product_area_query_suffix(selected_keys):
-    params = [(PRODUCT_AREA_QUERY_PARAM, key) for key in selected_keys or []]
+def _product_area_query_suffix(selected_keys, company_attribute_pairs=()):
+    params = [
+        *((PRODUCT_AREA_QUERY_PARAM, key) for key in selected_keys or []),
+        *company_attribute_pairs,
+    ]
     query = urlencode(params)
     return f'&{query}' if query else ''
 
@@ -260,6 +294,7 @@ def _empty_payload(project, range_key):
         'top_pages_by_engaged_time_over_time': {'granularity': 'day', 'labels': [], 'series': []},
         'engaged_time_treemap': {'total_engaged_seconds': 0, 'nodes': []},
         'sankey': {'nodes': [], 'links': []},
+        'two_way_movement': {'rows': [], 'limit': 10, 'total_pairs': 0},
         'top_actions_by_page': [],
         'top_actions_by_page_group': [],
         'company_engagement_by_product_area': [],
@@ -269,10 +304,7 @@ def _empty_payload(project, range_key):
 
 
 def _is_current_payload_schema(schema_version):
-    try:
-        return int(schema_version) == services.OVERVIEW_PAYLOAD_SCHEMA_VERSION
-    except (TypeError, ValueError):
-        return False
+    return services.is_current_overview_payload_schema(schema_version)
 
 
 def _payload_script_text(payload):
@@ -305,13 +337,151 @@ def _page_metrics_table_payload(payload, request):
     )
 
 
+def _project_top_action_groups_for_client(groups):
+    projected = []
+    for group in groups or []:
+        if not isinstance(group, dict):
+            continue
+        actions = sorted(
+            (
+                action
+                for action in group.get('actions') or []
+                if isinstance(action, dict)
+            ),
+            key=lambda action: _analytics_number(
+                action.get('clicks', action.get('clicks_count')),
+            ),
+            reverse=True,
+        )
+        projected.append(
+            {
+                **group,
+                'actions': actions[:PAGES_TOP_ACTIONS_PER_GROUP_LIMIT],
+            }
+        )
+        if len(projected) >= PAGES_TOP_ACTION_GROUP_LIMIT:
+            break
+    return projected
+
+
+def _project_sankey_for_client(sankey):
+    sankey = sankey if isinstance(sankey, dict) else {}
+    source_nodes = [
+        node
+        for node in sankey.get('nodes') or []
+        if isinstance(node, dict)
+    ]
+    candidates = []
+    for link in sankey.get('links') or []:
+        if not isinstance(link, dict):
+            continue
+        source = str(link.get('source') or '').strip()
+        target = str(link.get('target') or '').strip()
+        value = _analytics_number(link.get('value'))
+        if not source or not target or value <= 0:
+            continue
+        normalized_value = int(value) if value.is_integer() else value
+        candidates.append(
+            {
+                **link,
+                'source': source,
+                'target': target,
+                'value': normalized_value,
+            },
+        )
+    candidates.sort(
+        key=lambda link: _analytics_number(link.get('value')),
+        reverse=True,
+    )
+
+    adjacency = {}
+    selected_links = []
+    selected_node_names = set()
+
+    def would_create_cycle(source, target):
+        if source == target:
+            return True
+        visited = set()
+        stack = [target]
+        while stack:
+            node = stack.pop()
+            if node == source:
+                return True
+            if node in visited:
+                continue
+            visited.add(node)
+            stack.extend(adjacency.get(node, ()))
+        return False
+
+    for link in candidates:
+        if len(selected_links) >= PAGES_OVERVIEW_SANKEY_MAX_LINKS:
+            break
+        source = link['source']
+        target = link['target']
+        added_node_count = sum(
+            name not in selected_node_names
+            for name in (source, target)
+        )
+        if (
+            len(selected_node_names) + added_node_count
+            > PAGES_OVERVIEW_SANKEY_MAX_NODES
+        ):
+            continue
+        if would_create_cycle(source, target):
+            continue
+        selected_links.append(link)
+        selected_node_names.update((source, target))
+        adjacency.setdefault(source, set()).add(target)
+
+    selected_nodes = [
+        node
+        for node in source_nodes
+        if str(node.get('name') or node.get('label') or '').strip()
+        in selected_node_names
+    ]
+    return {
+        'nodes': selected_nodes,
+        'links': selected_links,
+    }
+
+
 def _with_pages_overview_table_payload(payload, request):
     table_payload = _page_metrics_table_payload(payload, request)
     selector_rows = _page_selector_rows(payload.get('change_aware_rows') or payload.get('rows') or [])
     client_payload = {**payload}
+    for server_only_key in (
+        'rows',
+        'page_metrics_rows',
+        'kpi_daily_rows',
+        'top_actions_by_page',
+        'company_engagement_by_product_area',
+    ):
+        client_payload.pop(server_only_key, None)
+    client_payload['top_actions_by_page_group'] = _project_top_action_groups_for_client(
+        payload.get('top_actions_by_page_group'),
+    )
+    client_payload['company_engagement_by_page_group'] = (
+        payload.get('company_engagement_by_page_group') or []
+    )[:PAGES_TOP_ACTION_GROUP_LIMIT]
+    client_payload['sankey'] = _project_sankey_for_client(payload.get('sankey'))
     client_payload['page_selector_rows'] = selector_rows
-    client_payload['change_aware_rows'] = table_payload['rows']
-    client_payload.setdefault('tableData', {})['pageMetrics'] = table_payload
+    client_payload['change_aware_rows'] = [
+        {
+            key: value
+            for key, value in row.items()
+            if key != 'daily_kpi_trends'
+        }
+        if isinstance(row, dict)
+        else row
+        for row in table_payload['rows']
+    ]
+    table_data = payload.get('tableData')
+    client_payload['tableData'] = dict(table_data) if isinstance(table_data, dict) else {}
+    client_payload['tableData']['pageMetrics'] = {
+        key: value
+        for key, value in table_payload.items()
+        if key != 'rows'
+    }
     return client_payload
 
 
@@ -354,35 +524,57 @@ def _with_page_detail_table_payloads(payload, request):
 
 def render_project_pages(request, project, *, is_demo_view=False):
     range_key = _range_key(request)
-    cache = services.get_cached_overview_payload(project.id, range_key=range_key)
+    company_attribute_filter_attributes = (
+        load_company_attribute_filter_attributes(project)
+    )
+    company_scope = resolve_company_scope(
+        request,
+        project,
+        attributes=company_attribute_filter_attributes,
+        is_demo_view=is_demo_view,
+    )
+    company_attribute_filter_state = company_scope.state
+    canonical_redirect = canonical_company_scope_redirect(request, company_scope)
+    if canonical_redirect is not None:
+        return canonical_redirect
+    restored = analytics_filter_state.restore_redirect(
+        request,
+        project,
+        analytics_filter_state.PAGES_OVERVIEW,
+        is_demo_view=is_demo_view,
+    )
+    if restored is not None:
+        return restored
+    cache, queued = filtered_overview.read_variant(
+        filtered_overview.PAGES,
+        project,
+        range_key,
+        company_attribute_filter_state,
+        fetch=services.get_cached_overview_payload,
+        schema_is_current=_is_current_payload_schema,
+    )
     cache_status = 'ready'
     payload = {}
     payload_script_text = None
 
     if cache:
-        schema_version = cache.get('schema_version')
-        if not schema_version and isinstance(cache.get('payload_json'), dict):
-            schema_version = cache['payload_json'].get('schema_version')
-        is_schema_stale = not _is_current_payload_schema(schema_version)
-        if cache.get('is_stale') or is_schema_stale:
+        if cache.get('is_stale'):
             cache_status = 'stale'
-            _best_effort_queue_overview_rebuild(project.id, range_key)
-        if is_schema_stale:
-            payload = services.normalize_overview_payload(cache.get('payload_json') or {})
-            payload = _with_pages_overview_table_payload(payload, request)
-            payload_script_text = _payload_script_text(payload)
-        else:
-            payload = services.normalize_overview_payload(cache.get('payload_json') or {})
-            payload = _with_pages_overview_table_payload(payload, request)
-            payload_script_text = _payload_script_text(payload)
+            if not company_attribute_filter_state.active:
+                _best_effort_queue_overview_rebuild(project.id, range_key)
+        payload = services.normalize_overview_payload(cache.get('payload_json') or {})
+        payload = _with_pages_overview_table_payload(payload, request)
+        payload_script_text = _payload_script_text(payload)
     else:
         payload = services.normalize_overview_payload(_empty_payload(project, range_key))
         payload = _with_pages_overview_table_payload(payload, request)
         payload_script_text = _payload_script_text(payload)
-        cache_status = 'missing'
-        _best_effort_queue_overview_rebuild(project.id, range_key)
+        if company_attribute_filter_state.active:
+            cache_status = 'preparing'
+        else:
+            cache_status = 'missing'
+            _best_effort_queue_overview_rebuild(project.id, range_key)
 
-    analytics_is_empty = is_pages_overview_empty(payload)
     selected_product_area_keys = services.resolve_product_area_filter_keys(
         payload,
         _product_area_query_values(request),
@@ -403,6 +595,36 @@ def render_project_pages(request, project, *, is_demo_view=False):
         )
         payload = _with_pages_overview_table_payload(raw_payload, request)
         payload_script_text = _payload_script_text(payload)
+    analytics_is_empty = is_pages_overview_empty(payload)
+    analytics_is_preparing = cache_status == 'preparing'
+    company_attribute_filter_context = build_company_attribute_filter_context(
+        project,
+        company_attribute_filter_state,
+        surface='pages',
+        preview_url=(
+            reverse('demo_company_attribute_filter_preview')
+            if is_demo_view
+            else project_route(project, 'project_company_attribute_filter_preview')
+        ),
+        attributes=company_attribute_filter_attributes,
+        scope=company_scope,
+        segment_urls=(
+            demo_company_segment_urls()
+            if is_demo_view
+            else company_segment_urls(project)
+        ),
+    )
+    analytics_filter_state.remember(
+        request,
+        project,
+        analytics_filter_state.PAGES_OVERVIEW,
+        scope=company_scope,
+        page_values={
+            'range': range_key,
+            'product_area': selected_product_area_keys,
+        },
+        is_demo_view=is_demo_view,
+    )
 
     return render(
         request,
@@ -415,14 +637,27 @@ def render_project_pages(request, project, *, is_demo_view=False):
             'pages_range_key': range_key,
             'pages_range_label': PAGES_RANGE_LABELS.get(range_key, PAGES_RANGE_LABELS['last_30_days']),
             'pages_range_options': PAGES_RANGE_OPTIONS,
-            'pages_filter_query_suffix': _product_area_query_suffix(selected_product_area_keys),
+            'pages_filter_query_suffix': _product_area_query_suffix(
+                selected_product_area_keys,
+                company_scope.canonical_pairs,
+            ),
             'pages_cache_status': cache_status,
             'analytics_is_empty': analytics_is_empty,
+            'analytics_is_preparing': analytics_is_preparing,
+            'analytics_surface': 'pages',
+            'analytics_variant_status_url': (
+                reverse('demo_analytics_variant_status')
+                if is_demo_view
+                else project_route(project, 'project_analytics_variant_status')
+            ),
             'analytics_empty_period_days': PAGES_RANGE_DAYS.get(range_key, 30),
             'pages_product_area_filter_options': product_area_options,
             'pages_product_area_filter_selected_keys': selected_product_area_keys,
             'pages_product_area_filter_label': _product_area_filter_label(product_area_options),
             'pages_product_area_filter_has_selection': bool(selected_product_area_keys),
+            'company_attribute_filter_state': company_attribute_filter_state,
+            'pages_filters_hash': company_attribute_filter_state.filters_hash,
+            **company_attribute_filter_context,
             'pages_overview_table_url': reverse('demo_pages_table_data') if is_demo_view else project_route(project, 'project_pages_table_data'),
             'is_demo_view': is_demo_view,
             'demo_project_id': project.id if is_demo_view else None,
@@ -433,16 +668,24 @@ def render_project_pages(request, project, *, is_demo_view=False):
 
 def _pages_overview_table_response(request, project):
     range_key = _range_key(request)
-    cache = services.get_cached_overview_payload(project.id, range_key=range_key)
-    payload_json = cache.get('payload_json') if cache else {}
-    schema_version = cache.get('schema_version') if cache else None
-    if not schema_version and isinstance(payload_json, dict):
-        schema_version = payload_json.get('schema_version')
-    if not cache or not _is_current_payload_schema(schema_version):
-        queued = _best_effort_queue_overview_rebuild(project.id, range_key)
+    company_attribute_filter_state = parse_company_attribute_filters(
+        project,
+        request.GET,
+    )
+    cache, queued = filtered_overview.read_variant(
+        filtered_overview.PAGES,
+        project,
+        range_key,
+        company_attribute_filter_state,
+        fetch=services.get_cached_overview_payload,
+        schema_is_current=_is_current_payload_schema,
+    )
+    if not cache:
+        if not company_attribute_filter_state.active:
+            queued = _best_effort_queue_overview_rebuild(project.id, range_key)
         return JsonResponse({'pending': True, 'queued': queued, 'rows': [], 'pagination': {'page': 1, 'pageSize': PAGE_METRICS_TABLE_PAGE_SIZE, 'totalRows': 0, 'totalPages': 1}}, status=202)
 
-    payload = services.normalize_overview_payload(payload_json or {})
+    payload = services.normalize_overview_payload(cache.get('payload_json') or {})
     selected_product_area_keys = services.resolve_product_area_filter_keys(
         payload,
         _product_area_query_values(request),
@@ -506,6 +749,18 @@ def _page_selector_rows(rows):
             or row.get('product_area')
             or 'Unassigned'
         )
+        product_area_key = (
+            row.get('product_area_key')
+            or row.get('productAreaKey')
+            or row.get('product_area_id')
+            or row.get('productAreaId')
+            or ''
+        )
+        page_display_key = (
+            row.get('page_display_key')
+            or row.get('pageDisplayKey')
+            or ''
+        )
 
         seen_page_rule_ids.add(page_rule_id)
         selector_rows.append(
@@ -517,6 +772,10 @@ def _page_selector_rows(rows):
                 'displayName': page_name,
                 'page_group': product_area_name,
                 'productAreaName': product_area_name,
+                'product_area_key': product_area_key,
+                'productAreaKey': product_area_key,
+                'page_display_key': page_display_key,
+                'pageDisplayKey': page_display_key,
                 'companies_count': row.get('companies_count') or 0,
                 'visits_count': row.get('visits_count') or 0,
                 'engaged_seconds': row.get('engaged_seconds') or 0,
@@ -530,7 +789,11 @@ def _detail_payload_bundle(request, project, page_rule_id, selected_range_key):
     cache = services.get_cached_detail_payload(project.id, page_rule_id, range_key=selected_range_key)
     selected_payload = None
     if cache and not cache.get('is_stale') and _is_current_payload_schema(cache.get('schema_version')):
-        selected_payload = _with_page_detail_table_payloads(cache.get('payload_json'), request)
+        colored_payload = services.apply_page_detail_product_area_colors(
+            project.id,
+            cache.get('payload_json'),
+        )
+        selected_payload = _with_page_detail_table_payloads(colored_payload, request)
     selector_rows = _page_selector_rows(
         services.get_cached_overview_detail_rows(project.id, range_key=selected_range_key)
     )
@@ -561,6 +824,28 @@ def render_project_page_detail(request, project, page_rule_id, *, is_demo_view=F
             page_rule_id='__PAGE_RULE_ID__',
         )
     )
+    selected_page_exists = any(
+        str(row.get('page_rule_id') or row.get('pageRuleId') or '') == str(page_rule_id)
+        for row in payload_bundle.get('page_selector_rows') or []
+    )
+    if payload is None and not selected_page_exists:
+        alphabetical_pages = sorted(
+            payload_bundle.get('page_selector_rows') or [],
+            key=lambda row: (
+                str(row.get('page_name') or row.get('pageName') or '').strip().lower(),
+                str(row.get('page_rule_id') or row.get('pageRuleId') or ''),
+            ),
+        )
+        if alphabetical_pages:
+            fallback_page_id = str(
+                alphabetical_pages[0].get('page_rule_id')
+                or alphabetical_pages[0].get('pageRuleId')
+                or ''
+            )
+            if fallback_page_id and fallback_page_id != str(page_rule_id):
+                target = detail_base_url.replace('__PAGE_RULE_ID__', fallback_page_id)
+                return redirect(f'{target}?{request.GET.urlencode()}' if request.GET else target)
+
     metric_dynamics_url = reverse('demo_page_metric_dynamics', kwargs={'page_rule_id': page_rule_id}) if is_demo_view else project_route(
         project,
         'project_page_metric_dynamics',
@@ -588,6 +873,7 @@ def render_project_page_detail(request, project, page_rule_id, *, is_demo_view=F
             'pages_range_key': range_key,
             'pages_range_label': PAGES_RANGE_LABELS.get(range_key, PAGES_RANGE_LABELS['last_30_days']),
             'pages_range_options': PAGES_RANGE_OPTIONS,
+            'pages_period_query_suffix': preserved_period_query_suffix(request),
             'pages_overview_url': overview_url,
             'pages_detail_base_url': detail_base_url,
             'company_detail_base_url': company_detail_base_url,

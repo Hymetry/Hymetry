@@ -119,12 +119,42 @@
           <table class="w-full border-collapse text-left text-sm">
             <thead class="border-b border-slate-200 text-gray-950">
               <tr>
-                <th class="whitespace-nowrap px-4 py-3 font-normal">Status</th>
-                <th class="whitespace-nowrap px-4 py-3 font-normal">Last event</th>
-                <th class="whitespace-nowrap px-4 py-3 font-normal">Analytics</th>
-                <th class="whitespace-nowrap px-4 py-3 font-normal">Session recording</th>
-                <th class="whitespace-nowrap px-4 py-3 font-normal">User ID</th>
-                <th class="whitespace-nowrap px-4 py-3 font-normal">Company ID</th>
+                <th class="whitespace-nowrap px-4 py-3 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="installation-status-tooltip-status">
+                    Status
+                    <span id="installation-status-tooltip-status" class="metric-header-tooltip__content" role="tooltip">Overall data-receiving state for this project</span>
+                  </span>
+                </th>
+                <th class="whitespace-nowrap px-4 py-3 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="installation-status-tooltip-last-event">
+                    Last event
+                    <span id="installation-status-tooltip-last-event" class="metric-header-tooltip__content" role="tooltip">Time since Hymetry last received a tracked event</span>
+                  </span>
+                </th>
+                <th class="whitespace-nowrap px-4 py-3 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="installation-status-tooltip-analytics">
+                    Analytics
+                    <span id="installation-status-tooltip-analytics" class="metric-header-tooltip__content" role="tooltip">Whether analytics events are being received</span>
+                  </span>
+                </th>
+                <th class="whitespace-nowrap px-4 py-3 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="installation-status-tooltip-recording">
+                    Session recording
+                    <span id="installation-status-tooltip-recording" class="metric-header-tooltip__content" role="tooltip">Whether session recording is enabled and receiving data</span>
+                  </span>
+                </th>
+                <th class="whitespace-nowrap px-4 py-3 font-normal">
+                  <span class="metric-header-tooltip" tabindex="0" aria-describedby="installation-status-tooltip-user-id">
+                    User ID
+                    <span id="installation-status-tooltip-user-id" class="metric-header-tooltip__content" role="tooltip">Whether recent events include an identified user</span>
+                  </span>
+                </th>
+                <th class="whitespace-nowrap px-4 py-3 font-normal">
+                  <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="installation-status-tooltip-company-id">
+                    Company ID
+                    <span id="installation-status-tooltip-company-id" class="metric-header-tooltip__content" role="tooltip">Whether recent events include an identified company</span>
+                  </span>
+                </th>
               </tr>
             </thead>
             <tbody>

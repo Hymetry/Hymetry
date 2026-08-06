@@ -1,6 +1,7 @@
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.pages import services
+from apps.projects.demo import get_demo_project
 
 
 class Command(BaseCommand):
@@ -8,6 +9,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--project-id', type=int)
+        parser.add_argument('--demo', action='store_true', help='Rebuild cache for the configured demo project.')
         parser.add_argument('--range', dest='range_key')
         parser.add_argument(
             '--all-ranges',
@@ -22,8 +24,10 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         project_id = options['project_id']
+        if options['demo']:
+            project_id = get_demo_project().id
         if not project_id:
-            raise CommandError('Provide --project-id.')
+            raise CommandError('Provide --project-id or --demo.')
 
         range_key = options.get('range_key')
         if options['all_ranges'] or not range_key:

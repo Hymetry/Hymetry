@@ -1,0 +1,35 @@
+{% comment %}
+  The Companies selector is the global company scope for an analytics page and
+  always renders before the page-specific filters. The popover contents are
+  rendered by static/js/shared/company-segments.js once the segment list loads.
+{% endcomment %}
+<div class="company-scope" data-company-scope>
+  <button
+    type="button"
+    class="company-scope__trigger"
+    data-company-scope-trigger
+    data-scope-type="{{ company_attribute_filter.scope_type|default:'all' }}"
+    aria-haspopup="menu"
+    aria-expanded="false"
+    aria-controls="company-scope-popover"
+    aria-label="Companies: {{ company_attribute_filter.scope_label|default:'All companies' }}">
+    <span class="company-scope__prefix">Companies:</span>
+    <span class="company-scope__value" data-company-scope-value>{{ company_attribute_filter.scope_label|default:'All companies' }}</span>
+    <span class="company-scope__count" data-company-scope-count hidden></span>
+    <svg
+      class="company-scope__chevron"
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 -960 960 960"
+      fill="currentColor"
+      aria-hidden="true">
+      <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
+    </svg>
+  </button>
+  <div
+    id="company-scope-popover"
+    class="company-scope__popover"
+    data-company-scope-popover
+    role="menu"
+    aria-label="Company scope"
+    hidden></div>
+</div>

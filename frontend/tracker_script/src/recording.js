@@ -3,6 +3,7 @@ import { createId } from './init';
 const TAB_ID_KEY = 'tracker_tab_id';
 const BATCH_INTERVAL = 5000;
 const MAX_BATCH_SIZE = 100;
+const MAX_BATCH_BYTES = 8 * 1024 * 1024;
 const CHANNEL_NAME = 'ppp_tab_id_claim';
 const HANDSHAKE_TIMEOUT = 300;
 const PENDING_BATCHES_KEY = 'tracker_pending_batches';
@@ -26,20 +27,35 @@ export function startRecording(runtime) {
   let globalEventBuffer = [];
   const who = createId();
 
-  function getPrivacySafePageUrl() {
-    try {
-      const url = new URL(window.location.href);
-      url.search = '';
-      url.hash = '';
-      return url.toString();
-    } catch (e) {
-      return String(window.location.href || '').split('#', 1)[0].split('?', 1)[0];
+  function utf8ByteLength(value) {
+    let byteLength = 0;
+
+    for (let index = 0; index < value.length; index++) {
+      const codeUnit = value.charCodeAt(index);
+      if (codeUnit < 0x80) {
+        byteLength += 1;
+      } else if (codeUnit < 0x800) {
+        byteLength += 2;
+      } else if (
+        codeUnit >= 0xd800 &&
+        codeUnit <= 0xdbff &&
+        index + 1 < value.length &&
+        value.charCodeAt(index + 1) >= 0xdc00 &&
+        value.charCodeAt(index + 1) <= 0xdfff
+      ) {
+        byteLength += 4;
+        index += 1;
+      } else {
+        byteLength += 3;
+      }
     }
+
+    return byteLength;
   }
 
   function buildPayload(events, isFinalBatch) {
     const batchTimestamp = new Date().toISOString();
-    const pageUrl = getPrivacySafePageUrl();
+    const pageUrl = window.location.href;
     const pageTitle = document.title || pageUrl;
 
     return JSON.stringify({
@@ -66,7 +82,7 @@ export function startRecording(runtime) {
       pendingBatches.push({
         payload: payload,
         timestamp: Date.now(),
-        url: getPrivacySafePageUrl(),
+        url: window.location.href,
       });
       if (pendingBatches.length > 10) {
         pendingBatches.splice(0, pendingBatches.length - 10);
@@ -77,13 +93,56 @@ export function startRecording(runtime) {
     }
   }
 
-  function sendBatch(events, isFinalBatch) {
+  function getNextBatchSize(maxEvents) {
+    const candidateCount = Math.min(globalEventBuffer.length, maxEvents);
+    if (!candidateCount) return 0;
+
+    let lowerBound = 1;
+    let upperBound = candidateCount;
+    let acceptedCount = 0;
+
+    while (lowerBound <= upperBound) {
+      const midpoint = Math.floor((lowerBound + upperBound) / 2);
+      const payload = buildPayload(globalEventBuffer.slice(0, midpoint), false);
+
+      if (utf8ByteLength(payload) <= MAX_BATCH_BYTES) {
+        acceptedCount = midpoint;
+        lowerBound = midpoint + 1;
+      } else {
+        upperBound = midpoint - 1;
+      }
+    }
+
+    return acceptedCount;
+  }
+
+  function dequeueNextBatch(maxEvents) {
+    while (globalEventBuffer.length) {
+      const batchSize = getNextBatchSize(maxEvents);
+      if (batchSize) {
+        return globalEventBuffer.splice(0, batchSize);
+      }
+
+      const oversizedEvent = globalEventBuffer.shift();
+      runtime.log('recording event dropped because it exceeds the 8 MiB batch limit', {
+        eventType: oversizedEvent?.type ?? null,
+      });
+    }
+
+    return null;
+  }
+
+  function sendBatch(events, isFinalBatch, useFinalTransport = isFinalBatch) {
     if (!events || !events.length || hasAuthError) return;
 
     const payload = buildPayload(events, isFinalBatch);
+    if (utf8ByteLength(payload) > MAX_BATCH_BYTES) {
+      runtime.log('recording batch dropped because it exceeds the 8 MiB batch limit');
+      return;
+    }
     const endpoint = runtime.config.recordingEndpoint;
 
-    if (isFinalBatch) {
+    if (useFinalTransport) {
       if (navigator.sendBeacon) {
         const sent = navigator.sendBeacon(endpoint, payload);
         if (sent) return;
@@ -121,8 +180,22 @@ export function startRecording(runtime) {
 
   function flushRemaining(isFinalBatch) {
     if (!globalEventBuffer.length || hasAuthError) return;
-    const finalBatch = globalEventBuffer.splice(0, globalEventBuffer.length);
-    sendBatch(finalBatch, !!isFinalBatch);
+
+    const batches = [];
+    let batch = dequeueNextBatch(MAX_BATCH_SIZE);
+    while (batch) {
+      batches.push(batch);
+      batch = dequeueNextBatch(MAX_BATCH_SIZE);
+    }
+
+    for (let index = 0; index < batches.length; index++) {
+      const isLastBatch = index === batches.length - 1;
+      sendBatch(
+        batches[index],
+        !!isFinalBatch && isLastBatch,
+        !!isFinalBatch,
+      );
+    }
   }
 
   function sendPendingBatches() {
@@ -131,7 +204,12 @@ export function startRecording(runtime) {
       if (!pendingBatches.length) return;
 
       for (let i = 0; i < pendingBatches.length; i++) {
-        sendRecordingRequest(runtime.config.recordingEndpoint, pendingBatches[i].payload).catch(() => {
+        const pendingPayload = String(pendingBatches[i].payload || '');
+        if (utf8ByteLength(pendingPayload) > MAX_BATCH_BYTES) {
+          runtime.log('pending recording batch dropped because it exceeds the 8 MiB batch limit');
+          continue;
+        }
+        sendRecordingRequest(runtime.config.recordingEndpoint, pendingPayload).catch(() => {
           // Keep going through pending list; failed entries are dropped.
         });
       }
@@ -234,6 +312,7 @@ export function startRecording(runtime) {
     stopFn = window.rrweb.record({
       emit(event) {
         if (!hasAuthError) {
+          event._hymetry_page_url = window.location.href;
           globalEventBuffer.push(event);
         }
       },
@@ -262,9 +341,8 @@ export function startRecording(runtime) {
     isRecording = true;
     intervalId = setInterval(() => {
       if (!globalEventBuffer.length || hasAuthError) return;
-      const batchSize = Math.min(globalEventBuffer.length, MAX_BATCH_SIZE);
-      const currentBatch = globalEventBuffer.splice(0, batchSize);
-      sendBatch(currentBatch, false);
+      const currentBatch = dequeueNextBatch(MAX_BATCH_SIZE);
+      if (currentBatch) sendBatch(currentBatch, false);
     }, BATCH_INTERVAL);
   }
 

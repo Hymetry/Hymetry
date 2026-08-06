@@ -33,11 +33,16 @@
     return `${url}${separator}${params.toString()}`;
   }
 
-  function optionsUrl(baseUrl, query, periodValue, limit = 20) {
+  function optionsUrl(baseUrl, query, periodValue, limit = 20, alphabetical = false) {
     const nextUrl = new URL(baseUrl, globalScope.location.origin);
 
     nextUrl.searchParams.set("period", coercePeriodKey(periodValue || payload?.period?.key || DEFAULT_PERIOD));
     nextUrl.searchParams.set("limit", String(limit));
+    if (alphabetical) {
+      nextUrl.searchParams.set("sort", "alphabetical");
+    } else {
+      nextUrl.searchParams.delete("sort");
+    }
 
     if (String(query || "").trim()) {
       nextUrl.searchParams.set("q", String(query || "").trim());
@@ -207,13 +212,14 @@
 
   function companyDetailHref(company, periodValue) {
     const companyId = typeof company === "string" ? company : company?.id || company?.companyId || "";
-    const params = new URLSearchParams();
     const baseUrl = body?.dataset.companyDetailBaseUrl || bundle.urls?.companyDetailBaseUrl || "detail.html";
+    const companyUrl = new URL(baseUrl, globalScope.location.origin);
 
-    params.set("company_id", companyId);
-    params.set("period", coercePeriodKey(periodValue || payload?.period?.key || DEFAULT_PERIOD));
+    companyUrl.pathname = companyUrl.pathname.replace(/detail(?=\/|$)/, encodeURIComponent(companyId));
+    companyUrl.searchParams.delete("company_id");
+    companyUrl.searchParams.set("period", coercePeriodKey(periodValue || payload?.period?.key || DEFAULT_PERIOD));
 
-    return appendParams(baseUrl, params);
+    return `${companyUrl.pathname}${companyUrl.search}`;
   }
 
   function userDetailHref(user, periodValue) {
@@ -257,7 +263,13 @@
       return Promise.resolve([]);
     }
 
-    return globalScope.fetch(optionsUrl(baseUrl, query, options.period || options.periodValue, options.limit || 20), {
+    return globalScope.fetch(optionsUrl(
+      baseUrl,
+      query,
+      options.period || options.periodValue,
+      options.limit || 20,
+      options.alphabetical
+    ), {
       credentials: "same-origin",
       headers: {
         Accept: "application/json"

@@ -4,7 +4,7 @@
 {% block title %}{% if company_detail_payload %}{{ company_detail_payload.company.name }} - Company details{% else %}Company details{% endif %} - {% if is_demo_view %}{{ demo_project_display_name }}{% else %}{{ project.name }}{% endif %}{% endblock %}
 
 {% block extra_js %}
-  <link rel="stylesheet" href="{% static 'css/companies/overview.css' %}" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/companies/overview.css' %}?v=20260730-1" type="text/css" />
   <link rel="stylesheet" href="{% static 'css/companies/detail.css' %}" type="text/css" />
 {% endblock %}
 
@@ -23,14 +23,14 @@
 {% block content %}
 <main class="page-shell w-full pb-12 pt-20">
             {% if analytics_is_empty %}
-            <header class="mb-8">
+            <header class="mb-6">
                 <div class="company-detail-header-row flex flex-col gap-4 lg:flex-row lg:justify-between">
                     <div class="min-w-0">
                         <h1 class="break-words text-3xl font-bold text-slate-900">{{ company_detail_payload.company.name|default:"Company" }}</h1>
                     </div>
 
                     <div class="company-detail-header-side shrink-0">
-                        {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='company-detail-period-selector' analytics_range_options=companies_range_options analytics_range_key=companies_range_key %}
+                        {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='company-detail-period-selector' analytics_range_options=companies_range_options analytics_range_key=companies_range_key analytics_query_suffix=companies_period_query_suffix %}
                     </div>
                 </div>
             </header>
@@ -76,7 +76,7 @@
             </section>
 
             <div id="company-detail-content" class="hidden">
-                <header class="mb-8">
+                <header class="mb-6">
                     <div class="company-detail-header-row flex flex-col gap-4 lg:flex-row lg:justify-between">
                         <div class="min-w-0">
                             <h1 id="company-detail-title" class="flex flex-wrap items-baseline gap-x-0 gap-y-1 break-words text-3xl font-bold text-slate-900">
@@ -147,7 +147,7 @@
                             </svg>
                             <span id="company-detail-health-summary"></span>
                         </div>
-                        <div id="company-detail-period-selector" class="inline-flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white" aria-label="Period"></div>
+                        {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='company-detail-period-selector' analytics_period_selector_label='Period' analytics_range_options=companies_range_options analytics_range_key=companies_range_key analytics_query_suffix=companies_period_query_suffix %}
                     </div>
                 </header>
 
@@ -168,7 +168,7 @@
                     <section class="companies-chart-card">
                         <div class="px-6 py-5">
                             <h2 class="text-lg font-semibold uppercase text-gray-600">Product area usage over time</h2>
-                            <p class="mt-1 text-sm text-slate-500">How this company expands usage across product areas.</p>
+                            <p class="mt-1 text-sm text-slate-500">Daily engaged time by product area.</p>
                         </div>
 
                         <div class="px-6 pb-5">
@@ -263,19 +263,54 @@
                         <table class="pages-detail-metrics-table w-full table-auto text-left" style="--pages-detail-table-min-width: 1320px; --pages-value-bar-max-width: 72px; --pages-split-change-width: 96px; --pages-change-axis: 18px; --pages-change-positive-track: 36px; --pages-change-negative-track: 17px;">
                             <thead class="border-b border-gray-300 bg-white text-slate-600">
                                 <tr>
-                                    <th class="py-3 pl-0 pr-6 font-normal">Company</th>
-                                    <th class="py-3 pr-6 font-normal">Status</th>
-                                    <th class="py-3 pr-6 font-normal">Active users</th>
-                                    <th class="py-3 pr-6 font-normal">Engaged / user</th>
-                                    <th class="py-3 pr-6 font-normal">Adoption breadth</th>
-                                    <th class="py-3 pr-6 font-normal">Interaction</th>
+                                    <th class="py-3 pl-0 pr-6 font-normal">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="company-peer-tooltip-company">
+                                            Company
+                                            <span id="company-peer-tooltip-company" class="metric-header-tooltip__content" role="tooltip">Company account included in this peer comparison</span>
+                                        </span>
+                                    </th>
+                                    <th class="py-3 pr-6 font-normal">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="company-peer-tooltip-status">
+                                            Status
+                                            <span id="company-peer-tooltip-status" class="metric-header-tooltip__content" role="tooltip">Account health state based on activation, adoption, risk, and dormancy</span>
+                                        </span>
+                                    </th>
+                                    <th class="py-3 pr-6 font-normal">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="company-peer-tooltip-active-users">
+                                            Active users
+                                            <span id="company-peer-tooltip-active-users" class="metric-header-tooltip__content" role="tooltip">Number of users who used this company account during the selected period</span>
+                                        </span>
+                                    </th>
+                                    <th class="py-3 pr-6 font-normal">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="company-peer-tooltip-engaged-user">
+                                            Engaged / user
+                                            <span id="company-peer-tooltip-engaged-user" class="metric-header-tooltip__content" role="tooltip">Average active time per user during the selected period</span>
+                                        </span>
+                                    </th>
+                                    <th class="py-3 pr-6 font-normal">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="company-peer-tooltip-adoption-breadth">
+                                            Adoption breadth
+                                            <span id="company-peer-tooltip-adoption-breadth" class="metric-header-tooltip__content" role="tooltip">Number of product areas and pages used during the selected period</span>
+                                        </span>
+                                    </th>
+                                    <th class="py-3 pr-6 font-normal">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="company-peer-tooltip-interaction">
+                                            Interaction
+                                            <span id="company-peer-tooltip-interaction" class="metric-header-tooltip__content" role="tooltip">Share of visits with at least one click</span>
+                                        </span>
+                                    </th>
                                     <th class="py-3 pr-6 font-normal">
                                         <span class="metric-header-tooltip" tabindex="0" aria-describedby="company-peer-tooltip-area-mix">
                                             Area usage
                                             <span id="company-peer-tooltip-area-mix" class="metric-header-tooltip__content" role="tooltip">Engaged time by area during the selected period, scaled against this comparison table</span>
                                         </span>
                                     </th>
-                                    <th class="py-3 font-normal">Key difference</th>
+                                    <th class="py-3 font-normal">
+                                        <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="company-peer-tooltip-key-difference">
+                                            Key difference
+                                            <span id="company-peer-tooltip-key-difference" class="metric-header-tooltip__content" role="tooltip">Most notable usage difference between this company and its peers</span>
+                                        </span>
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody id="company-peer-table-body" class="text-slate-700"></tbody>
@@ -342,19 +377,34 @@
                                         </span>
                                     </th>
                                     <th class="py-3 pr-6 font-normal">
-                                        <button type="button" class="company-detail-sort-button" data-user-sort="lastActiveDays">Last active</button>
+                                        <span class="metric-header-tooltip">
+                                            <button type="button" class="company-detail-sort-button" data-user-sort="lastActiveDays" aria-describedby="company-users-tooltip-last-active">Last active</button>
+                                            <span id="company-users-tooltip-last-active" class="metric-header-tooltip__content" role="tooltip">Most recent date this user was active during the selected period</span>
+                                        </span>
                                     </th>
                                     <th class="py-3 pr-6 font-normal">
-                                        <button type="button" class="company-detail-sort-button" data-user-sort="activeDays">Active days</button>
+                                        <span class="metric-header-tooltip">
+                                            <button type="button" class="company-detail-sort-button" data-user-sort="activeDays" aria-describedby="company-users-tooltip-active-days">Active days</button>
+                                            <span id="company-users-tooltip-active-days" class="metric-header-tooltip__content" role="tooltip">Number of days this user was active during the selected period</span>
+                                        </span>
                                     </th>
                                     <th class="py-3 pr-6 font-normal">
-                                        <button type="button" class="company-detail-sort-button" data-user-sort="visits">Visits</button>
+                                        <span class="metric-header-tooltip">
+                                            <button type="button" class="company-detail-sort-button" data-user-sort="visits" aria-describedby="company-users-tooltip-visits">Visits</button>
+                                            <span id="company-users-tooltip-visits" class="metric-header-tooltip__content" role="tooltip">Number of page visits by this user during the selected period</span>
+                                        </span>
                                     </th>
                                     <th class="py-3 pr-6 font-normal">
-                                        <button type="button" class="company-detail-sort-button" data-user-sort="engagedSeconds">Engaged</button>
+                                        <span class="metric-header-tooltip">
+                                            <button type="button" class="company-detail-sort-button" data-user-sort="engagedSeconds" aria-describedby="company-users-tooltip-engaged">Engaged</button>
+                                            <span id="company-users-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent by this user during the selected period</span>
+                                        </span>
                                     </th>
                                     <th class="py-3 pr-6 font-normal">
-                                        <button type="button" class="company-detail-sort-button" data-user-sort="interactionPct">Interaction</button>
+                                        <span class="metric-header-tooltip">
+                                            <button type="button" class="company-detail-sort-button" data-user-sort="interactionPct" aria-describedby="company-users-tooltip-interaction">Interaction</button>
+                                            <span id="company-users-tooltip-interaction" class="metric-header-tooltip__content" role="tooltip">Share of this user&rsquo;s visits with at least one click</span>
+                                        </span>
                                     </th>
                                     <th class="py-3 pr-6 font-normal">
                                         <span class="metric-header-tooltip" tabindex="0" aria-describedby="company-users-tooltip-area-usage">
@@ -427,11 +477,36 @@
                         <table class="company-actions-table w-full table-auto text-left">
                             <thead class="border-b border-gray-300 bg-white text-slate-600">
                                 <tr>
-                                    <th class="py-3 pl-0 pr-6 font-normal">Type</th>
-                                    <th class="py-3 pr-6 font-normal">Recommended action</th>
-                                    <th class="py-3 pr-6 font-normal">Reason</th>
-                                    <th class="py-3 pr-6 font-normal">Evidence</th>
-                                    <th class="py-3 font-normal">Next step</th>
+                                    <th class="py-3 pl-0 pr-6 font-normal">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="company-actions-tooltip-type">
+                                            Type
+                                            <span id="company-actions-tooltip-type" class="metric-header-tooltip__content" role="tooltip">Signal category that produced this recommendation</span>
+                                        </span>
+                                    </th>
+                                    <th class="py-3 pr-6 font-normal">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="company-actions-tooltip-action">
+                                            Recommended action
+                                            <span id="company-actions-tooltip-action" class="metric-header-tooltip__content" role="tooltip">Suggested follow-up based on this company&rsquo;s recent activity</span>
+                                        </span>
+                                    </th>
+                                    <th class="py-3 pr-6 font-normal">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="company-actions-tooltip-reason">
+                                            Reason
+                                            <span id="company-actions-tooltip-reason" class="metric-header-tooltip__content" role="tooltip">Usage pattern that led to the recommendation</span>
+                                        </span>
+                                    </th>
+                                    <th class="py-3 pr-6 font-normal">
+                                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="company-actions-tooltip-evidence">
+                                            Evidence
+                                            <span id="company-actions-tooltip-evidence" class="metric-header-tooltip__content" role="tooltip">Specific signal supporting the recommended action</span>
+                                        </span>
+                                    </th>
+                                    <th class="py-3 font-normal">
+                                        <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="company-actions-tooltip-next-step">
+                                            Next step
+                                            <span id="company-actions-tooltip-next-step" class="metric-header-tooltip__content" role="tooltip">Suggested practical step for acting on the recommendation</span>
+                                        </span>
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody id="company-recommended-actions" class="text-slate-700"></tbody>
@@ -449,11 +524,10 @@
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <script id="company-detail-data" type="application/json">{{ company_detail_payload_json }}</script>
   <script src="{% static 'js/pages/page-details-helpers.js' %}"></script>
-  <script src="{% static 'js/shared/metric-dynamics.js' %}"></script>
+  <script src="{% static 'js/shared/metric-dynamics.js' %}?v=20260802-1"></script>
   <script src="{% static 'js/shared/analytics-status-colors.js' %}"></script>
   <script src="{% static 'js/shared/product-area-colors.js' %}"></script>
   <script src="{% static 'js/companies/django-company-detail-data.js' %}?v=20260709-3"></script>
-  <script src="{% static 'js/companies/company-detail-helpers.js' %}"></script>
-  <script src="{% static 'js/companies/company-detail.js' %}?v=20260713-1"></script>
+  <script src="{% static 'js/companies/company-detail.js' %}?v=20260801-1"></script>
   {% endif %}
 {% endblock %}

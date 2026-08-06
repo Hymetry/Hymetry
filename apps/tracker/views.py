@@ -8,21 +8,46 @@ from urllib.parse import urlencode, urljoin, urlparse
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, RequestDataTooBig
 from django.http import JsonResponse, Http404, HttpResponse
 from django.shortcuts import render
+from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
+from apps.projects import analytics_filter_state
 from apps.projects.demo import DEMO_PROJECT_DISPLAY_NAME, get_demo_project
 from apps.projects.access import get_accessible_project_or_404
+from apps.projects.company_attribute_filter_support import (
+    build_company_attribute_filter_context,
+    canonical_company_scope_redirect,
+)
+from apps.projects.company_segments import (
+    company_segment_urls,
+    demo_company_segment_urls,
+    resolve_company_scope,
+)
 from apps.projects.models import Project
-from apps.tracker.all_sessions_bubbles_view import AllSessionsBubblesView
+from apps.projects.url_helpers import project_route
 from apps.tracker.analytics_tracker import AnalyticsTracker
 from apps.tracker.models import Session
-from apps.tracker.recording_mixins import RecordingViewMixin
+from apps.tracker.replay_streaming import (
+    ReplayStreamError,
+    build_replay_stream_bootstrap,
+    build_replay_stream_chunk,
+    build_replay_stream_seek,
+)
 from apps.tracker.session_tracker import SessionTracker
+from apps.tracker.session_resolver import SessionResolutionError
 from apps.tracker.tools import get_consolidated_timeline_data
+from apps.tracker.visits_filters import (
+    normalize_entity_option_limit,
+    resolve_visits_page_filter,
+    search_visits_entities,
+    selected_visits_entity_label,
+    visits_page_filter_groups,
+)
+from apps.tracker.visits_table import build_visits_context
 
 logger = logging.getLogger(__name__)
 
@@ -343,8 +368,21 @@ def record_event(request):
         response["Access-Control-Allow-Origin"] = "*"
         return response
 
+    except RequestDataTooBig:
+        logger.warning(
+            "Recording request body exceeded DATA_UPLOAD_MAX_MEMORY_SIZE",
+            extra={'content_length': request.META.get('CONTENT_LENGTH')},
+        )
+        response = JsonResponse({'error': 'Payload too large.'}, status=413)
+        response["Access-Control-Allow-Origin"] = "*"
+        return response
     except PermissionDenied as e:
         response = JsonResponse({'error': str(e)}, status=403)
+        response["Access-Control-Allow-Origin"] = "*"
+        return response
+    except SessionResolutionError:
+        logger.warning("Recording request could not be assigned to one canonical session")
+        response = JsonResponse({'error': 'Visit session could not be resolved.'}, status=409)
         response["Access-Control-Allow-Origin"] = "*"
         return response
     except Exception:
@@ -390,9 +428,9 @@ def record_analytics(request):
 
 @login_required
 def recordings(request, project_id):
-    """Cache-based version using BubbleCacheManager for optimized performance."""
+    """Render the recording-backed Visits table."""
     project = get_accessible_project_or_404(request.user, project_id)
-    return _render_recordings(request, project)
+    return _render_visits(request, project)
 
 
 @login_required
@@ -470,6 +508,98 @@ def get_consolidated_data(request, project_id, session_id):
         return JsonResponse({'error': str(e)}, status=500)
 
 
+def _replay_stream_response(*, project, session, cursor, seek_cursor, seek_ms):
+    try:
+        if seek_ms is not None:
+            if cursor:
+                raise ReplayStreamError(
+                    "A replay request cannot combine chunk and seek cursors.",
+                    code="invalid_seek_request",
+                    status_code=400,
+                )
+            data = build_replay_stream_seek(
+                project=project,
+                session=session,
+                seek_cursor=seek_cursor,
+                target_ms=seek_ms,
+            )
+        elif cursor:
+            data = build_replay_stream_chunk(
+                project=project,
+                session=session,
+                cursor=cursor,
+            )
+        else:
+            data = build_replay_stream_bootstrap(
+                project=project,
+                session=session,
+            )
+        response = JsonResponse(
+            {'success': True, 'data': data},
+            json_dumps_params={'separators': (',', ':')},
+        )
+        response['Cache-Control'] = 'private, no-store'
+        logger.info(
+            "recording_stream_chunk session_id=%s project_id=%s response_kind=%s "
+            "event_count=%s event_bytes=%s payload_bytes=%s response_bytes=%s "
+            "has_more=%s stop_reason=%s",
+            session.session_id,
+            project.id,
+            data.get('response_kind', ''),
+            data.get('chunk', {}).get('event_count', 0),
+            data.get('chunk', {}).get('event_bytes', 0),
+            data.get('chunk', {}).get('payload_bytes', 0),
+            len(response.content),
+            data.get('has_more', False),
+            data.get('chunk', {}).get('stop_reason', ''),
+        )
+        return response
+    except ReplayStreamError as exc:
+        response = JsonResponse(
+            {
+                'success': False,
+                'error': str(exc),
+                'code': exc.code,
+            },
+            status=exc.status_code,
+            json_dumps_params={'separators': (',', ':')},
+        )
+        response['Cache-Control'] = 'private, no-store'
+        return response
+    except Exception:
+        logger.exception(
+            "Unexpected replay stream failure session_id=%s project_id=%s",
+            session.session_id,
+            project.id,
+        )
+        response = JsonResponse(
+            {
+                'success': False,
+                'error': 'Incremental replay is temporarily unavailable.',
+                'code': 'streaming_unavailable',
+            },
+            status=500,
+            json_dumps_params={'separators': (',', ':')},
+        )
+        response['Cache-Control'] = 'private, no-store'
+        return response
+
+
+@login_required
+@require_http_methods(["GET"])
+def replay_stream(request, project_id, session_id):
+    """Return a bounded bootstrap, continuation chunk, or snapshot seek."""
+    project = get_accessible_project_or_404(request.user, project_id)
+    session = _get_project_session_or_404(project.id, session_id)
+    return _replay_stream_response(
+        project=project,
+        session=session,
+        cursor=request.GET.get('cursor'),
+        seek_cursor=request.GET.get('seek_cursor'),
+        seek_ms=request.GET.get('seek_ms') if 'seek_ms' in request.GET else None,
+    )
+
+
 def _get_project_session_or_404(project_id, session_id):
     try:
         return Session.objects.select_related('visitor__project').get(
@@ -480,21 +610,269 @@ def _get_project_session_or_404(project_id, session_id):
         raise Http404('Session not found.') from exc
 
 
-def _render_recordings(request, project, *, is_demo_view=False):
-    view = AllSessionsBubblesView(request, project.id, is_demo_view=is_demo_view)
-    return view.render()
+def _format_visits_duration(value):
+    total_seconds = max(0, int(value or 0))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    parts = []
+    if hours:
+        parts.append(f'{hours}h')
+    if minutes:
+        parts.append(f'{minutes}m')
+    if seconds or not parts:
+        parts.append(f'{seconds}s')
+    return ' '.join(parts)
+
+
+def _visits_query_url(*, range_key, sort_key, sort_direction, page=None, filters=None):
+    query = [
+        ('range', range_key),
+        ('sort', sort_key),
+        ('direction', sort_direction),
+    ]
+    if filters:
+        if hasattr(filters, 'lists'):
+            for key, values in filters.lists():
+                query.extend((key, value) for value in values)
+        elif hasattr(filters, 'items'):
+            query.extend(filters.items())
+        else:
+            query.extend(filters)
+    if page is not None:
+        query.append(('page', page))
+    return f'?{urlencode(query, doseq=True)}'
+
+
+def _render_visits(request, project, *, is_demo_view=False):
+    company_scope = resolve_company_scope(request, project, is_demo_view=is_demo_view)
+    company_attribute_state = company_scope.state
+    canonical_redirect = canonical_company_scope_redirect(request, company_scope)
+    if canonical_redirect is not None:
+        return canonical_redirect
+    restored = analytics_filter_state.restore_redirect(
+        request,
+        project,
+        analytics_filter_state.VISITS,
+        is_demo_view=is_demo_view,
+    )
+    if restored is not None:
+        return restored
+    entity_type = request.GET.get('entity_type')
+    entity_id = str(request.GET.get('entity_id') or '').strip()
+    if entity_type not in {'company', 'user'} or not entity_id:
+        entity_type = ''
+        entity_id = ''
+
+    page_filter_groups = visits_page_filter_groups(project)
+    page_selection = resolve_visits_page_filter(
+        page_filter_groups,
+        request.GET.get('page_filter_type'),
+        request.GET.get('page_filter_id'),
+    )
+    context = build_visits_context(
+        project,
+        range_key=request.GET.get('range'),
+        sort_key=request.GET.get('sort'),
+        sort_direction=request.GET.get('direction'),
+        entity_type=entity_type,
+        entity_id=entity_id,
+        page_filter_type=page_selection['type'],
+        page_filter_id=page_selection['id'],
+        page_number=request.GET.get('page', 1),
+        company_attribute_state=company_attribute_state,
+    )
+    range_key = context['visits_range_key']
+    sort_key = context['visits_sort_key']
+    sort_direction = context['visits_sort_direction']
+    filter_params = []
+    if entity_type and entity_id:
+        filter_params.extend((
+            ('entity_type', entity_type),
+            ('entity_id', entity_id),
+        ))
+    if page_selection['type'] and page_selection['id']:
+        filter_params.extend((
+            ('page_filter_type', page_selection['type']),
+            ('page_filter_id', page_selection['id']),
+        ))
+    filter_params.extend(company_scope.canonical_pairs)
+
+    for row in context['visit_rows']:
+        session_id = row['recording_session_id']
+        if is_demo_view:
+            replay_url = reverse('demo_recording', kwargs={'session_id': session_id})
+            user_url = (
+                reverse('demo_user_detail', kwargs={'user_id': row['user_id']})
+                if row['user_id']
+                else ''
+            )
+            company_url = (
+                reverse('demo_company_detail', kwargs={'company_id': row['company_id']})
+                if row['company_id']
+                else ''
+            )
+        else:
+            replay_url = project_route(
+                project,
+                'recording',
+                session_id=session_id,
+            )
+            user_url = (
+                project_route(project, 'project_user_detail', user_id=row['user_id'])
+                if row['user_id']
+                else ''
+            )
+            company_url = (
+                project_route(project, 'project_company_detail', company_id=row['company_id'])
+                if row['company_id']
+                else ''
+            )
+
+        entity_query = urlencode({'range': range_key})
+        row.update({
+            # Replay always routes with the recording Session UUID. Linked
+            # AnalyticsSession/AnalyticsEvent identifiers are attribution only.
+            'replay_url': replay_url,
+            'user_url': f'{user_url}?{entity_query}' if user_url else '',
+            'company_url': f'{company_url}?{entity_query}' if company_url else '',
+            'user_label': row['user_name'],
+            'company_label': row['company_name'],
+            'duration_label': _format_visits_duration(row['duration_seconds']),
+            'unique_pages_label': (
+                f"{row['unique_pages']} page"
+                f"{'s' if row['unique_pages'] != 1 else ''}"
+            ),
+            'chart_data': row['segments'],
+        })
+
+    sort_urls = {}
+    for key in ('user', 'company', 'date_time', 'duration', 'unique_pages'):
+        if key == sort_key:
+            direction = 'desc' if sort_direction == 'asc' else 'asc'
+        else:
+            direction = 'asc' if key in {'user', 'company'} else 'desc'
+        sort_urls[key] = _visits_query_url(
+            range_key=range_key,
+            sort_key=key,
+            sort_direction=direction,
+            filters=filter_params,
+        )
+
+    page_obj = context['page_obj']
+    preview_url = (
+        reverse('demo_company_attribute_filter_preview')
+        if is_demo_view
+        else project_route(project, 'project_company_attribute_filter_preview')
+    )
+    context.update({
+        'project': project,
+        'selected_project': project,
+        'project_id': project.id,
+        'is_demo_view': is_demo_view,
+        'demo_project_id': project.id if is_demo_view else None,
+        'demo_project_display_name': DEMO_PROJECT_DISPLAY_NAME,
+        'sort_urls': sort_urls,
+        'visits_range_urls': {
+            range_option: _visits_query_url(
+                range_key=range_option,
+                sort_key=sort_key,
+                sort_direction=sort_direction,
+                filters=filter_params,
+            )
+            for range_option in ('last_7_days', 'last_30_days')
+        },
+        'visits_entity_label': selected_visits_entity_label(
+            project,
+            entity_type,
+            entity_id,
+            range_key=range_key,
+        ),
+        'visits_entity_options_url': (
+            reverse('demo_visits_filter_options')
+            if is_demo_view
+            else project_route(project, 'visits_filter_options')
+        ),
+        'visits_page_filter_groups': page_filter_groups,
+        'visits_page_filter_label': page_selection['label'],
+        'previous_url': (
+            _visits_query_url(
+                range_key=range_key,
+                sort_key=sort_key,
+                sort_direction=sort_direction,
+                page=page_obj.previous_page_number(),
+                filters=filter_params,
+            )
+            if page_obj.has_previous()
+            else ''
+        ),
+        'next_url': (
+            _visits_query_url(
+                range_key=range_key,
+                sort_key=sort_key,
+                sort_direction=sort_direction,
+                page=page_obj.next_page_number(),
+                filters=filter_params,
+            )
+            if page_obj.has_next()
+            else ''
+        ),
+        **build_company_attribute_filter_context(
+            project,
+            company_attribute_state,
+            surface='visits',
+            preview_url=preview_url,
+            scope=company_scope,
+            segment_urls=(
+                demo_company_segment_urls()
+                if is_demo_view
+                else company_segment_urls(project)
+            ),
+        ),
+    })
+    analytics_filter_state.remember(
+        request,
+        project,
+        analytics_filter_state.VISITS,
+        scope=company_scope,
+        page_values={
+            'range': range_key,
+            'entity_type': entity_type,
+            'entity_id': entity_id,
+            'page_filter_type': page_selection['type'],
+            'page_filter_id': page_selection['id'],
+        },
+        is_demo_view=is_demo_view,
+    )
+    return render(request, 'tracker/visits.html', context)
+
+
+def _visits_filter_options_response(request, project):
+    payload = search_visits_entities(
+        project,
+        query=request.GET.get('q') or request.GET.get('query'),
+        limit=normalize_entity_option_limit(request.GET.get('limit')),
+        range_key=request.GET.get('range'),
+    )
+    return JsonResponse(
+        payload,
+        status=202 if payload['pending'] else 200,
+        json_dumps_params={'separators': (',', ':')},
+    )
+
+
+@login_required
+@require_http_methods(["GET"])
+def visits_filter_options(request, project_id):
+    project = get_accessible_project_or_404(request.user, project_id)
+    return _visits_filter_options_response(request, project)
 
 
 def _render_recording(request, project, session, *, is_demo_view=False):
-    mixin = RecordingViewMixin(request, project.id, session.session_id)
-    session_bubbles_data = mixin.get_bubble_data(session)
-
     return render(
         request,
         'tracker/recording.html',
         {
             'session': session,
-            'session_bubbles_data': session_bubbles_data,
             'project': project,
             'project_id': project.id,
             'session_id': session.session_id,
@@ -507,7 +885,12 @@ def _render_recording(request, project, session, *, is_demo_view=False):
 
 @require_http_methods(["GET"])
 def demo_recordings(request):
-    return _render_recordings(request, get_demo_project(), is_demo_view=True)
+    return _render_visits(request, get_demo_project(), is_demo_view=True)
+
+
+@require_http_methods(["GET"])
+def demo_visits_filter_options(request):
+    return _visits_filter_options_response(request, get_demo_project())
 
 
 @require_http_methods(["GET"])
@@ -537,6 +920,20 @@ def demo_get_consolidated_data(request, session_id):
     except Exception as e:
         logger.exception("Error fetching demo consolidated recording data")
         return JsonResponse({'error': str(e)}, status=500)
+
+
+@require_http_methods(["GET"])
+def demo_replay_stream(request, session_id):
+    """Public bounded replay stream scoped to the fixed synthetic project."""
+    project = get_demo_project()
+    session = _get_project_session_or_404(project.id, session_id)
+    return _replay_stream_response(
+        project=project,
+        session=session,
+        cursor=request.GET.get('cursor'),
+        seek_cursor=request.GET.get('seek_cursor'),
+        seek_ms=request.GET.get('seek_ms') if 'seek_ms' in request.GET else None,
+    )
 
 
 @csrf_exempt

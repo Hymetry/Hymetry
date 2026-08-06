@@ -6,6 +6,23 @@
   const body = document.body || {};
   const detailPageSelectorRows = detailPayload?.page_selector_rows || detailPayload?.pageSelectorRows || [];
 
+  function appendCompanyAttributeParams(nextUrl) {
+    if (body.dataset?.pagesView !== "overview") {
+      return nextUrl;
+    }
+    const currentParams = new URLSearchParams(globalScope.location.search);
+    const existingKeys = Array.from(nextUrl.searchParams.keys())
+      .filter((key) => key.startsWith("ca."));
+
+    existingKeys.forEach((key) => nextUrl.searchParams.delete(key));
+    currentParams.forEach((value, key) => {
+      if (key.startsWith("ca.")) {
+        nextUrl.searchParams.append(key, value);
+      }
+    });
+    return nextUrl;
+  }
+
   function tableRequestUrl(baseUrl, params = {}) {
     const nextUrl = new URL(baseUrl, globalScope.location.origin);
     const currentParams = new URLSearchParams(globalScope.location.search);
@@ -25,6 +42,7 @@
       nextUrl.searchParams.set(key, String(value));
     });
 
+    appendCompanyAttributeParams(nextUrl);
     return `${nextUrl.pathname}${nextUrl.search}`;
   }
 

@@ -14,3 +14,11 @@ def is_demo_project(project):
 
 def ensure_project_writable(project):
     return project
+
+
+def clear_demo_project_cache():
+    """OSS has no local demo project or demo cache."""
+
+
+def clear_demo_project_cache_for_project(project_id):
+    """OSS has no local demo project or demo cache."""

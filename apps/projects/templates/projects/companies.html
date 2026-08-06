@@ -4,7 +4,9 @@
 {% block title %}{% if is_demo_view %}Companies - {{ demo_project_display_name }}{% else %}Companies - {{ project.name }}{% endif %}{% endblock %}
 
 {% block extra_js %}
-  <link rel="stylesheet" href="{% static 'css/companies/overview.css' %}" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/companies/overview.css' %}?v=20260730-1" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/overview-quick-jumper.css' %}?v=20260722-3" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/company-attribute-filters.css' %}?v=20260727-6" type="text/css" />
 {% endblock %}
 
 {% block nav %}
@@ -23,35 +25,21 @@
 <main class="page-shell w-full pb-12 pt-20">
             <header class="mb-8">
                 <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-                    <div class="min-w-0">
-                        <h1 class="text-3xl font-bold text-slate-900">Companies</h1>
-                        <p class="mt-2 max-w-3xl text-slate-600">
-                            Track account health, activation, adoption breadth, risk, and expansion opportunities.
-                        </p>
+                    <div class="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-center" data-overview-title-group>
+                        <h1 class="shrink-0 text-3xl font-bold text-slate-900">Companies</h1>
+
+                        {% if not analytics_is_empty %}
+                            {% include 'partials/overview_quick_jumper.html' with quick_jumper_root_id='company-search' quick_jumper_root_class='company-search' quick_jumper_trigger_id='company-search-trigger' quick_jumper_popover_id='company-search-popover' quick_jumper_input_id='company-search-input' quick_jumper_input_class='company-search__input' quick_jumper_results_id='company-search-results' quick_jumper_results_class='company-search__dropdown' quick_jumper_entity_label='company' quick_jumper_entity_plural='companies' %}
+                        {% endif %}
                     </div>
 
-                    <div class="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center">
-                        {% if not analytics_is_empty %}
-                        <div id="company-search" class="company-search">
-                            <label for="company-search-input" class="sr-only">Go to company</label>
-                            <input
-                                id="company-search-input"
-                                class="company-search__input"
-                                type="search"
-                                role="combobox"
-                                aria-autocomplete="list"
-                                aria-haspopup="listbox"
-                                aria-expanded="false"
-                                aria-controls="company-search-results"
-                                autocomplete="off"
-                                placeholder="Go to company&hellip;" />
-                            <div id="company-search-results" class="company-search__dropdown" role="listbox" hidden></div>
-                        </div>
-                        {% endif %}
-
-                        {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='companies-period-selector' analytics_range_options=companies_range_options analytics_range_key=companies_range_key %}
+                    <div class="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center" data-overview-filters>
+                        {% include 'partials/company_scope_selector.html' %}
+                        {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='companies-period-selector' analytics_range_options=companies_range_options analytics_range_key=companies_range_key analytics_query_suffix=company_attribute_filter_query_suffix %}
                     </div>
                 </div>
+                {% include 'partials/company_attribute_filter_summary.html' %}
+                {% include 'partials/company_segment_review_banner.html' %}
             </header>
 
             {% if analytics_is_empty %}
@@ -77,9 +65,12 @@
                 <template id="companies-kpi-card-template">
                     <article data-pages-kpi-card class="block px-5 py-4">
                         <div class="flex items-start justify-between gap-4">
-                            <div class="min-w-0">
+                            <div class="min-w-0 flex-1">
                                 <div data-pages-kpi-label class="text-sm font-medium text-slate-500 uppercase"></div>
-                                <div data-pages-kpi-value class="mt-2 truncate text-2xl font-semibold leading-tight text-slate-900"></div>
+                                <div data-pages-kpi-value-row class="mt-2 flex min-w-0 items-baseline gap-2">
+                                    <div data-pages-kpi-value class="shrink-0 text-2xl font-semibold leading-tight text-slate-900"></div>
+                                    <div data-pages-kpi-secondary class="min-w-0 truncate text-xs text-slate-500" hidden></div>
+                                </div>
                             </div>
                             <div
                                 data-pages-kpi-delta
@@ -215,43 +206,43 @@
                     </div>
                 </div>
 
-                <div class="overflow-x-auto px-6 pb-4 pt-4">
+                <div class="companies-table-scroll-shell overflow-x-auto px-6 pb-4 pt-4" data-new-reactivated-table-scroll>
                     <table class="companies-secondary-table companies-new-reactivated-table w-full table-auto text-left" style="--companies-secondary-min-width: 1100px; --pages-value-bar-max-width: 72px;">
                         <thead class="border-b border-gray-300 bg-white text-slate-600">
                             <tr>
                                 <th class="py-3 pl-0 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-tooltip-company">
-                                        Company
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-new-reactivated-sort="name" aria-describedby="new-reactivated-tooltip-company">Company</button>
                                         <span id="new-reactivated-tooltip-company" class="metric-header-tooltip__content" role="tooltip">Company account active during the selected period</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-tooltip-activation">
-                                        Activation stage
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-new-reactivated-sort="activationStage" aria-describedby="new-reactivated-tooltip-activation">Activation stage</button>
                                         <span id="new-reactivated-tooltip-activation" class="metric-header-tooltip__content" role="tooltip">Activation progress based on users, breadth, pages, and engaged time</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-tooltip-started">
-                                        Started
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-new-reactivated-sort="daysSinceStart" aria-describedby="new-reactivated-tooltip-started">Started</button>
                                         <span id="new-reactivated-tooltip-started" class="metric-header-tooltip__content" role="tooltip">How long ago the company was first seen or reactivated</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-tooltip-active-users">
-                                        Active users
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-new-reactivated-sort="activeUsers" aria-describedby="new-reactivated-tooltip-active-users">Active users</button>
                                         <span id="new-reactivated-tooltip-active-users" class="metric-header-tooltip__content" role="tooltip">Number of users who used this company account during the selected period</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-tooltip-engaged">
-                                        Engaged
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-new-reactivated-sort="engagedSeconds" aria-describedby="new-reactivated-tooltip-engaged">Engaged</button>
                                         <span id="new-reactivated-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent by this company during the selected period</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="new-reactivated-tooltip-matrix">
-                                        Area adoption
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-new-reactivated-sort="productAreasUsed" aria-describedby="new-reactivated-tooltip-matrix">Area adoption</button>
                                         <span id="new-reactivated-tooltip-matrix" class="metric-header-tooltip__content" role="tooltip">Average adoption by product area during the selected period. Filled cells show relative engagement intensity.</span>
                                     </span>
                                     <div class="companies-matrix-heading">
@@ -298,7 +289,11 @@
 
                         <tbody id="new-reactivated-table-body" class="text-slate-700"></tbody>
                     </table>
+                    <div class="companies-table-loading-overlay" data-new-reactivated-table-loading hidden aria-hidden="true">
+                        <div class="companies-table-loader"></div>
+                    </div>
                 </div>
+                <div class="companies-pagination mt-4 mb-6 flex flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between" data-new-reactivated-pagination hidden></div>
             </section>
 
             <div class="mt-6 grid gap-6 xl:grid-cols-2">
@@ -339,38 +334,38 @@
                     <h2 class="text-lg font-semibold uppercase text-gray-600">Potential churn / at-risk companies</h2>
                 </div>
 
-                <div class="overflow-x-auto px-6 pb-4">
+                <div class="companies-table-scroll-shell overflow-x-auto px-6 pb-4" data-at-risk-table-scroll>
                     <table class="companies-secondary-table w-full table-auto text-left" style="--companies-secondary-min-width: 1240px;">
                         <thead class="border-b border-gray-300 bg-white text-slate-600">
                             <tr>
                                 <th class="py-3 pl-0 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-tooltip-company">
-                                        Company
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-at-risk-sort="name" aria-describedby="at-risk-tooltip-company">Company</button>
                                         <span id="at-risk-tooltip-company" class="metric-header-tooltip__content" role="tooltip">Company account active during the selected period</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-tooltip-risk-reason">
-                                        Risk reason
-                                        <span id="at-risk-tooltip-risk-reason" class="metric-header-tooltip__content" role="tooltip">Primary signal indicating potential churn or declining adoption</span>
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-at-risk-sort="riskScore" aria-describedby="at-risk-tooltip-risk-reason">Risk reason</button>
+                                        <span id="at-risk-tooltip-risk-reason" class="metric-header-tooltip__content" role="tooltip">Primary signal indicating potential churn or declining adoption. Sorting orders by overall risk severity, not by reason name.</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-tooltip-active-users">
-                                        Active users
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-at-risk-sort="activeUsers" aria-describedby="at-risk-tooltip-active-users">Active users</button>
                                         <span id="at-risk-tooltip-active-users" class="metric-header-tooltip__content" role="tooltip">Number of users who used this company account during the selected period</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-tooltip-engaged">
-                                        Engaged
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-at-risk-sort="engagedSeconds" aria-describedby="at-risk-tooltip-engaged">Engaged</button>
                                         <span id="at-risk-tooltip-engaged" class="metric-header-tooltip__content" role="tooltip">Total active time spent by this company during the selected period</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-tooltip-matrix">
-                                        Area adoption
-                                        <span id="at-risk-tooltip-matrix" class="metric-header-tooltip__content" role="tooltip">Product areas used during the selected period. Filled cells show relative engagement intensity.</span>
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-at-risk-sort="productAreasUsed" aria-describedby="at-risk-tooltip-matrix">Area adoption</button>
+                                        <span id="at-risk-tooltip-matrix" class="metric-header-tooltip__content" role="tooltip">Product areas used during the selected period. Filled cells show relative engagement intensity. Sorting orders by how many areas the account used.</span>
                                     </span>
                                     <div class="companies-matrix-heading">
                                         <span class="metric-header-tooltip" tabindex="0" aria-describedby="at-risk-area-tooltip-core">
@@ -412,9 +407,9 @@
                                     </div>
                                 </th>
                                 <th class="py-3 font-normal">
-                                    <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="at-risk-tooltip-action">
-                                        Suggested action
-                                        <span id="at-risk-tooltip-action" class="metric-header-tooltip__content" role="tooltip">Recommended follow-up based on the risk signal</span>
+                                    <span class="metric-header-tooltip metric-header-tooltip--end">
+                                        <button type="button" class="company-table-sort-button" data-at-risk-sort="suggestedAction" aria-describedby="at-risk-tooltip-action">Suggested action</button>
+                                        <span id="at-risk-tooltip-action" class="metric-header-tooltip__content" role="tooltip">Recommended follow-up based on the risk signal. Sorting groups accounts that need the same follow-up.</span>
                                     </span>
                                 </th>
                             </tr>
@@ -422,7 +417,11 @@
 
                         <tbody id="at-risk-table-body" class="text-slate-700"></tbody>
                     </table>
+                    <div class="companies-table-loading-overlay" data-at-risk-table-loading hidden aria-hidden="true">
+                        <div class="companies-table-loader"></div>
+                    </div>
                 </div>
+                <div class="companies-pagination mt-4 mb-6 flex flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between" data-at-risk-pagination hidden></div>
             </section>
 
             <section class="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -430,7 +429,7 @@
                     <h2 class="text-lg font-semibold uppercase text-gray-600">Expansion opportunities</h2>
                 </div>
 
-                <div class="companies-expansion-table-shell px-6 pb-4">
+                <div class="companies-table-scroll-shell companies-expansion-table-shell px-6 pb-4" data-expansion-table-scroll>
                     <table class="companies-secondary-table companies-expansion-table w-full table-fixed text-left" style="--companies-secondary-min-width: 0px;">
                         <colgroup>
                             <col class="companies-expansion-table__company">
@@ -445,44 +444,44 @@
                         <thead class="border-b border-gray-300 bg-white text-slate-600">
                             <tr>
                                 <th class="py-3 pl-0 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-company">
-                                        Company
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-expansion-sort="name" aria-describedby="expansion-tooltip-company">Company</button>
                                         <span id="expansion-tooltip-company" class="metric-header-tooltip__content" role="tooltip">Company account active during the selected period</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-priority">
-                                        Expansion priority
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-expansion-sort="potentialScore" aria-describedby="expansion-tooltip-priority">Expansion priority</button>
                                         <span id="expansion-tooltip-priority" class="metric-header-tooltip__content" role="tooltip">Relative expansion potential based on account usage and adoption signals</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-reason">
-                                        Reason
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-expansion-sort="reason" aria-describedby="expansion-tooltip-reason">Reason</button>
                                         <span id="expansion-tooltip-reason" class="metric-header-tooltip__content" role="tooltip">Evidence supporting the expansion opportunity</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-active-users">
-                                        Active users
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-expansion-sort="activeUsers" aria-describedby="expansion-tooltip-active-users">Active users</button>
                                         <span id="expansion-tooltip-active-users" class="metric-header-tooltip__content" role="tooltip">Number of users who used this company account during the selected period</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-engaged-user">
-                                        Engaged / user
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-expansion-sort="avgEngagedSecondsPerUser" aria-describedby="expansion-tooltip-engaged-user">Engaged / user</button>
                                         <span id="expansion-tooltip-engaged-user" class="metric-header-tooltip__content" role="tooltip">Average active time per user</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-interaction">
-                                        Interaction
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-expansion-sort="interactionPct" aria-describedby="expansion-tooltip-interaction">Interaction</button>
                                         <span id="expansion-tooltip-interaction" class="metric-header-tooltip__content" role="tooltip">Share of visits with at least one click</span>
                                     </span>
                                 </th>
                                 <th class="py-3 pr-6 font-normal">
-                                    <span class="metric-header-tooltip" tabindex="0" aria-describedby="expansion-tooltip-matrix">
-                                        Area adoption
+                                    <span class="metric-header-tooltip">
+                                        <button type="button" class="company-table-sort-button" data-expansion-sort="productAreasUsed" aria-describedby="expansion-tooltip-matrix">Area adoption</button>
                                         <span id="expansion-tooltip-matrix" class="metric-header-tooltip__content" role="tooltip">Product areas used during the selected period. Filled cells show relative engagement intensity.</span>
                                     </span>
                                     <div class="companies-matrix-heading">
@@ -525,8 +524,8 @@
                                     </div>
                                 </th>
                                 <th class="py-3 font-normal">
-                                    <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="expansion-tooltip-action">
-                                        Suggested action
+                                    <span class="metric-header-tooltip metric-header-tooltip--end">
+                                        <button type="button" class="company-table-sort-button" data-expansion-sort="suggestedAction" aria-describedby="expansion-tooltip-action">Suggested action</button>
                                         <span id="expansion-tooltip-action" class="metric-header-tooltip__content" role="tooltip">Recommended follow-up to expand product adoption</span>
                                     </span>
                                 </th>
@@ -535,11 +534,18 @@
 
                         <tbody id="expansion-table-body" class="text-slate-700"></tbody>
                     </table>
+                    <div class="companies-table-loading-overlay" data-expansion-table-loading hidden aria-hidden="true">
+                        <div class="companies-table-loader"></div>
+                    </div>
                 </div>
+                <div class="companies-pagination mt-4 mb-6 flex flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between" data-expansion-pagination hidden></div>
             </section>
             {% endif %}
         </main>
 
+  {% include 'partials/company_attribute_filter_dialog.html' %}
+  <script src="{% static 'js/shared/company-attribute-filters.js' %}?v=20260727-5"></script>
+  <script src="{% static 'js/shared/company-segments.js' %}?v=20260727-7"></script>
   {% if not analytics_is_empty %}
   <script id="companies-overview-data" type="application/json">{{ companies_overview_payload_json }}</script>
   <script src="{% static 'echarts/lib/echarts.min.js' %}"></script>
@@ -547,7 +553,9 @@
   <script src="{% static 'js/vendor/vega-embed.min.js' %}"></script>
   <script src="{% static 'js/shared/analytics-status-colors.js' %}"></script>
   <script src="{% static 'js/shared/product-area-colors.js' %}"></script>
-  <script src="{% static 'js/companies/django-companies-data.js' %}?v=20260709-3"></script>
-  <script src="{% static 'js/companies/companies-analytics.js' %}?v=20260709-3"></script>
+  <script src="{% static 'js/shared/metric-dynamics.js' %}?v=20260802-1"></script>
+  <script src="{% static 'js/companies/django-companies-data.js' %}?v=20260801-1"></script>
+    <script src="{% static 'js/shared/overview-quick-jumper.js' %}?v=20260722-2"></script>
+  <script src="{% static 'js/companies/companies-analytics.js' %}?v=20260801-1"></script>
   {% endif %}
 {% endblock %}

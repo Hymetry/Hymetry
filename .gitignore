@@ -11,6 +11,9 @@ downloads/
 eggs/
 .eggs/
 lib/
+!static/echarts/
+!static/echarts/lib/
+!static/echarts/lib/echarts.min.js
 lib64/
 parts/
 sdist/

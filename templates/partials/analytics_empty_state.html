@@ -2,12 +2,40 @@
 
 <section class="py-16 text-center" aria-live="polite">
   <div class="mx-auto max-w-xl">
+    {% if analytics_is_preparing %}
     <p class="text-lg font-medium text-slate-600">
-      No data were found in the last {{ analytics_empty_period_days|default:30 }} days.
+      Please wait — preparing analytics
+    </p>
+    <p class="mx-auto mt-2 max-w-md text-sm text-slate-500" data-analytics-preparing-message>
+      This usually takes a moment. Results will appear here automatically.
+    </p>
+    <div
+      data-analytics-preparing
+      data-network-loader
+      data-analytics-surface="{{ analytics_surface }}"
+      data-analytics-status-url="{{ analytics_variant_status_url }}"
+      aria-hidden="true"
+      class="network-loader mx-auto mt-[60px]"></div>
+    {% else %}
+    <p class="text-lg font-medium text-slate-600">
+      No data were found in the last {{ analytics_empty_period_days|default:30 }} complete days.
+    </p>
+    <p class="mx-auto mt-2 max-w-md text-sm text-slate-500">
+      {% if request.GET.urlencode and 'ca.' in request.GET.urlencode %}
+        Try adjusting your filters to see more results.
+      {% else %}
+        Recently collected events may take a little time to appear while we prepare your analytics.
+      {% endif %}
     </p>
     <img
       src="{% static 'svg/no-sessions.svg' %}"
       alt=""
       class="mx-auto mt-8 w-72 max-w-full" />
+    {% endif %}
   </div>
 </section>
+
+{% if analytics_is_preparing %}
+<script src="{% static 'js/shared/network-loader.js' %}?v=20260729-1" defer></script>
+<script src="{% static 'js/shared/analytics-variant-polling.js' %}?v=20260726-2" defer></script>
+{% endif %}

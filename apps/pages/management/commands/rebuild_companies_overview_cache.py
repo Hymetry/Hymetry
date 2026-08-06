@@ -2,6 +2,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from apps.pages.company_analytics import build_companies_overview_cache
 from apps.pages.services import DEFAULT_OVERVIEW_RANGE_KEYS
+from apps.projects.demo import get_demo_project
 
 
 class Command(BaseCommand):
@@ -9,6 +10,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--project-id', type=int)
+        parser.add_argument('--demo', action='store_true', help='Rebuild cache for the configured demo project.')
         parser.add_argument('--range', dest='range_key', default='last_30_days')
         parser.add_argument(
             '--all-ranges',
@@ -18,8 +20,10 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         project_id = options['project_id']
+        if options['demo']:
+            project_id = get_demo_project().id
         if not project_id:
-            raise CommandError('Provide --project-id.')
+            raise CommandError('Provide --project-id or --demo.')
 
         range_keys = DEFAULT_OVERVIEW_RANGE_KEYS if options['all_ranges'] else (options['range_key'],)
         results = []

@@ -1,58 +1,3 @@
-.page-shell {
-                padding-right: 2rem;
-                padding-left: 2rem;
-            }
-
-            @media (min-width: 1280px) {
-                .page-shell {
-                    padding-right: 3rem;
-                    padding-left: 3rem;
-                }
-            }
-
-            @media (min-width: 1920px) {
-                .page-shell {
-                    padding-right: 4rem;
-                    padding-left: 4rem;
-                }
-            }
-
-            @media (min-width: 2560px) {
-                .page-shell {
-                    padding-right: 5rem;
-                    padding-left: 5rem;
-                }
-            }
-
-            #vg-tooltip-element {
-                background-color: var(--color-white) !important;
-                border: 1px solid var(--color-slate-200) !important;
-                border-radius: 6px !important;
-                box-shadow:
-                    0 4px 6px -1px color-mix(in oklab, var(--color-slate-900) 10%, transparent),
-                    0 2px 4px -1px color-mix(in oklab, var(--color-slate-900) 6%, transparent) !important;
-                color: var(--color-slate-900) !important;
-                font-family:
-                    Inter,
-                    ui-sans-serif,
-                    system-ui,
-                    sans-serif !important;
-                font-size: 12px !important;
-                padding: 8px 12px !important;
-            }
-
-            #vg-tooltip-element table {
-                margin: 0;
-            }
-
-            #vg-tooltip-element td {
-                padding: 2px 4px;
-            }
-
-            #vg-tooltip-element td.key {
-                color: var(--color-slate-500);
-            }
-
             #companies-kpis [data-pages-kpi-card] {
                 border-bottom: 1px solid var(--pages-kpi-border-color, var(--color-slate-200));
             }
@@ -333,157 +278,18 @@
                 background: var(--color-white);
             }
 
-            .metric-header-tooltip {
-                position: relative;
-                display: inline-flex;
-                max-width: 100%;
-                cursor: help;
-                outline: none;
-            }
-
-            .metric-header-tooltip:focus-visible {
-                border-radius: 0.25rem;
-                outline: 2px solid var(--color-blue-400);
-                outline-offset: 3px;
-            }
-
-            .metric-header-tooltip__content {
-                position: absolute;
-                top: calc(100% + 0.5rem);
-                left: 0;
-                z-index: 20;
-                display: none;
-                width: max-content;
-                max-width: 17rem;
-                padding: 0.5rem 0.625rem;
-                border: 1px solid var(--color-slate-200);
-                border-radius: 0.375rem;
-                background: var(--color-white);
-                box-shadow: 0 10px 24px rgb(15 23 42 / 12%);
-                color: var(--color-slate-700);
-                font-size: 14px;
-                font-weight: 400;
-                line-height: 1.35;
-                opacity: 0;
-                pointer-events: none;
-                transform: translateY(0.25rem);
-                transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
-                visibility: hidden;
-                white-space: normal;
-            }
-
-            .metric-header-tooltip--end .metric-header-tooltip__content {
-                right: 0;
-                left: auto;
-            }
-
-            .metric-header-tooltip:hover .metric-header-tooltip__content,
-            .metric-header-tooltip:focus .metric-header-tooltip__content,
-            .metric-header-tooltip:focus-visible .metric-header-tooltip__content {
-                display: block;
-                opacity: 1;
-                transform: translateY(0);
-                visibility: visible;
-            }
-
-            .metric-floating-tooltips-enabled .pages-change-delta .metric-header-tooltip__content {
-                display: none !important;
-            }
-
-            .metric-floating-tooltips-enabled .companies-area-mix .metric-header-tooltip__content {
-                display: none !important;
-            }
-
-            .metric-floating-tooltips-enabled .companies-adoption-cell .metric-header-tooltip__content {
-                display: none !important;
-            }
-
-            .metric-floating-tooltips-enabled .companies-matrix-heading .metric-header-tooltip__content {
-                display: none !important;
-            }
-
-            .metric-floating-tooltips-enabled .companies-activation-stage .metric-header-tooltip__content,
-            .metric-floating-tooltips-enabled .companies-suggested-step .metric-header-tooltip__content {
-                display: none !important;
-            }
-
-            .metric-floating-tooltip {
-                position: fixed;
-                top: 0;
-                left: 0;
-                z-index: 1000;
-                display: block;
-                max-width: min(17rem, calc(100vw - 1rem));
-                opacity: 0;
-                pointer-events: none;
-                transform: translateY(0.25rem);
-                visibility: hidden;
-            }
-
-            .metric-floating-tooltip[data-visible="true"] {
-                opacity: 1;
-                transform: translateY(0);
-                visibility: visible;
-            }
-
-            .metric-floating-tooltip[data-placement="top"] {
-                transform: translateY(-0.25rem);
-            }
-
-            .metric-floating-tooltip[data-visible="true"][data-placement="top"] {
-                transform: translateY(0);
-            }
-
-            .metric-floating-tooltip[data-tooltip-kind="delta"] {
-                min-width: min(12rem, calc(100vw - 1rem));
-                font-size: 12px;
-                line-height: 1.45;
-            }
-
-            .metric-floating-tooltip[data-tooltip-kind="area-mix"] {
-                width: max-content;
-                min-width: min(19rem, calc(100vw - 1rem));
-                max-width: min(34rem, calc(100vw - 1rem));
-                font-size: 14px;
-                line-height: 1.35;
-            }
-
-            .metric-floating-tooltip[data-tooltip-kind="adoption-cell"] {
-                min-width: min(14rem, calc(100vw - 1rem));
-                font-size: 12px;
-                line-height: 1.45;
-            }
-
             .metric-floating-tooltip[data-tooltip-kind="matrix-heading"] {
-                width: max-content;
                 max-width: min(14rem, calc(100vw - 1rem));
-                font-size: 0.875rem;
-                line-height: 1.35;
                 white-space: nowrap;
             }
 
             .metric-floating-tooltip[data-tooltip-kind="activation-stage"],
             .metric-floating-tooltip[data-tooltip-kind="suggested-step"] {
                 min-width: min(16rem, calc(100vw - 1rem));
-                font-size: 12px;
-                line-height: 1.45;
             }
 
             .pages-change-delta.metric-header-tooltip {
                 cursor: default;
-            }
-
-            .pages-change-delta .metric-header-tooltip__content {
-                top: calc(100% + 0.375rem);
-                z-index: 40;
-                min-width: 12rem;
-                font-size: 12px;
-                line-height: 1.45;
-            }
-
-            .pages-change-delta__tooltip-row {
-                display: block;
-                white-space: nowrap;
             }
 
             .pages-change-delta {
@@ -785,135 +591,6 @@
                 min-width: 0;
             }
 
-            .companies-area-usage .metric-header-tooltip__content {
-                width: max-content;
-                max-width: min(34rem, calc(100vw - 1rem));
-            }
-
-            .companies-area-mix-tooltip__title {
-                display: block;
-                margin-bottom: 0.375rem;
-                color: var(--color-slate-900);
-                font-weight: 600;
-            }
-
-            .companies-area-mix-tooltip__row {
-                display: grid;
-                grid-template-columns: auto minmax(0, 1fr) auto;
-                align-items: center;
-                gap: 0.5rem;
-                white-space: nowrap;
-            }
-
-            .companies-area-mix-tooltip__row--usage {
-                grid-template-columns: auto minmax(var(--area-tooltip-label-width, 6rem), 1fr) minmax(7.5rem, auto) minmax(2.5rem, auto) minmax(5.5rem, auto);
-                column-gap: 0.5rem;
-            }
-
-            .companies-area-mix-tooltip__row--user-health {
-                grid-template-columns: auto minmax(4.75rem, 1fr) minmax(8.25rem, auto) minmax(2.5rem, auto);
-                column-gap: 0.5rem;
-            }
-
-            .companies-area-mix-tooltip__dot {
-                width: 0.5rem;
-                height: 0.5rem;
-                border-radius: 999px;
-                background: var(--area-color);
-            }
-
-            .companies-area-mix-tooltip__label {
-                color: var(--color-slate-700);
-            }
-
-            .companies-area-mix-tooltip__row--usage .companies-area-mix-tooltip__label,
-            .companies-area-mix-tooltip__row--user-health .companies-area-mix-tooltip__label {
-                min-width: 0;
-                overflow: hidden;
-                color: var(--color-slate-900);
-                text-overflow: ellipsis;
-            }
-
-            .companies-area-mix-tooltip__value {
-                color: var(--color-slate-900);
-                font-weight: 600;
-                text-align: right;
-            }
-
-            .companies-area-mix-tooltip__metric {
-                color: var(--color-slate-900);
-                font-variant-numeric: tabular-nums;
-                font-weight: 600;
-                text-align: right;
-                white-space: nowrap;
-            }
-
-            .companies-area-mix-tooltip__metric--engaged {
-                display: grid;
-                grid-template-columns: 3.75rem 3.5rem;
-                align-items: center;
-                justify-content: start;
-                column-gap: 0.25rem;
-            }
-
-            .companies-area-mix-tooltip__metric--users {
-                display: grid;
-                grid-template-columns: 4.5rem 3.5rem;
-                align-items: center;
-                justify-content: start;
-                column-gap: 0.25rem;
-            }
-
-            .companies-area-mix-tooltip__engaged-bar {
-                flex: 0 0 var(--area-engaged-width, 0px);
-                grid-column: 2;
-                grid-row: 1;
-                justify-self: start;
-                width: var(--area-engaged-width, 0px);
-                height: 0.5rem;
-                border-radius: 2px;
-                background: color-mix(in srgb, var(--area-color) var(--area-mix-segment-alpha, 72%), transparent);
-            }
-
-            .companies-area-mix-tooltip__user-bar {
-                flex: 0 0 var(--user-health-width, 0px);
-                grid-column: 2;
-                grid-row: 1;
-                justify-self: start;
-                width: var(--user-health-width, 0px);
-                height: 0.5rem;
-                border-radius: 2px;
-                background: color-mix(in srgb, var(--area-color) var(--area-mix-segment-alpha, 72%), transparent);
-            }
-
-            .companies-area-mix-tooltip__metric--engaged > span:last-child,
-            .companies-area-mix-tooltip__metric--users > span:last-child {
-                grid-column: 1;
-                grid-row: 1;
-                justify-self: end;
-            }
-
-            .companies-area-mix-tooltip__summary {
-                display: grid;
-                gap: 0.125rem;
-                margin-top: 0.5rem;
-                padding-top: 0.5rem;
-                border-top: 1px solid var(--color-slate-200);
-                color: var(--color-slate-700);
-            }
-
-            .companies-area-mix-tooltip__summary-row {
-                display: flex;
-                justify-content: space-between;
-                gap: 1rem;
-                white-space: nowrap;
-            }
-
-            .companies-area-mix-tooltip__summary-row strong {
-                color: var(--color-slate-900);
-                font-weight: 600;
-            }
-
             .companies-matrix-heading {
                 display: grid;
                 grid-template-columns: repeat(var(--companies-product-area-count, 9), var(--companies-adoption-cell-width, 2.5rem));
@@ -933,11 +610,6 @@
                 text-align: center;
                 text-overflow: clip;
                 white-space: nowrap;
-            }
-
-            .companies-matrix-heading .metric-header-tooltip__content {
-                font-size: 0.875rem;
-                line-height: 1.35;
             }
 
             .companies-adoption-matrix {
@@ -978,29 +650,6 @@
             .companies-adoption-cell[data-used="true"] {
                 background: var(--area-bg-color);
                 color: var(--color-slate-900);
-            }
-
-            .companies-adoption-cell-tooltip__title {
-                display: block;
-                margin-bottom: 0.375rem;
-                color: var(--color-slate-900);
-                font-weight: 600;
-            }
-
-            .companies-adoption-cell-tooltip__row {
-                display: flex;
-                justify-content: space-between;
-                gap: 1rem;
-                white-space: nowrap;
-            }
-
-            .companies-adoption-cell-tooltip__row span:first-child {
-                color: var(--color-slate-500);
-            }
-
-            .companies-adoption-cell-tooltip__row strong {
-                color: var(--color-slate-900);
-                font-weight: 600;
             }
 
             .companies-suggested-step {
@@ -1097,7 +746,10 @@
                 display: none;
             }
 
-            .companies-pagination [data-companies-page-action]:not(:disabled) {
+            .companies-pagination [data-companies-page-action]:not(:disabled),
+            .companies-pagination [data-at-risk-page-action]:not(:disabled),
+            .companies-pagination [data-new-reactivated-page-action]:not(:disabled),
+            .companies-pagination [data-expansion-page-action]:not(:disabled) {
                 cursor: pointer;
             }
 

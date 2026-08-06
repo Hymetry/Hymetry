@@ -1,7 +1,6 @@
 import datetime
 import json
 import logging
-import uuid
 from urllib.parse import urlsplit, urlunsplit
 
 from django.conf import settings
@@ -9,16 +8,18 @@ from django.core.exceptions import PermissionDenied
 from django.http import JsonResponse
 from django.utils import timezone
 
+from apps.projects.demo import is_demo_project
 from apps.projects.domain_utils import request_matches_allowed_domains
 from apps.projects.utils import normalize_capture_modes
 from apps.projects.models import Project
 from apps.projects.services import record_project_production_event
-from apps.tracker.models import Event, Session, Visitor
+from apps.tracker.models import Event
 from apps.tracker.page_naming import (
     ensure_project_first_event_at,
     normalize_page_url,
 )
 from apps.tracker.rrweb_text_filter import mask_rrweb_event
+from apps.tracker.session_resolver import SessionResolutionPoint, resolve_visit_session_batch
 from apps.tracker.visitor_ids import normalize_project_visitor_uuid
 
 logger = logging.getLogger(__name__)
@@ -37,12 +38,13 @@ class SessionTracker:
         self.page_title = None
         self.session_id = None
         self.event_data = None
+        self.event_sessions = {}
         self.project = None
         self.tab_id = None
         self.visitor_guid = None
 
     def clean_url(self, url):
-        """Strip query strings and fragments before any recording URL is stored."""
+        """Strip query strings and fragments before persisting page URLs."""
         if url is None:
             return ''
         value = str(url).strip()
@@ -52,8 +54,8 @@ class SessionTracker:
         except ValueError:
             return value.split('#', 1)[0].split('?', 1)[0]
 
-    def masking_page_url(self):
-        return normalize_page_url(self.page_url)
+    def masking_page_url(self, page_url=None):
+        return normalize_page_url(self.page_url if page_url is None else page_url)
 
     def project_uses_recording(self):
         capture_modes = {
@@ -71,6 +73,8 @@ class SessionTracker:
             ).first()
             if self.project is None:
                 raise PermissionDenied("You must provide a valid API_KEY")
+            if is_demo_project(self.project):
+                raise PermissionDenied("The demo project is read-only.")
             self.session_id = self.data.get('session_id')
             self.tab_id = self.data.get('tab_id')  # Extract tab_id from request
             self.visitor_guid = normalize_project_visitor_uuid(
@@ -95,119 +99,58 @@ class SessionTracker:
             return False
 
     def find_session(self):
-        """Find or create a session based on visitor_id."""
+        """Resolve the canonical visit shared by recording and analytics."""
         events = self.event_data.get('events', []) if self.event_data else []
-        earliest_interaction_time, _ = self._get_interaction_window(events)
-
-        # Try to find existing session by visitor_id
-        if self.visitor_guid:
-            try:
-                # Find the most recent active session for this visitor
-                self.session = Session.objects.filter(
-                    visitor__visitor_guid=self.visitor_guid,
-                    visitor__project=self.project,
-                    ended_at__isnull=True
-                ).order_by('-last_activity').first()
-
-                if self.session:
-                    if self._close_if_future_last_activity():
-                        self.session = None
-                    elif earliest_interaction_time and self.session.last_activity:
-                        gap_seconds = (earliest_interaction_time - self.session.last_activity).total_seconds()
-                        if gap_seconds >= settings.SESSION_EXPIRATION_SECONDS:
-                            reference_time = self.session.last_activity or timezone.now()
-                            self._close_session_at(
-                                reference_time + timezone.timedelta(seconds=settings.SESSION_EXPIRATION_SECONDS)
-                            )
-                            self.session = None
-                        else:
-                            return True
-                    else:
-                        # Fallback to server time only when we don't have interaction timestamps.
-                        if self.session.check_and_close_if_expired():
-                            self.session = None
-                        else:
-                            return True
-
-            except (ValueError, Exception):
-                logger.exception("Error finding session for visitor %s", self.visitor_guid)
-                self.session = None
-
-        # Create new session if none found
-        if not self.session:
-            # Create or get visitor for this project
-            if self.visitor_guid:
-                visitor, created = Visitor.objects.get_or_create(
-                    visitor_guid=self.visitor_guid,
-                    project=self.project,
-                    defaults={
-                        'first_visit': timezone.now(),
-                        'last_activity': timezone.now()
-                    }
+        indexed_points = []
+        for index, event in enumerate(events):
+            event_time = self._parse_event_timestamp(event)
+            if event_time is None:
+                continue
+            indexed_points.append(
+                (
+                    index,
+                    SessionResolutionPoint(
+                        event_time=event_time,
+                        activity_time=(
+                            event_time
+                            if self._is_user_interaction_event(event)
+                            else None
+                        ),
+                    ),
                 )
-                if not created:
-                    visitor.update_activity()
-            else:
-                # Without a browser visitor id we cannot reliably stitch batches together,
-                # so fall back to an ephemeral visitor record for this request.
-                visitor = Visitor.objects.create(
-                    project=self.project,
-                    first_visit=timezone.now(),
-                    last_activity=timezone.now()
-                )
-
-            self.session = Session.objects.create(
-                session_id=uuid.uuid4(),
-                visitor=visitor,
-                start_time=timezone.now(),
-                last_activity=timezone.now()
             )
-            return True
 
-        return False
+        if not indexed_points:
+            indexed_points.append(
+                (
+                    None,
+                    SessionResolutionPoint(
+                        event_time=datetime.datetime.now(tz=datetime.timezone.utc),
+                    ),
+                )
+            )
+
+        _visitor, resolved = resolve_visit_session_batch(
+            self.project,
+            self.visitor_guid,
+            [point for _index, point in indexed_points],
+            requested_session_id=self.session_id,
+        )
+        self.event_sessions = {
+            index: session
+            for (index, _point), session in zip(indexed_points, resolved)
+            if index is not None
+        }
+        latest_index = max(
+            range(len(indexed_points)),
+            key=lambda index: indexed_points[index][1].event_time,
+        )
+        self.session = resolved[latest_index]
+        return True
 
     def update_session_activity(self):
-        """Update session's last activity timestamp from actual user interaction events only.
-
-        - Do nothing if there is no session or no events in the payload
-        - Set `last_activity` to the latest event timestamp if it is newer than stored value
-        - Only count incremental snapshot sources that reflect user interactions
-        - Clamp timestamps that are far in the future to avoid clock skew keeping sessions open
-        """
-        if not self.session:
-            return
-
-        events = self.event_data.get('events', []) if self.event_data else []
-        if not events:
-            return
-
-        try:
-            _, latest_interaction_time = self._get_interaction_window(events)
-
-            if latest_interaction_time and (
-                self.session.last_activity is None or latest_interaction_time > self.session.last_activity
-            ):
-                self.session.last_activity = latest_interaction_time
-                self.session.save()
-        except Exception:
-            # If parsing fails, do not bump last_activity
-            return
-
-    def _get_interaction_window(self, events):
-        """Return the earliest and latest interaction timestamps from rrweb events."""
-        earliest = None
-        latest = None
-        for event in events:
-            if not self._is_user_interaction_event(event):
-                continue
-            event_time = self._parse_event_timestamp(event)
-            if not event_time:
-                continue
-            if earliest is None or event_time < earliest:
-                earliest = event_time
-            if latest is None or event_time > latest:
-                latest = event_time
-        return earliest, latest
+        """Compatibility no-op; the shared resolver updates activity atomically."""
+        return
 
     def _max_clock_skew_seconds(self):
         return getattr(settings, 'SESSION_MAX_CLOCK_SKEW_SECONDS', 300)
@@ -220,25 +163,6 @@ class SessionTracker:
         if event_time > now + max_skew:
             return now
         return event_time
-
-    def _close_session_at(self, end_time):
-        if not self.session:
-            return
-        if self.session.last_activity is None or self.session.last_activity > end_time:
-            self.session.last_activity = end_time
-        self.session.ended_at = end_time
-        self.session.save(update_fields=['last_activity', 'ended_at'])
-        self.session._cleanup_redis_data()
-
-    def _close_if_future_last_activity(self):
-        if not self.session or not self.session.last_activity:
-            return False
-        now = timezone.now()
-        max_skew = datetime.timedelta(seconds=self._max_clock_skew_seconds())
-        if self.session.last_activity > now + max_skew:
-            self._close_session_at(now)
-            return True
-        return False
 
     def _is_user_interaction_event(self, event):
         event_type = event.get('type')
@@ -277,24 +201,39 @@ class SessionTracker:
     def process_events(self):
         """Process events (single or batch) using bulk insertion to avoid N+1 queries."""
         events = self.event_data.get('events', [])
-        
+        current_meta_url = ''
+
         # Prepare all events for bulk insertion
         event_objects = []
-        for event in events:
+        used_sessions = {}
+        for index, event in enumerate(events):
+            event_session = self.event_sessions.get(index, self.session)
+            used_sessions[event_session.pk] = event_session
+            event_type = event.get('type')
+            if str(event_type) == '4':
+                raw_meta = event.get('data', {})
+                if isinstance(raw_meta, dict):
+                    current_meta_url = self.clean_url(raw_meta.get('href')) or current_meta_url
+            event_page_url = (
+                self.clean_url(event.get('_hymetry_page_url'))
+                or current_meta_url
+                or self.page_url
+            )
+
             # Filter sensitive data from the event before storing
             filtered_event = mask_rrweb_event(
                 event,
-                session_id=str(self.session.pk) if self.session else None,
+                session_id=str(event_session.pk),
                 visitor_id=str(self.visitor_guid) if self.visitor_guid else None,
-                page_url=self.masking_page_url()
+                page_url=self.masking_page_url(event_page_url)
             )
 
             # Create Event object but don't save to database yet
             event_obj = Event(
-                session=self.session,
-                url=self.page_url,
+                session=event_session,
+                url=event_page_url,
                 tab_id=self.tab_id,
-                event_type=event.get('type'),
+                event_type=event_type,
                 timestamp=datetime.datetime.fromtimestamp(event['timestamp'] / 1000, tz=datetime.timezone.utc),
                 data=filtered_event
             )
@@ -307,6 +246,9 @@ class SessionTracker:
             last_event_time = max((event.timestamp for event in event_objects), default=first_event_time)
             ensure_project_first_event_at(self.project, first_event_time)
             record_project_production_event(self.project, first_event_time, last_event_time)
+            for used_session in used_sessions.values():
+                if used_session.ended_at is not None:
+                    used_session._cleanup_redis_data()
 
     def get_response(self):
         """Get the response for the request."""

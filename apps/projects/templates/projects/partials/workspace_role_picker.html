@@ -1,0 +1,56 @@
+<div class="workspace-role-picker" data-workspace-role-picker>
+  <div class="relative" data-workspace-role-picker-native>
+    <select
+      id="{{ role_picker_id }}"
+      name="role"
+      aria-label="{{ role_picker_aria_label }}"
+      class="block w-full appearance-none border border-slate-300 rounded py-3 pl-3 pr-10 text-gray-700 leading-tight bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none focus:border-blue-500"
+      {% if role_picker_autofocus %}data-modal-input-focus autofocus{% endif %}>
+      {% for role_option in role_options %}
+        <option value="{{ role_option.value }}"{% if role_option.selected %} selected{% endif %}>{{ role_option.label }}</option>
+      {% endfor %}
+    </select>
+    <svg class="pointer-events-none absolute right-3 top-1/2 size-5 -translate-y-1/2 text-slate-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
+      <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
+    </svg>
+  </div>
+
+  <div data-workspace-role-picker-enhanced hidden>
+    <button
+      type="button"
+      id="{{ role_picker_id }}-trigger"
+      class="workspace-role-picker-trigger"
+      data-dropdown-toggle="#{{ role_picker_id }}-menu"
+      data-workspace-role-picker-aria-label="{{ role_picker_aria_label }}"
+      aria-controls="{{ role_picker_id }}-menu"
+      aria-expanded="false"
+      aria-haspopup="listbox"
+      aria-label="{{ role_picker_aria_label }}{% for role_option in role_options %}{% if role_option.selected %}: {{ role_option.label }}{% endif %}{% endfor %}">
+      <span class="workspace-role-picker-trigger-label" data-workspace-role-picker-label>{% for role_option in role_options %}{% if role_option.selected %}{{ role_option.label }}{% endif %}{% endfor %}</span>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
+        <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
+      </svg>
+    </button>
+
+    <div
+      id="{{ role_picker_id }}-menu"
+      class="workspace-role-picker-menu hidden"
+      data-dropdown-menu
+      role="listbox"
+      aria-label="{{ role_picker_aria_label }}">
+      {% for role_option in role_options %}
+        <button
+          type="button"
+          class="workspace-role-picker-option"
+          data-workspace-role-option="{{ role_option.value }}"
+          data-workspace-role-name="{{ role_option.label }}"
+          aria-selected="{% if role_option.selected %}true{% else %}false{% endif %}"
+          role="option"
+          tabindex="{% if role_option.selected %}0{% else %}-1{% endif %}">
+          <span class="workspace-role-picker-option-title">{{ role_option.label }}</span>
+          <span class="workspace-role-picker-option-copy">{{ role_option.description }}</span>
+        </button>
+      {% endfor %}
+    </div>
+  </div>
+</div>

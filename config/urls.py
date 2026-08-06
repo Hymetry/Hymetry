@@ -14,6 +14,8 @@ from apps.tracker.views import (
     record_event,
     recording,
     recordings,
+    replay_stream,
+    visits_filter_options,
 )
 from apps.users.views import InitialSetupAwareLoginView
 
@@ -33,7 +35,9 @@ urlpatterns = [
     path('projects/', include('apps.projects.urls')),
     path('account/', include('apps.users.urls')),
     path('projects/<int:project_id>/visits', recordings, name='recordings'),
+    path('projects/<int:project_id>/visits/filter-options', visits_filter_options, name='visits_filter_options'),
     path('projects/<int:project_id>/visits/<uuid:session_id>/data', get_consolidated_data, name='get_consolidated_data'),
+    path('projects/<int:project_id>/visits/<uuid:session_id>/stream', replay_stream, name='replay_stream'),
     path('projects/<int:project_id>/visits/<uuid:session_id>', recording, name='recording'),
     path('projects/<int:project_id>/', project_views.project_detail_redirect, name='project_detail'),
     path(

@@ -18,7 +18,9 @@ from apps.projects.models import Project
 from apps.tracker.models import ProjectPageRule
 
 
-USER_DETAILS_PAYLOAD_SCHEMA_VERSION = 2
+# 6: Areas used took the card slot the merged Active days card gave back, so the
+# payload carries a distinct-product-area card and its cumulative series.
+USER_DETAILS_PAYLOAD_SCHEMA_VERSION = 6
 USER_DETAIL_USERS_LIMIT = 500
 USER_DETAIL_SCATTER_LIMIT = 300
 
@@ -64,22 +66,30 @@ def _delta_pp_value(current_pct, previous_pct):
 
 
 def _format_duration(seconds):
-    seconds = max(0, int(round(seconds or 0)))
+    seconds = max(0, services._round_integer_for_display(seconds))
     if seconds < 60:
         return f'{seconds}s'
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
     if hours:
         return f'{hours}h {minutes}m' if minutes else f'{hours}h'
-    return f'{minutes}m'
+    remaining_seconds = seconds % 60
+    return f'{minutes}m {remaining_seconds:02d}s'
 
 
 def _format_percent(value):
-    return f'{round(_to_float(value))}%'
+    numeric_value = _to_float(value)
+    decimal_places = 1 if abs(numeric_value) < 10 and numeric_value % 1 != 0 else 0
+    return f'{services._format_decimal_for_display(numeric_value, decimal_places)}%'
 
 
 def _format_number(value):
     return f'{int(round(_to_float(value))):,}'
+
+
+def _format_product_area_count(count):
+    count = _to_int(count)
+    return f"{_format_number(count)} product area{'' if count == 1 else 's'}"
 
 
 def _safe_iso(value):
@@ -329,7 +339,15 @@ def _page_rule_names(project_id, page_rule_ids):
     }
 
 
-def _status_key(row, previous_row=None, *, period_days=30, first_seen_at=None, end_date=None):
+def _status_key(
+    row,
+    previous_row=None,
+    *,
+    period_days=30,
+    first_seen_at=None,
+    end_date=None,
+    power_thresholds=None,
+):
     previous_row = previous_row or {}
     visits = _to_int(row.get('visits'))
     engaged = _to_int(row.get('engaged_seconds'))
@@ -352,7 +370,7 @@ def _status_key(row, previous_row=None, *, period_days=30, first_seen_at=None, e
     if engaged_delta <= -50 or (previous_engaged >= 300 and active_days <= 2):
         return 'at_risk'
 
-    thresholds = services.power_user_thresholds(period_days)
+    thresholds = power_thresholds or services.power_user_thresholds(period_days)
     if (
         visits >= thresholds['visits']
         and engaged >= thresholds['engaged_seconds']
@@ -376,14 +394,18 @@ def _metric_row(row, visit_row=None):
     active_days = _to_int(row.get('active_days'))
     pages = _to_int(row.get('pages_used'))
     sessions = _to_int(visit_row.get('sessions_count')) or (max(1, round(visits / 3)) if visits else 0)
-    visits_with_click = _to_int(visit_row.get('visits_with_click'))
-    if not visits_with_click and visits:
-        visits_with_click = min(visits, _to_int(row.get('click_count')))
+    has_visit_facts = 'visits_with_click' in visit_row
+    visits_with_click = (
+        min(visits, _to_int(visit_row.get('visits_with_click')))
+        if has_visit_facts
+        else min(visits, _to_int(row.get('click_count')))
+    )
     return {
         'visits': visits,
         'engaged_seconds': engaged,
         'active_days': active_days,
         'pages_used': pages,
+        'product_areas_used': _to_int(row.get('product_areas_used')),
         'click_count': _to_int(row.get('click_count')),
         'sessions_count': sessions,
         'visits_with_click': visits_with_click,
@@ -397,95 +419,235 @@ def _daily_metric_rows(project_id, user_id, start_date, end_date):
     rows = (
         _base_user_queryset(project_id, start_date, end_date)
         .filter(user_id=user_id)
-        .values('date')
+        # One row per stored (date, page, area) fact for this user, so the area
+        # keys counted here are the same values the period aggregate counts.
+        .values('date', 'page_rule_id', 'product_area_key')
         .annotate(
             visits=Sum('visits_count'),
             engaged_seconds_total=Sum('engaged_seconds'),
             click_count=Sum('click_count'),
-            pages_used=Count('page_rule_id', filter=Q(visits_count__gt=0) | Q(engaged_seconds__gt=0), distinct=True),
         )
     )
-    by_date = {
-        row['date']: {
-            'visits': _to_int(row.get('visits')),
-            'engaged_seconds': _to_int(row.get('engaged_seconds_total')),
-            'click_count': _to_int(row.get('click_count')),
-            'pages_used': _to_int(row.get('pages_used')),
-        }
-        for row in rows
-    }
+    by_date = {}
+    for row in rows:
+        day = row['date']
+        daily = by_date.setdefault(day, {
+            'visits': 0,
+            'engaged_seconds': 0,
+            'click_count': 0,
+            'page_rule_ids': set(),
+            'product_area_keys': set(),
+        })
+        visits = _to_int(row.get('visits'))
+        engaged = _to_int(row.get('engaged_seconds_total'))
+        daily['visits'] += visits
+        daily['engaged_seconds'] += engaged
+        daily['click_count'] += _to_int(row.get('click_count'))
+        if visits > 0 or engaged > 0:
+            if row.get('page_rule_id') is not None:
+                daily['page_rule_ids'].add(row.get('page_rule_id'))
+            if row.get('product_area_key') is not None:
+                daily['product_area_keys'].add(row.get('product_area_key'))
     return by_date
 
 
-def _metric_daily_series(project_id, user_id, start_date, end_date, period_days):
-    by_date = _daily_metric_rows(project_id, user_id, start_date, end_date)
+def _daily_visit_click_rows(project, user_id, start_date, end_date):
+    rows = list(
+        _visit_queryset(project, start_date, end_date)
+        .filter(user_id=user_id)
+        .values('visit_start_ts', 'had_click')
+    )
+    if not rows:
+        return None
+
+    project_zone = services._project_zone(project.timezone)
+    by_date = defaultdict(lambda: {'visits': 0, 'visits_with_click': 0})
+    for row in rows:
+        visit_start = row.get('visit_start_ts')
+        if not visit_start:
+            continue
+        day = visit_start.astimezone(project_zone).date()
+        by_date[day]['visits'] += 1
+        if row.get('had_click'):
+            by_date[day]['visits_with_click'] += 1
+    return dict(by_date)
+
+
+def _metric_daily_series(project, user_id, start_date, end_date, period_days):
+    by_date = _daily_metric_rows(project.id, user_id, start_date, end_date)
+    visit_clicks_by_date = _daily_visit_click_rows(project, user_id, start_date, end_date)
+    has_visit_facts = visit_clicks_by_date is not None
     days = list(services._date_range(start_date, end_date))
-    active_flags = []
     series = {
         'engaged_time': [],
-        'active_days': [],
-        'consistency': [],
+        # One entry per date rather than a running total: the Active days card
+        # draws a cell per date instead of a line.
+        'active_day_strip': [],
         'intensity': [],
         'visits': [],
         'avg_visit': [],
         'pages_used': [],
+        'areas_used': [],
         'interaction_rate': [],
     }
+    cumulative_visits = 0
+    cumulative_engaged = 0
+    cumulative_clicks = 0
+    cumulative_visits_with_click = 0
+    cumulative_active_days = 0
+    cumulative_page_rule_ids = set()
+    cumulative_product_area_keys = set()
 
-    for index, day in enumerate(days):
+    for day in days:
         row = by_date.get(day, {})
         visits = _to_int(row.get('visits'))
         engaged = _to_int(row.get('engaged_seconds'))
         clicks = _to_int(row.get('click_count'))
-        pages = _to_int(row.get('pages_used'))
         active = 1 if visits > 0 or engaged > 0 else 0
-        active_flags.append(active)
-        window = active_flags[max(0, index - 6):index + 1]
-        rolling_active = sum(window)
-        rolling_days = min(7, index + 1)
+        cumulative_visits += visits
+        cumulative_engaged += engaged
+        cumulative_clicks += clicks
+        cumulative_active_days += active
+        cumulative_page_rule_ids.update(row.get('page_rule_ids') or set())
+        cumulative_product_area_keys.update(row.get('product_area_keys') or set())
+        if has_visit_facts:
+            cumulative_visits_with_click += _to_int(
+                (visit_clicks_by_date.get(day) or {}).get('visits_with_click')
+            )
+        else:
+            cumulative_visits_with_click = min(cumulative_visits, cumulative_clicks)
         date_value = day.isoformat()
 
-        series['engaged_time'].append({'date': date_value, 'value': engaged})
-        series['active_days'].append({'date': date_value, 'value': active})
-        series['consistency'].append({'date': date_value, 'value': _pct(rolling_active, rolling_days)})
-        series['intensity'].append({'date': date_value, 'value': round(_ratio(engaged, active)) if active else 0})
-        series['visits'].append({'date': date_value, 'value': visits})
-        series['avg_visit'].append({'date': date_value, 'value': round(_ratio(engaged, visits))})
-        series['pages_used'].append({'date': date_value, 'value': pages})
-        series['interaction_rate'].append({'date': date_value, 'value': _pct(clicks, visits)})
+        series['engaged_time'].append({'date': date_value, 'value': cumulative_engaged})
+        series['active_day_strip'].append({
+            'date': date_value,
+            'active': bool(active),
+            'engagedSeconds': engaged,
+            'visits': visits,
+        })
+        series['intensity'].append({
+            'date': date_value,
+            'value': round(_ratio(cumulative_engaged, cumulative_active_days)),
+        })
+        series['visits'].append({'date': date_value, 'value': cumulative_visits})
+        series['avg_visit'].append({
+            'date': date_value,
+            'value': round(_ratio(cumulative_engaged, cumulative_visits)),
+        })
+        series['pages_used'].append({
+            'date': date_value,
+            'value': len(cumulative_page_rule_ids),
+        })
+        series['areas_used'].append({
+            'date': date_value,
+            'value': len(cumulative_product_area_keys),
+        })
+        series['interaction_rate'].append({
+            'date': date_value,
+            'value': _fraction(
+                min(cumulative_visits, cumulative_visits_with_click),
+                cumulative_visits,
+            ) * 100,
+        })
 
     return series
 
 
-def _metric_card(card_id, label, value, raw_value, previous_value, delta_type, daily_series):
+def _metric_card(
+    card_id,
+    label,
+    value,
+    raw_value,
+    previous_value,
+    delta_type,
+    daily_series,
+    *,
+    previous_value_label=None,
+):
+    delta_label = None
+    delta_direction = None
     if delta_type == 'pp':
         delta_value = round((raw_value - previous_value) * 100, 1)
     elif delta_type == 'absolute':
         delta_value = round(raw_value - previous_value, 1)
     else:
-        delta_value = _delta_pct_value(raw_value, previous_value)
+        delta = services._delta_pct(raw_value, previous_value)
+        delta_value = delta.get('value')
+        delta_label = delta.get('label')
+        delta_direction = delta.get('direction')
 
-    return {
+    card = {
         'id': card_id,
         'label': label,
         'value': value,
         'rawValue': raw_value,
         'previousValue': previous_value,
         'deltaValue': delta_value,
+        'deltaLabel': delta_label,
+        'deltaDirection': delta_direction,
         'deltaType': delta_type,
         'dailySeries': daily_series,
         'trend': [point['value'] for point in daily_series],
     }
+    # Cards whose headline carries a unit hand over the matching previous-period
+    # wording, so the comparison tooltip does not read a bare number next to it.
+    if previous_value_label is not None:
+        card['previousValueLabel'] = previous_value_label
+    return card
 
 
-def _metric_cards(project_id, user_id, start_date, end_date, current, previous, period_days):
-    current_metrics = _metric_row(current)
-    previous_metrics = _metric_row(previous)
-    current_consistency = _fraction(current_metrics['active_days'], period_days)
+def _active_days_card(current_metrics, previous_metrics, period_days, activity_strip):
+    """
+    One card for how many of the selected days the user showed up on.
+
+    Active days and its share of the period were two cards saying the same thing
+    twice. Together they read as "X of N days", and the per-date strip shows
+    which days those were, which neither running total could.
+    """
+
+    active_days = current_metrics['active_days']
+    consistency = _fraction(active_days, period_days)
     previous_consistency = _fraction(previous_metrics['active_days'], period_days)
+    delta_value = round((consistency - previous_consistency) * 100, 1)
+
+    return {
+        'id': 'active_days',
+        'label': 'Active days',
+        'render': 'activity_strip',
+        'value': f'{_format_number(active_days)} of {_format_number(period_days)} days',
+        'rawValue': active_days,
+        'previousValue': previous_metrics['active_days'],
+        'periodDays': period_days,
+        'activeDays': active_days,
+        # The headline delta is in points because the card leads with a share,
+        # so the day difference is carried separately for the copy that needs it.
+        'activeDaysDelta': active_days - previous_metrics['active_days'],
+        'consistency': consistency,
+        'consistencyLabel': _format_percent(consistency * 100),
+        'deltaValue': delta_value,
+        'deltaLabel': services._format_signed_decimal(delta_value, ' pp', 1),
+        'deltaDirection': services._direction(delta_value, 1),
+        'deltaType': 'pp',
+        'activityStrip': activity_strip,
+    }
+
+
+def _metric_cards(
+    project,
+    user_id,
+    start_date,
+    end_date,
+    current,
+    previous,
+    current_visits,
+    previous_visits,
+    period_days,
+):
+    current_metrics = _metric_row(current, current_visits)
+    previous_metrics = _metric_row(previous, previous_visits)
     current_interaction = _fraction(current_metrics['visits_with_click'], current_metrics['visits'])
     previous_interaction = _fraction(previous_metrics['visits_with_click'], previous_metrics['visits'])
-    daily = _metric_daily_series(project_id, user_id, start_date, end_date, period_days)
+    daily = _metric_daily_series(project, user_id, start_date, end_date, period_days)
 
     return [
         _metric_card(
@@ -497,23 +659,11 @@ def _metric_cards(project_id, user_id, start_date, end_date, current, previous, 
             'percent',
             daily['engaged_time'],
         ),
-        _metric_card(
-            'active_days',
-            'Active days',
-            _format_number(current_metrics['active_days']),
-            current_metrics['active_days'],
-            previous_metrics['active_days'],
-            'absolute',
-            daily['active_days'],
-        ),
-        _metric_card(
-            'consistency',
-            'Consistency',
-            _format_percent(current_consistency * 100),
-            current_consistency,
-            previous_consistency,
-            'pp',
-            daily['consistency'],
+        _active_days_card(
+            current_metrics,
+            previous_metrics,
+            period_days,
+            daily['active_day_strip'],
         ),
         _metric_card(
             'intensity',
@@ -550,6 +700,16 @@ def _metric_cards(project_id, user_id, start_date, end_date, current, previous, 
             previous_metrics['pages_used'],
             'absolute',
             daily['pages_used'],
+        ),
+        _metric_card(
+            'areas_used',
+            'Areas used',
+            _format_product_area_count(current_metrics['product_areas_used']),
+            current_metrics['product_areas_used'],
+            previous_metrics['product_areas_used'],
+            'absolute',
+            daily['areas_used'],
+            previous_value_label=_format_product_area_count(previous_metrics['product_areas_used']),
         ),
         _metric_card(
             'interaction_rate',
@@ -651,6 +811,7 @@ class BulkUserDetailContext:
         self._product_areas = None
         self._product_area_catalog = None
         self._product_area_color_lookup = None
+        self._power_user_thresholds = None
         self._company_metrics_cache = OrderedDict()
         self._company_area_usage_cache = OrderedDict()
         self._company_page_usage_cache = OrderedDict()
@@ -674,6 +835,15 @@ class BulkUserDetailContext:
         if self._project_metrics is None:
             self._project_metrics = _aggregate_user_metrics(self.project_id, self.start_date, self.end_date)
         return self._project_metrics
+
+    def get_power_user_thresholds(self):
+        if self._power_user_thresholds is None:
+            period_days = (self.end_date - self.start_date).days + 1
+            self._power_user_thresholds = services.power_user_thresholds(
+                period_days,
+                self.get_project_metrics().values(),
+            )
+        return self._power_user_thresholds
 
     def get_project_visits(self):
         if self._project_visits is None:
@@ -784,6 +954,7 @@ def _peer_comparison_rows(
     product_area_color_lookup=None,
     bulk_context=None,
     previous_bulk_context=None,
+    power_thresholds=None,
 ):
     if bulk_context and previous_bulk_context and company_id:
         current = dict(bulk_context.get_company_metrics(company_id))
@@ -833,6 +1004,11 @@ def _peer_comparison_rows(
         if selected_previous:
             previous[selected_user_id] = selected_previous
     user_ids = sorted(set(current) | {selected_user_id})
+    comparison_available = (
+        bool(previous_bulk_context.get_project_metrics())
+        if previous_bulk_context
+        else _base_user_queryset(project.id, previous_start, previous_end).exists()
+    )
 
     rows = []
     period_days = (end_date - start_date).days + 1
@@ -858,7 +1034,14 @@ def _peer_comparison_rows(
                 'pagesUsed': _to_int(area_row.get('pagesUsed')),
             })
         top_area = _top_area_row(area_rows)
-        status = _status_key(row, previous_row, period_days=period_days, first_seen_at=visit_row.get('first_visit_ts'), end_date=end_date)
+        status = _status_key(
+            row,
+            previous_row,
+            period_days=period_days,
+            first_seen_at=visit_row.get('first_visit_ts'),
+            end_date=end_date,
+            power_thresholds=power_thresholds,
+        )
         rows.append({
             'userId': user_id,
             'id': user_id,
@@ -869,13 +1052,17 @@ def _peer_comparison_rows(
             'role': '',
             'seatType': '',
             'status': status,
+            'comparisonAvailable': comparison_available,
+            'comparison_available': comparison_available,
             'engagedSeconds': metrics['engaged_seconds'],
+            'previousEngagedSeconds': _to_int(previous_row.get('engaged_seconds')),
             'engagedDeltaPct': _delta_pct_value(metrics['engaged_seconds'], previous_row.get('engaged_seconds')),
             'activeDays': metrics['active_days'],
             'consistency': _fraction(metrics['active_days'], period_days),
             'intensitySecondsPerActiveDay': metrics['intensity_seconds'],
             'sessionsCount': metrics['sessions_count'],
             'visits': metrics['visits'],
+            'previousVisits': _to_int(previous_row.get('visits')),
             'visitsDeltaPct': _delta_pct_value(metrics['visits'], previous_row.get('visits')),
             'pagesUsed': metrics['pages_used'],
             'topArea': top_area.get('productAreaName') or '',
@@ -1007,8 +1194,15 @@ def _page_usage_rows(
         )
     )
     previous_by_page = {row.get('page_rule_id'): row for row in previous_rows}
+    comparison_available = _base_user_queryset(project.id, previous_start, previous_end).exists()
     rule_names = _page_rule_names(project.id, {row.get('page_rule_id') for row in rows})
     visit_metrics = _selected_page_visit_metrics(project, user_id, start_date, end_date)
+    previous_visit_metrics = _selected_page_visit_metrics(
+        project,
+        user_id,
+        previous_start,
+        previous_end,
+    )
     if bulk_context and company_id:
         active_peer_ids = set(bulk_context.get_company_metrics(company_id)) - {user_id}
         peer_page_rows = [
@@ -1064,11 +1258,28 @@ def _page_usage_rows(
         clicks = _to_int(row.get('clicks'))
         previous = previous_by_page.get(page_rule_id, {})
         page_visits = visit_metrics.get(page_rule_id, {})
-        visits_with_click = _to_int(page_visits.get('visits_with_click')) or min(visits, clicks)
+        previous_page_visits = previous_visit_metrics.get(page_rule_id, {})
+        visits_with_click = (
+            min(visits, _to_int(page_visits.get('visits_with_click')))
+            if page_rule_id in visit_metrics
+            else min(visits, clicks)
+        )
+        previous_visits_with_click = (
+            min(
+                _to_int(previous.get('visits')),
+                _to_int(previous_page_visits.get('visits_with_click')),
+            )
+            if page_rule_id in previous_visit_metrics
+            else min(_to_int(previous.get('visits')), _to_int(previous.get('clicks')))
+        )
         avg_visit = round(_ratio(engaged, visits))
         previous_avg_visit = round(_ratio(previous.get('engaged_seconds'), previous.get('visits')))
         interaction = _pct(visits_with_click, visits)
-        previous_interaction = _pct(previous.get('clicks'), previous.get('visits'))
+        previous_interaction = _pct(previous_visits_with_click, previous.get('visits'))
+        visits_delta = services._delta_pct(visits, previous.get('visits'))
+        engaged_delta = services._delta_pct(engaged, previous.get('engaged_seconds'))
+        avg_visit_delta = services._delta_pct(avg_visit, previous_avg_visit)
+        interaction_delta = services._delta_pp(interaction, previous_interaction)
         first_used = page_visits.get('first_used_at') or row.get('first_used_date')
         last_used = page_visits.get('last_used_at') or row.get('last_used_date')
         peer_usage_pct = _pct(len(peer_page_users.get(page_rule_id, set())), len(active_peer_ids))
@@ -1082,16 +1293,26 @@ def _page_usage_rows(
             'productAreaColor': product_area_color,
             'color': product_area_color,
             'product_area_color': product_area_color,
+            'comparisonAvailable': comparison_available,
+            'comparison_available': comparison_available,
             'visits': visits,
-            'visitsDeltaPct': _delta_pct_value(visits, previous.get('visits')),
+            'previousVisits': _to_int(previous.get('visits')),
+            'visitsDeltaPct': visits_delta.get('value') or 0,
+            'visitsDeltaLabel': visits_delta.get('label'),
             'shareOfUserTimePct': _pct(engaged, total_user_engaged),
             'engagedSeconds': engaged,
-            'engagedDeltaPct': _delta_pct_value(engaged, previous.get('engaged_seconds')),
+            'previousEngagedSeconds': _to_int(previous.get('engaged_seconds')),
+            'engagedDeltaPct': engaged_delta.get('value') or 0,
+            'engagedDeltaLabel': engaged_delta.get('label'),
             'avgVisitSeconds': avg_visit,
-            'avgVisitDeltaPct': _delta_pct_value(avg_visit, previous_avg_visit),
+            'previousAvgVisitSeconds': previous_avg_visit,
+            'avgVisitDeltaPct': avg_visit_delta.get('value') or 0,
+            'avgVisitDeltaLabel': avg_visit_delta.get('label'),
             'interactionPct': interaction,
+            'previousInteractionPct': previous_interaction,
             'interactionRate': interaction / 100,
-            'interactionDeltaPp': _delta_pp_value(interaction, previous_interaction),
+            'interactionDeltaPp': interaction_delta.get('value') or 0,
+            'interactionDeltaLabel': interaction_delta.get('label'),
             'firstUsedAt': _safe_iso(first_used),
             'lastUsedAt': _safe_iso(last_used),
             'peerUsagePct': peer_usage_pct,
@@ -1181,11 +1402,13 @@ def _recommended_actions(metric_cards, product_area_mix, pages_used, underused_p
     actions = []
     engaged_card = next((card for card in metric_cards if card['id'] == 'engaged_time'), None)
     pages_card = next((card for card in metric_cards if card['id'] == 'pages_used'), None)
+    engaged_delta = engaged_card.get('deltaValue') if engaged_card else None
+    pages_delta = pages_card.get('deltaValue') if pages_card else None
     current_rank = next((row.get('rank') for row in peer_rows if row.get('userId') == selected_user_id), None)
     rank_pct = round((current_rank or len(peer_rows) or 1) / max(len(peer_rows), 1) * 100)
 
-    if engaged_card and engaged_card.get('deltaValue', 0) <= -30:
-        delta = round(engaged_card['deltaValue'])
+    if engaged_delta is not None and engaged_delta <= -30:
+        delta = round(engaged_delta)
         actions.append(_recommendation(
             'high' if delta <= -40 else 'medium',
             'usage_drop',
@@ -1263,16 +1486,16 @@ def _recommended_actions(metric_cards, product_area_mix, pages_used, underused_p
             sortScore=100 - rank_pct,
         ))
 
-    if pages_card and pages_card.get('deltaValue', 0) <= -2:
+    if pages_delta is not None and pages_delta <= -2:
         actions.append(_recommendation(
             'medium',
             'activation_gap',
             'Review activation gap',
             'Page breadth declined',
-            f"Pages used {int(pages_card['deltaValue'])} vs previous period",
+            f'Pages used {int(pages_delta)} vs previous period',
             'Overall activation',
             'CSM',
-            sortScore=abs(pages_card['deltaValue']),
+            sortScore=abs(pages_delta),
         ))
 
     if not actions and user_metrics.get('visits', 0) > 0:
@@ -1319,8 +1542,9 @@ def _insights(selected_user_id, metric_cards, product_area_mix, underused_pages,
         elif rank_pct >= 65:
             output.append('This user is below the engaged-time median for company peers.')
     engaged_card = next((card for card in metric_cards if card['id'] == 'engaged_time'), None)
-    if engaged_card and engaged_card.get('deltaValue', 0) <= -25:
-        output.append(f"Usage dropped {abs(round(engaged_card['deltaValue']))}% versus the previous period.")
+    engaged_delta = engaged_card.get('deltaValue') if engaged_card else None
+    if engaged_delta is not None and engaged_delta <= -25:
+        output.append(f'Usage dropped {abs(round(engaged_delta))}% versus the previous period.')
     unusual = sorted(product_area_mix, key=lambda row: abs(row.get('deltaPp') or 0), reverse=True)
     if unusual and abs(unusual[0].get('deltaPp') or 0) >= 12:
         area = unusual[0]
@@ -1342,6 +1566,7 @@ def _users_for_switcher(
     selected_user_id,
     bulk_context=None,
     previous_bulk_context=None,
+    power_thresholds=None,
 ):
     if bulk_context and previous_bulk_context:
         current = bulk_context.get_project_metrics()
@@ -1378,7 +1603,14 @@ def _users_for_switcher(
             'seatType': '',
             'firstSeenAt': _safe_iso(visit_row.get('first_visit_ts') or row.get('first_seen_date')),
             'lastActiveAt': _safe_iso(visit_row.get('last_visit_ts') or row.get('last_seen_date')),
-            'status': _status_key(current.get(user_id, {}), previous.get(user_id, {}), period_days=period_days, first_seen_at=visit_row.get('first_visit_ts'), end_date=end_date),
+            'status': _status_key(
+                current.get(user_id, {}),
+                previous.get(user_id, {}),
+                period_days=period_days,
+                first_seen_at=visit_row.get('first_visit_ts'),
+                end_date=end_date,
+                power_thresholds=power_thresholds,
+            ),
             'engagedSeconds': metrics['engaged_seconds'],
         })
 
@@ -1396,6 +1628,11 @@ def build_user_detail_payload(project, user_id, *, range_key='last_30_days', bul
     start_date, end_date = services.resolve_period(project.timezone, range_key=range_key)
     previous_start, previous_end = services.previous_period(start_date, end_date)
     period_days = (end_date - start_date).days + 1
+    power_thresholds = (
+        bulk_context.get_power_user_thresholds()
+        if bulk_context
+        else services.project_power_user_thresholds(project.id, start_date, end_date)
+    )
     if bulk_context and previous_bulk_context:
         current = bulk_context.get_project_metrics().get(user_id, {})
         previous = previous_bulk_context.get_project_metrics().get(user_id, {})
@@ -1435,7 +1672,17 @@ def build_user_detail_payload(project, user_id, *, range_key='last_30_days', bul
     company_id = current.get('company_id') or previous.get('company_id') or current_visits.get('company_id') or previous_visits.get('company_id') or lifetime.get('company_id') or ''
     company_name = current_visits.get('company_name') or previous_visits.get('company_name') or lifetime.get('company_name') or company_id or 'Unknown company'
     name = current.get('user_name') or previous.get('user_name') or current_visits.get('user_name') or previous_visits.get('user_name') or lifetime.get('user_name') or _name_from_user_id(user_id)
-    metric_cards = _metric_cards(project.id, user_id, start_date, end_date, current, previous, period_days)
+    metric_cards = _metric_cards(
+        project,
+        user_id,
+        start_date,
+        end_date,
+        current,
+        previous,
+        current_visits,
+        previous_visits,
+        period_days,
+    )
     selected_metrics = _metric_row(current, current_visits)
     previous_metrics = _metric_row(previous, previous_visits)
     peer_rows = _peer_comparison_rows(
@@ -1451,6 +1698,7 @@ def build_user_detail_payload(project, user_id, *, range_key='last_30_days', bul
         product_area_color_lookup=product_area_color_lookup,
         bulk_context=bulk_context,
         previous_bulk_context=previous_bulk_context,
+        power_thresholds=power_thresholds,
     )
     product_area_mix, peer_area_median_top = _product_area_mix(user_id, peer_rows, product_areas)
     pages_used, underused_pages = _page_usage_rows(
@@ -1489,7 +1737,14 @@ def build_user_detail_payload(project, user_id, *, range_key='last_30_days', bul
         'seatType': '',
         'firstSeenAt': _safe_iso(lifetime.get('first_seen_at') or current_visits.get('first_visit_ts') or current.get('first_seen_date') or previous.get('first_seen_date')),
         'lastActiveAt': _safe_iso(lifetime.get('last_active_at') or current_visits.get('last_visit_ts') or current.get('last_seen_date') or previous.get('last_seen_date')),
-        'status': _status_key(current, previous, period_days=period_days, first_seen_at=lifetime.get('first_seen_at') or current_visits.get('first_visit_ts'), end_date=end_date),
+        'status': _status_key(
+            current,
+            previous,
+            period_days=period_days,
+            first_seen_at=lifetime.get('first_seen_at') or current_visits.get('first_visit_ts'),
+            end_date=end_date,
+            power_thresholds=power_thresholds,
+        ),
     }
     recommended_actions = _recommended_actions(metric_cards, product_area_mix, pages_used, underused_pages, peer_rows, user_id, user_metrics)
 
@@ -1517,6 +1772,7 @@ def build_user_detail_payload(project, user_id, *, range_key='last_30_days', bul
             user_id,
             bulk_context=bulk_context,
             previous_bulk_context=previous_bulk_context,
+            power_thresholds=power_thresholds,
         ),
         'productAreas': product_areas,
         'metricCards': metric_cards,

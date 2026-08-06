@@ -1,15 +1,17 @@
 (function mountDjangoUsersData(globalScope) {
   const dataElement = document.getElementById("users-overview-data");
-  const dataUrl = document.body?.dataset.usersDataUrl || "";
   const body = document.body || {};
   let payload = {};
-  let deferredPayloadPromise = null;
 
   try {
     payload = JSON.parse(dataElement?.textContent || "{}");
   } catch {
     payload = {};
   }
+
+  const embeddedUsers = Array.isArray(payload.users) ? payload.users : [];
+  const stableScatter = (Array.isArray(payload.scatter) && payload.scatter.length ? payload.scatter : embeddedUsers)
+    .slice(0, 300);
 
   const PERIOD_OPTIONS = [7, 30, 90, 180];
   const periodDays = Number(payload.period?.days) || 30;
@@ -29,6 +31,20 @@
     return PERIOD_OPTIONS.includes(Number(digits)) ? period : DEFAULT_PERIOD;
   }
 
+  function appendCompanyAttributeParams(nextUrl) {
+    const currentParams = new URLSearchParams(globalScope.location.search);
+    const existingKeys = Array.from(nextUrl.searchParams.keys())
+      .filter((key) => key.startsWith("ca."));
+
+    existingKeys.forEach((key) => nextUrl.searchParams.delete(key));
+    currentParams.forEach((value, key) => {
+      if (key.startsWith("ca.")) {
+        nextUrl.searchParams.append(key, value);
+      }
+    });
+    return nextUrl;
+  }
+
   function navigateToPeriod(period) {
     const range = rangeByPeriod[period];
 
@@ -43,13 +59,18 @@
     globalScope.location.assign(`${globalScope.location.pathname}?${params.toString()}`);
   }
 
-  function optionsUrl(baseUrl, query, periodValue, limit = 20) {
+  function optionsUrl(baseUrl, query, periodValue, limit = 20, alphabetical = false) {
     const nextUrl = new URL(baseUrl, globalScope.location.origin);
     const period = coercePeriodKey(periodValue || DEFAULT_PERIOD);
     const range = rangeByPeriod[period] || rangeByPeriod[DEFAULT_PERIOD] || "last_30_days";
 
     nextUrl.searchParams.set("range", range);
     nextUrl.searchParams.set("limit", String(limit));
+    if (alphabetical) {
+      nextUrl.searchParams.set("sort", "alphabetical");
+    } else {
+      nextUrl.searchParams.delete("sort");
+    }
 
     if (String(query || "").trim()) {
       nextUrl.searchParams.set("q", String(query || "").trim());
@@ -57,7 +78,42 @@
       nextUrl.searchParams.delete("q");
     }
 
+    appendCompanyAttributeParams(nextUrl);
     return `${nextUrl.pathname}${nextUrl.search}`;
+  }
+
+  function tableRequestUrl(baseUrl, options = {}) {
+    const nextUrl = new URL(baseUrl, globalScope.location.origin);
+    const period = coercePeriodKey(options.period || options.periodValue || DEFAULT_PERIOD);
+    const range = body.dataset?.usersRangeKey || rangeByPeriod[period] || rangeByPeriod[DEFAULT_PERIOD];
+
+    if (range) {
+      nextUrl.searchParams.set("range", range);
+    }
+
+    Object.entries(options).forEach(([key, value]) => {
+      if (key === "period" || key === "periodValue" || value === undefined || value === null || value === "") {
+        return;
+      }
+
+      nextUrl.searchParams.set(key, String(value));
+    });
+
+    appendCompanyAttributeParams(nextUrl);
+    return `${nextUrl.pathname}${nextUrl.search}`;
+  }
+
+  function fetchTable(baseUrl, options = {}) {
+    if (!baseUrl || !globalScope.fetch) {
+      return Promise.resolve(null);
+    }
+
+    return globalScope.fetch(tableRequestUrl(baseUrl, options), {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" }
+    })
+      .then((response) => (response.ok ? response.json() : null))
+      .catch(() => null);
   }
 
   function normalizeProductAreaOption(area) {
@@ -93,7 +149,7 @@
       options.push(option);
     });
 
-    (payload.users || []).forEach((user) => {
+    embeddedUsers.concat(stableScatter).forEach((user) => {
       (user.pageGroups || []).forEach((group) => {
         const name = String(group.name || group.productArea || "").trim();
 
@@ -121,9 +177,12 @@
       delta: Number(kpi.delta) || 0,
       deltaLabel: kpi.deltaLabel || kpi.delta?.label || "",
       deltaType: kpi.deltaType || kpi.delta?.direction || "neutral",
-      secondary: kpi.secondary || "",
       sparkline: Array.isArray(kpi.sparkline) ? kpi.sparkline : [],
-      sparklineLabels: payload.dailyActiveTrend?.labels || []
+      sparklineLabels: payload.dailyActiveTrend?.labels || [],
+      sparklineScope: kpi.sparklineScope || "period_to_date",
+      sparklineValueType: kpi.sparklineValueType || "",
+      sparklineRender: kpi.sparklineRender || "area",
+      sparklineLabel: kpi.sparklineLabel || kpi.label || "Value"
     }));
   }
 
@@ -131,8 +190,7 @@
     const requestedPeriod = coercePeriodKey(periodValue);
     navigateToPeriod(requestedPeriod);
 
-    const users = Array.isArray(payload.users) ? payload.users : [];
-    const scatter = Array.isArray(payload.scatter) && payload.scatter.length ? payload.scatter : users;
+    const users = embeddedUsers;
 
     return {
       period: DEFAULT_PERIOD,
@@ -147,11 +205,13 @@
       dailyActiveTrend: payload.dailyActiveTrend || { labels: [] },
       engagementBuckets: payload.engagementBuckets || [],
       statusDistribution: payload.statusDistribution || [],
-      statusMixByDate: payload.statusMixByDate || [],
+      previousStatusDistribution: payload.previousStatusDistribution || [],
       insights: payload.insights || [],
       users,
-      scatter,
+      scatter: stableScatter,
       scatterMeta: payload.scatterMeta || {},
+      tableData: payload.tableData || {},
+      tableFilters: payload.tableFilters || payload.filters || {},
       featureHeatmap: payload.featureHeatmap || [],
       topUsers: users.slice().sort((a, b) => (Number(b.engagedSeconds) || 0) - (Number(a.engagedSeconds) || 0)).slice(0, 10),
       usersNeedingAttention: payload.usersNeedingAttention || [],
@@ -164,56 +224,9 @@
     };
   }
 
-  function payloadNeedsDeferredUsers() {
-    return Boolean(payload.usersDeferred?.isPartial && dataUrl && globalScope.fetch);
-  }
-
-  function applyDeferredUsersPayload(deferredPayload) {
-    if (!deferredPayload || deferredPayload.pending) {
-      return null;
-    }
-
-    payload = {
-      ...payload,
-      users: Array.isArray(deferredPayload.users) ? deferredPayload.users : payload.users,
-      scatter: Array.isArray(deferredPayload.scatter) ? deferredPayload.scatter : payload.scatter,
-      scatterMeta: deferredPayload.scatterMeta || payload.scatterMeta || {},
-      usersDeferred: {
-        ...(payload.usersDeferred || {}),
-        ...(deferredPayload.usersDeferred || {}),
-        isPartial: false
-      }
-    };
-
-    return buildData(DEFAULT_PERIOD);
-  }
-
-  function loadDeferredUsersData() {
-    if (!payloadNeedsDeferredUsers()) {
-      return Promise.resolve(null);
-    }
-
-    if (deferredPayloadPromise) {
-      return deferredPayloadPromise;
-    }
-
-    deferredPayloadPromise = globalScope.fetch(dataUrl, {
-      credentials: "same-origin",
-      headers: {
-        Accept: "application/json"
-      }
-    })
-      .then((response) => {
-        if (!response.ok) {
-          return null;
-        }
-
-        return response.json();
-      })
-      .then(applyDeferredUsersPayload)
-      .catch(() => null);
-
-    return deferredPayloadPromise;
+  function loadUsersTable(options = {}) {
+    return fetchTable(body.dataset?.usersTableUrl || "", options)
+      .then((data) => (data && Array.isArray(data.rows) ? data : null));
   }
 
   function searchUsers(query = "", options = {}) {
@@ -223,7 +236,7 @@
       return Promise.resolve([]);
     }
 
-    return globalScope.fetch(optionsUrl(baseUrl, query, options.period || options.periodValue, options.limit || 20), {
+    return globalScope.fetch(optionsUrl(baseUrl, query, options.period || options.periodValue, options.limit || 20, options.alphabetical), {
       credentials: "same-origin",
       headers: {
         Accept: "application/json"
@@ -248,7 +261,7 @@
     featureProductAreas: payload.featureProductAreas || {},
     pageFeatures: payload.pageFeatures || [],
     getUsersAnalyticsData: buildData,
-    loadDeferredUsersData,
+    loadUsersTable,
     searchUsers,
     coercePeriodKey
   };

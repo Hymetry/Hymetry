@@ -117,18 +117,64 @@ HYMETRY_DOMAIN = (HYMETRY_DOMAIN or "http://localhost").rstrip("/")
 EDGE_URL = os.getenv("EDGE_URL", f"{HYMETRY_DOMAIN}/static/js")
 HOSTED_DEMO_URL = os.getenv('HOSTED_DEMO_URL', 'https://app.hymetry.com/projects/demo/').strip()
 OPENAI_KEY_ENCRYPTION_KEYS = os.getenv('OPENAI_KEY_ENCRYPTION_KEYS', '').strip()
+# Recording ingestion accepts byte-bounded rrweb batches up to 8 MiB while
+# retaining a finite application-wide request cap.
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(
+    os.getenv('DATA_UPLOAD_MAX_MEMORY_SIZE', str(10 * 1024 * 1024))
+)
 ASSET_PROXY_MAX_BYTES = int(os.getenv('ASSET_PROXY_MAX_BYTES', str(5 * 1024 * 1024)))
 ASSET_PROXY_TIMEOUT_SECONDS = float(os.getenv('ASSET_PROXY_TIMEOUT_SECONDS', '10'))
 ASSET_PROXY_MAX_REDIRECTS = int(os.getenv('ASSET_PROXY_MAX_REDIRECTS', '3'))
 ASSET_PROXY_ALLOW_PRIVATE_HOSTS = os.getenv('ASSET_PROXY_ALLOW_PRIVATE_HOSTS', 'False').lower() == 'true'
 
+# Incremental replay delivery is bounded independently by time, event count,
+# and uncompressed JSON bytes.
+REPLAY_STREAM_BOOTSTRAP_WINDOW_SECONDS = int(os.getenv('REPLAY_STREAM_BOOTSTRAP_WINDOW_SECONDS', '45'))
+REPLAY_STREAM_BOOTSTRAP_EVENT_LIMIT = int(os.getenv('REPLAY_STREAM_BOOTSTRAP_EVENT_LIMIT', '3000'))
+REPLAY_STREAM_BOOTSTRAP_MAX_BYTES = int(
+    os.getenv('REPLAY_STREAM_BOOTSTRAP_MAX_BYTES', str(2 * 1024 * 1024))
+)
+REPLAY_STREAM_CHUNK_WINDOW_SECONDS = int(os.getenv('REPLAY_STREAM_CHUNK_WINDOW_SECONDS', '60'))
+REPLAY_STREAM_CHUNK_EVENT_LIMIT = int(os.getenv('REPLAY_STREAM_CHUNK_EVENT_LIMIT', '5000'))
+REPLAY_STREAM_CHUNK_MAX_BYTES = int(
+    os.getenv('REPLAY_STREAM_CHUNK_MAX_BYTES', str(2 * 1024 * 1024))
+)
+REPLAY_STREAM_PREFETCH_THRESHOLD_SECONDS = int(
+    os.getenv('REPLAY_STREAM_PREFETCH_THRESHOLD_SECONDS', '30')
+)
+REPLAY_STREAM_APPEND_BATCH_SIZE = int(os.getenv('REPLAY_STREAM_APPEND_BATCH_SIZE', '250'))
+
 import dj_database_url
 DATABASES = {
     "default": dj_database_url.parse(
         os.getenv("DATABASE_URL"),
-        conn_max_age=600
+        conn_max_age=int(os.getenv('DB_CONN_MAX_AGE') or 60),
+        conn_health_checks=os.getenv('DB_CONN_HEALTH_CHECKS', 'True').lower() == 'true',
     )
 }
+
+DJANGO_CACHE_URL = os.getenv('DJANGO_CACHE_URL', '').strip()
+if DJANGO_CACHE_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': DJANGO_CACHE_URL,
+            'KEY_PREFIX': os.getenv('DJANGO_CACHE_KEY_PREFIX', 'hymetry'),
+            'TIMEOUT': 300,
+        },
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'hymetry-application-cache',
+            'TIMEOUT': 300,
+            'OPTIONS': {'MAX_ENTRIES': 512},
+        },
+    }
+PAGES_FILTERED_OVERVIEW_APPLICATION_CACHE_SECONDS = int(
+    os.getenv('PAGES_FILTERED_OVERVIEW_APPLICATION_CACHE_SECONDS', '300')
+)
 
 PASSWORD_MIN_LENGTH = 12
 PASSWORD_MAX_LENGTH = 128
@@ -168,7 +214,13 @@ AUTHENTICATION_BACKENDS = [
 ]
 
 SESSION_EXPIRATION_SECONDS = int(os.getenv('SESSION_EXPIRATION_SECONDS', '1800').split('#')[0].strip())
+SESSION_MAX_DURATION_SECONDS = int(
+    os.getenv('SESSION_MAX_DURATION_SECONDS', '43200').split('#')[0].strip()
+)
 SESSION_MAX_CLOCK_SKEW_SECONDS = int(os.getenv('SESSION_MAX_CLOCK_SKEW_SECONDS', '300').split('#')[0].strip())
+SESSION_LATE_EVENT_MAX_AGE_SECONDS = int(
+    os.getenv('SESSION_LATE_EVENT_MAX_AGE_SECONDS', '86400').split('#')[0].strip()
+)
 ANALYTICS_SESSION_EXPIRATION_SECONDS = int(
     os.getenv('ANALYTICS_SESSION_EXPIRATION_SECONDS', '1800').split('#')[0].strip()
 )
@@ -193,6 +245,29 @@ CELERY_TASK_SEND_SENT_EVENT = True
 PAGES_QUEUE_REBUILDS_ON_REQUEST = os.getenv('PAGES_QUEUE_REBUILDS_ON_REQUEST', 'True').lower() == 'true'
 
 ROWS_PER_PAGE = int(os.environ.get('ROWS_PER_PAGE', 100))
+
+REDIS_URL = os.getenv('REDIS_URL', 'redis://redis:6379/1')
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {'format': '%(asctime)s %(levelname)s %(name)s %(message)s'},
+        'llm_usage': {'format': '%(asctime)s %(levelname)s %(message)s'},
+    },
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'verbose'},
+        'llm_usage_console': {'class': 'logging.StreamHandler', 'formatter': 'llm_usage'},
+    },
+    'root': {'handlers': ['console'], 'level': 'WARNING'},
+    'loggers': {
+        'django.request': {'handlers': ['console'], 'level': 'ERROR', 'propagate': False},
+        'apps.tracker.analytics_tracker': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'apps.tracker.views': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'llm_usage': {'handlers': ['llm_usage_console'], 'level': 'INFO', 'propagate': False},
+        'apps.tracker': {'handlers': ['console'], 'level': 'ERROR', 'propagate': False},
+    },
+}
 
 # Custom error handlers
 HANDLER403 = 'config.views.permission_denied'

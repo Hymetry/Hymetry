@@ -38,15 +38,7 @@ function safeString(value, maxLength) {
 }
 
 function getPageContext() {
-  let url;
-  try {
-    const parsed = new URL(window.location.href);
-    parsed.search = '';
-    parsed.hash = '';
-    url = parsed.toString();
-  } catch (e) {
-    url = String(window.location.href || '').split('#', 1)[0].split('?', 1)[0];
-  }
+  const url = window.location.href;
   return {
     url,
     title: document.title || url,
@@ -710,41 +702,6 @@ export function startAnalytics(runtime, bootstrapEvent) {
     return keys;
   }
 
-  function applyIdentityToEvent(eventData, identity) {
-    if (!eventData) return;
-
-    if (!eventData.user_id && identity.user.id) {
-      eventData.user_id = identity.user.id;
-    }
-    if (!eventData.company_id && identity.company.id) {
-      eventData.company_id = identity.company.id;
-    }
-
-    if (eventData.user) {
-      if (!eventData.user.id && identity.user.id) {
-        eventData.user.id = identity.user.id;
-      }
-      if (
-        (!eventData.user.traits || !Object.keys(eventData.user.traits).length) &&
-        identity.user.traits
-      ) {
-        eventData.user.traits = identity.user.traits;
-      }
-    }
-
-    if (eventData.company) {
-      if (!eventData.company.id && identity.company.id) {
-        eventData.company.id = identity.company.id;
-      }
-      if (
-        (!eventData.company.traits || !Object.keys(eventData.company.traits).length) &&
-        identity.company.traits
-      ) {
-        eventData.company.traits = identity.company.traits;
-      }
-    }
-  }
-
   function createBaseEvent(type) {
     const identity = runtime.getIdentity();
 
@@ -994,15 +951,6 @@ export function startAnalytics(runtime, bootstrapEvent) {
     });
   }
 
-  function backfillQueuedIdentity() {
-    const identity = runtime.getIdentity();
-    for (let i = 0; i < clickQueue.length; i++) {
-      applyIdentityToEvent(clickQueue[i], identity);
-    }
-    applyIdentityToEvent(pendingScrollEvent, identity);
-    applyIdentityToEvent(pendingMouseMoveEvent, identity);
-  }
-
   function captureBootstrapActivity(event) {
     if (!event || !event.type) return;
 
@@ -1045,8 +993,6 @@ export function startAnalytics(runtime, bootstrapEvent) {
     flush() {
       flushCycle();
     },
-    onIdentify() {
-      backfillQueuedIdentity();
-    },
+    onIdentify() {},
   };
 }

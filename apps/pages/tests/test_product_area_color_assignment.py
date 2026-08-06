@@ -45,7 +45,7 @@ class ProductAreaColorAssignmentTests(TestCase):
         self.project = Project.objects.create(
             workspace=self.workspace,
             name='Product area color project',
-            owner=self.owner,
+            created_by=self.owner,
             timezone='America/Los_Angeles',
             page_naming_state=ProjectPageNamingState.NOT_STABLE,
         )
@@ -288,7 +288,7 @@ class ProductAreaColorCacheBuilderLockTests(TestCase):
         self.project = Project.objects.create(
             workspace=workspace,
             name='Product area cache lock project',
-            owner=owner,
+            created_by=owner,
         )
 
     def test_direct_cache_builders_do_not_write_when_pages_rebuild_lock_is_busy(self):
@@ -365,7 +365,7 @@ class ProductAreaColorTaskTests(TestCase):
         return Project.objects.create(
             workspace=self.workspace,
             name=name,
-            owner=self.owner,
+            created_by=self.owner,
             page_naming_state=state,
             lifecycle_status=lifecycle_status,
         )

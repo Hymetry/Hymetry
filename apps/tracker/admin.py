@@ -163,7 +163,13 @@ class SessionAdmin(admin.ModelAdmin):
         if not reference_time:
             is_active = False
         else:
-            is_active = (timezone.now() - reference_time).total_seconds() < settings.SESSION_EXPIRATION_SECONDS
+            inactivity_end = reference_time + timezone.timedelta(
+                seconds=settings.SESSION_EXPIRATION_SECONDS
+            )
+            maximum_end = obj.start_time + timezone.timedelta(
+                seconds=max(1, int(getattr(settings, 'SESSION_MAX_DURATION_SECONDS', 43200)))
+            )
+            is_active = timezone.now() < min(inactivity_end, maximum_end)
         
         if is_active:
             return format_html('<span style="color: {};">● {}</span>', 'green', 'Active')
@@ -232,6 +238,11 @@ class BubbleCacheAdmin(admin.ModelAdmin):
         return None
 
     project.short_description = 'Project'
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj is not None:
+            return ('session', *self.readonly_fields)
+        return self.readonly_fields
 
 
 @admin.register(TitlePrompt)

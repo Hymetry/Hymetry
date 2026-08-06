@@ -1,5 +1,5 @@
 from io import StringIO
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import call, patch
 
 from django.core.management import call_command
@@ -98,6 +98,8 @@ class RebuildAnalyticsCacheCommandTests(SimpleTestCase):
             include_user_details=True,
         )
 
+
+class RebuildAnalyticsCacheInvalidationTests(TestCase):
     @patch('apps.pages.user_analytics.build_users_overview_cache')
     @patch('apps.pages.company_analytics.build_companies_overview_cache')
     @patch('apps.pages.services.build_pages_overview_cache')
@@ -268,3 +270,75 @@ class ObsoleteAnalyticsCachePurgeTests(TestCase):
         self.assertFalse(CompaniesOverviewCache.objects.filter(project=self.project).exists())
         self.assertFalse(CompaniesDetailCache.objects.filter(project=self.project).exists())
         self.assertFalse(UsersOverviewCache.objects.filter(project=self.project).exists())
+
+    def test_filtered_cleanup_keeps_reachable_variants_and_every_default(self):
+        """Reachability decides, not expiry.
+
+        A variant past its TTL is still a correct answer for the window it was
+        built for, so it survives; a variant for a window no request can resolve
+        any more cannot be served to anyone and goes. The unfiltered row stays
+        either way.
+        """
+
+        now = timezone.now()
+        reachable_start, reachable_end = services.resolve_period(
+            self.project.timezone,
+            range_key='last_90_days',
+        )
+        unreachable_window = {
+            'start_date': self.cache_kwargs['start_date'],
+            'end_date': self.cache_kwargs['end_date'],
+        }
+        reachable_window = {
+            'start_date': reachable_start,
+            'end_date': reachable_end,
+        }
+        for cache_model in (
+            PagesOverviewCache,
+            CompaniesOverviewCache,
+            UsersOverviewCache,
+        ):
+            for filters_hash, window, expires_at in (
+                ('default', unreachable_window, now - timedelta(hours=1)),
+                ('superseded-filter', unreachable_window, now + timedelta(hours=1)),
+                ('reachable-filter', reachable_window, now - timedelta(hours=1)),
+            ):
+                cache_model.objects.create(
+                    project=self.project,
+                    range_key='last_90_days',
+                    generated_at=now,
+                    filters_hash=filters_hash,
+                    payload_json={},
+                    expires_at=expires_at,
+                    **window,
+                )
+
+        result = services.purge_expired_filtered_overview_caches(
+            self.project.id,
+            now=now,
+        )
+
+        self.assertEqual(result['deleted_total'], 3)
+        for cache_model in (
+            PagesOverviewCache,
+            CompaniesOverviewCache,
+            UsersOverviewCache,
+        ):
+            self.assertTrue(
+                cache_model.objects.filter(
+                    project=self.project,
+                    filters_hash='default',
+                ).exists(),
+            )
+            self.assertTrue(
+                cache_model.objects.filter(
+                    project=self.project,
+                    filters_hash='reachable-filter',
+                ).exists(),
+            )
+            self.assertFalse(
+                cache_model.objects.filter(
+                    project=self.project,
+                    filters_hash='superseded-filter',
+                ).exists(),
+            )

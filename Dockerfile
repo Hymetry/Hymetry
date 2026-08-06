@@ -1,3 +1,16 @@
+FROM node:20-bookworm-slim AS frontend-builder
+
+WORKDIR /app
+
+COPY . /app
+
+RUN mkdir -p /app/static/css \
+    && npm --prefix /app/frontend/tailwind ci \
+    && npm --prefix /app/frontend/tailwind test \
+    && npm --prefix /app/frontend/tracker_script ci \
+    && npm --prefix /app/frontend/tracker_script test
+
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -10,19 +23,13 @@ WORKDIR /app
 RUN adduser --disabled-password --gecos "" appuser
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates nodejs npm \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY --chown=appuser:appuser . /app
-
-RUN mkdir -p /app/static/css \
-    && npm --prefix /app/frontend/tailwind ci \
-    && npm --prefix /app/frontend/tailwind run build:prod \
-    && npm --prefix /app/frontend/tracker_script ci \
-    && npm --prefix /app/frontend/tracker_script run build_dev
+COPY --from=frontend-builder --chown=appuser:appuser /app /app
 
 RUN mkdir -p /app/staticfiles /app/media \
     && chown -R appuser:appuser /app/staticfiles /app/media

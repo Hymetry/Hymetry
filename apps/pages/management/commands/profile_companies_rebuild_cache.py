@@ -6,6 +6,7 @@ from django.db.models import Count, Sum
 
 from apps.pages import company_analytics, company_detail_analytics, services
 from apps.pages.models import CompaniesDetailCache, PageCompanyDailyMetric, PageUserDailyMetric
+from apps.projects.demo import get_demo_project
 from apps.projects.models import Project
 
 
@@ -39,6 +40,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--project-id", type=int)
+        parser.add_argument("--demo", action="store_true", help="Profile the configured demo project.")
         parser.add_argument("--range", dest="range_key", default="last_30_days")
         parser.add_argument(
             "--all-ranges",
@@ -70,8 +72,10 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         project_id = options["project_id"]
+        if options["demo"]:
+            project_id = get_demo_project().id
         if not project_id:
-            raise CommandError("Provide --project-id.")
+            raise CommandError("Provide --project-id or --demo.")
 
         project = Project.active.filter(pk=project_id).first()
         if project is None:

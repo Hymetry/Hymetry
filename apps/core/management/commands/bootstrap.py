@@ -103,6 +103,7 @@ class Command(BaseCommand):
             "schedule_tracker_maintenance_tasks",
             "schedule_page_naming_tasks",
             "schedule_pages_analytics_tasks",
+            "schedule_recording_visits_cleanup",
             "schedule_project_lifecycle_tasks",
         ):
             call_command(command_name, mode="real")

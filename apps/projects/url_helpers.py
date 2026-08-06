@@ -111,3 +111,19 @@ def project_pk_slug_view(view_func):
         return view_func(request, pk, *args, **kwargs)
 
     return wrapper
+
+
+# Period keys the selector itself supplies; anything else in the query is view
+# state the reader chose and should survive changing the period.
+_PERIOD_QUERY_KEYS = ('range', 'period', 'days')
+
+
+def preserved_period_query_suffix(request, *, drop=_PERIOD_QUERY_KEYS):
+    """Return non-period query state to append to period-selector links."""
+
+    query = request.GET.copy()
+    for key in drop:
+        while key in query:
+            del query[key]
+    encoded = query.urlencode()
+    return f'&{encoded}' if encoded else ''

@@ -5,7 +5,11 @@
     return;
   }
 
+  const analyticsTooltips = globalScope.HymetryAnalyticsTooltips;
   const numberFormatter = new Intl.NumberFormat("en-US");
+  const averageCountFormatter = new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 2
+  });
   const colorFallbacks = {
     "c-blue": "#4269D0",
     "c-orange": "#EFB118",
@@ -193,14 +197,17 @@
   let activeHeatmapMetric = "engagedSeconds";
   let userSearchMounted = false;
   const userSearchDebounceMs = 220;
-  const userSearchRecentStorageKey = "hymetry:recent-users";
+  const userSearchRecentStorageKey = `hymetry:recent-users:${document.body?.dataset.projectId || "unknown-project"}`;
   let userSearchDebounceId = 0;
   let customSelectGlobalEventsMounted = false;
   let usersTableSortMounted = false;
   let adoptionCellTooltipId = 0;
   let periodChangeTooltipId = 0;
   let splitChangeValueWidthSyncFrame = 0;
-  let floatingMetricTooltipsMounted = false;
+  let usersTableFilterDebounceId = 0;
+  const calloutPageSize = 10;
+  const attentionListState = { page: 1 };
+  const momentumListState = { page: 1 };
   const usersTableState = {
     page: 1,
     sortKey: "engagedSeconds",
@@ -208,6 +215,37 @@
     isLoading: false,
     loadingToken: 0
   };
+
+  function usersTablePagination(data = currentData) {
+    return data?.tableData?.users?.pagination || null;
+  }
+
+  function hasServerUsersTable(data = currentData) {
+    return Boolean(usersTablePagination(data));
+  }
+
+  function serverUsersTableEnabled() {
+    return Boolean(currentData && hasServerUsersTable(currentData) && typeof provider.loadUsersTable === "function");
+  }
+
+  function applyUsersTablePayload(payload) {
+    if (!currentData || !payload || !Array.isArray(payload.rows)) {
+      return false;
+    }
+
+    currentData.users = payload.rows;
+    currentData.tableData = {
+      ...(currentData.tableData || {}),
+      users: payload
+    };
+
+    const page = Number(payload.pagination?.page);
+    if (Number.isFinite(page) && page > 0) {
+      usersTableState.page = Math.round(page);
+    }
+
+    return true;
+  }
   const userSearchState = {
     activeIndex: -1,
     isOpen: false,
@@ -226,6 +264,17 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
+  }
+
+  function tableHeaderTooltip(label, description, tooltipId, options = {}) {
+    const alignmentClass = options.align === "end" ? " metric-header-tooltip--end" : "";
+
+    return `
+      <span class="metric-header-tooltip${alignmentClass}" tabindex="0" aria-describedby="${escapeHtml(tooltipId)}">
+        ${escapeHtml(label)}
+        <span id="${escapeHtml(tooltipId)}" class="metric-header-tooltip__content" role="tooltip">${escapeHtml(description)}</span>
+      </span>
+    `;
   }
 
   function formatNumber(value) {
@@ -301,6 +350,23 @@
 
     if (minutes > 0) {
       return `${minutes}m`;
+    }
+
+    return `${remainingSeconds}s`;
+  }
+
+  function formatDurationWithSeconds(totalSeconds) {
+    const seconds = Math.max(0, Math.round(Number(totalSeconds) || 0));
+
+    if (seconds >= 3600) {
+      return formatDuration(seconds);
+    }
+
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+
+    if (minutes > 0) {
+      return `${minutes}m ${String(remainingSeconds).padStart(2, "0")}s`;
     }
 
     return `${remainingSeconds}s`;
@@ -424,54 +490,6 @@
     return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
   }
 
-  function rgbFromHex(hex) {
-    const normalized = String(hex || "").trim().replace("#", "");
-    const value = normalized.length === 3
-      ? normalized.split("").map((character) => character + character).join("")
-      : normalized;
-
-    if (!/^[0-9a-f]{6}$/i.test(value)) {
-      return null;
-    }
-
-    return {
-      red: parseInt(value.slice(0, 2), 16),
-      green: parseInt(value.slice(2, 4), 16),
-      blue: parseInt(value.slice(4, 6), 16)
-    };
-  }
-
-  function hexFromRgb({ red, green, blue }) {
-    return `#${[red, green, blue].map((value) => Math.round(Math.max(0, Math.min(255, value))).toString(16).padStart(2, "0")).join("")}`;
-  }
-
-  function mixHexColors(sourceColor, targetColor, targetWeight) {
-    const source = rgbFromHex(sourceColor);
-    const target = rgbFromHex(targetColor);
-
-    if (!source || !target) {
-      return sourceColor;
-    }
-
-    return hexFromRgb({
-      red: source.red + (target.red - source.red) * targetWeight,
-      green: source.green + (target.green - source.green) * targetWeight,
-      blue: source.blue + (target.blue - source.blue) * targetWeight
-    });
-  }
-
-  function readableSeriesLabelColor(color) {
-    const rgb = rgbFromHex(color);
-
-    if (!rgb) {
-      return color;
-    }
-
-    const brightness = (rgb.red * 0.299 + rgb.green * 0.587 + rgb.blue * 0.114) / 255;
-
-    return mixHexColors(color, tailwindColor("slate-900"), brightness > 0.58 ? 0.36 : 0.24);
-  }
-
   function tailwindAlpha(name, opacity) {
     return rgbaFromHex(tailwindColor(name), opacity);
   }
@@ -481,6 +499,10 @@
     const collect = (value) => {
       if (Array.isArray(value)) {
         value.forEach(collect);
+        return;
+      }
+
+      if (value === null || value === undefined) {
         return;
       }
 
@@ -585,42 +607,6 @@
     const positive = invert ? number < 0 : number > 0;
 
     return positive ? "text-green-700" : "text-red-600";
-  }
-
-  function renderPeriodSelector(data) {
-    const container = document.getElementById("users-period-selector");
-
-    if (!container) {
-      return;
-    }
-
-    container.innerHTML = provider.PERIOD_OPTIONS
-      .map((days) => {
-        const period = `${days}d`;
-        const active = data.period === period;
-
-        return `
-          <button
-            type="button"
-            data-users-period="${period}"
-            aria-pressed="${String(active)}"
-            class="px-3 py-1.5 text-sm font-medium duration-150 ${active ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"}">
-            ${period}
-          </button>
-        `;
-      })
-      .join("");
-
-    container.querySelectorAll("[data-users-period]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const period = provider.coercePeriodKey(button.getAttribute("data-users-period"));
-        const params = new URLSearchParams(globalScope.location.search);
-
-        params.set("period", period);
-        globalScope.history?.replaceState({}, "", `${globalScope.location.pathname}?${params.toString()}`);
-        loadPeriod(period);
-      });
-    });
   }
 
   function normalizeSelectOption(value) {
@@ -1067,14 +1053,27 @@
   }
 
   function populateFilters(data) {
-    const users = data.users || [];
+    const users = [...(data.scatter || []), ...(data.users || [])];
     const unique = (key) => Array.from(new Set(users.map((row) => row[key]).filter(Boolean)));
-    const statuses = Object.keys(statusMeta);
+    const filterOptions = data.tableData?.users?.filterOptions || {};
+    const fallbackCompanies = Array.from(new Set([
+      ...unique("company"),
+      ...(data.usersByCompany || []).map((row) => row.company || row.companyName || row.name).filter(Boolean)
+    ]));
+    const companies = Array.isArray(filterOptions.companies) && filterOptions.companies.length
+      ? filterOptions.companies
+      : fallbackCompanies;
+    const roles = Array.isArray(filterOptions.roles) && filterOptions.roles.length
+      ? filterOptions.roles
+      : unique("role");
+    const statuses = Array.isArray(filterOptions.statuses) && filterOptions.statuses.length
+      ? filterOptions.statuses
+      : Object.keys(statusMeta);
     const featureOptions = buildFeatureFilterOptions(data, users);
 
-    populateSelect("users-company-filter", unique("company"), "All companies");
-    populateSelect("users-table-company", unique("company"), "All companies");
-    populateSelect("users-table-role", unique("role"), "All roles");
+    populateSelect("users-company-filter", companies, "All companies");
+    populateSelect("users-table-company", companies, "All companies");
+    populateSelect("users-table-role", roles, "All roles");
     populateSelect("users-table-status", statuses, "All statuses");
     populateSelect("users-feature-filter", featureOptions, "All pages", { sort: false });
   }
@@ -1188,7 +1187,18 @@
     try {
       globalScope.localStorage?.setItem(
         userSearchRecentStorageKey,
-        JSON.stringify(users.map(normalizeUserSearchUser).filter((user) => user.id).slice(0, 8))
+        JSON.stringify(users
+          .map(normalizeUserSearchUser)
+          .filter((user) => user.id)
+          .slice(0, 8)
+          .map((user) => ({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            companyId: user.companyId,
+            companyName: user.companyName,
+            role: user.role
+          })))
       );
     } catch {
       // localStorage may be unavailable in private or embedded browsing contexts.
@@ -1269,7 +1279,11 @@
     const normalizedQuery = normalizeUserSearchValue(query);
 
     if (userSearchUsesRemote() && !normalizedQuery) {
-      return readRecentUsers().slice(0, 8);
+      const recentUsers = readRecentUsers();
+      return (recentUsers.length
+        ? recentUsers
+        : (userSearchState.remoteQuery === normalizedQuery ? userSearchState.remoteResults : [])
+      ).slice(0, 8);
     }
 
     if (userSearchUsesRemote()) {
@@ -1281,7 +1295,7 @@
     if (!normalizedQuery) {
       return rows
         .slice()
-        .sort((a, b) => (Number(a.lastActiveSort) || 0) - (Number(b.lastActiveSort) || 0) || b.engagedSeconds - a.engagedSeconds)
+        .sort((a, b) => a.name.localeCompare(b.name))
         .slice(0, 8);
     }
 
@@ -1420,7 +1434,8 @@
 
     const normalizedQuery = normalizeUserSearchValue(query);
     const usesRemote = userSearchUsesRemote();
-    const shouldFetchRemote = usesRemote && Boolean(normalizedQuery) && userSearchState.remoteQuery !== normalizedQuery;
+    const shouldLoadFallback = usesRemote && !normalizedQuery && !readRecentUsers().length;
+    const shouldFetchRemote = usesRemote && (Boolean(normalizedQuery) || shouldLoadFallback) && userSearchState.remoteQuery !== normalizedQuery;
     userSearchState.query = query;
 
     if (shouldFetchRemote) {
@@ -1441,7 +1456,8 @@
 
     provider.searchUsers(query, {
       period: currentData?.period || getRequestedPeriod(),
-      limit: 20
+      limit: 20,
+      alphabetical: shouldLoadFallback
     })
       .then((remoteUsers) => {
         if (
@@ -1507,6 +1523,8 @@
     }
 
     userSearchMounted = true;
+
+    root.addEventListener("overview-quick-jumper:close", closeUserSearchDropdown);
 
     input.addEventListener("input", () => {
       scheduleUserSearchUpdate(input.value);
@@ -1677,6 +1695,40 @@
     });
   }
 
+  // Card values arrive already formatted, sparkline points do not, so the daily
+  // series needs its own unit or engaged time reads as a bare second count.
+  const kpiTrendValueFormats = {
+    engagedPerUser: "duration"
+  };
+
+  function kpiTrendValueFormat(kpi) {
+    return kpi?.sparklineValueType || kpiTrendValueFormats[kpi?.key] || "number";
+  }
+
+  function formatKpiTrendValue(value, valueFormat) {
+    if (valueFormat === "duration") {
+      return formatDurationWithSeconds(value);
+    }
+
+    if (valueFormat === "percent") {
+      return formatPercentDecimal(value);
+    }
+
+    return formatNumber(value);
+  }
+
+  function formatKpiHeadlineValue(kpi) {
+    if (typeof kpi?.value !== "number") {
+      return kpi?.value ?? "";
+    }
+
+    if (kpi.sparklineScope === "daily") {
+      return averageCountFormatter.format(kpi.value);
+    }
+
+    return formatNumber(kpi.value);
+  }
+
   function renderKpiCards(data) {
     const container = document.getElementById("users-kpis");
     const grid = container?.querySelector("[data-users-kpis-grid]");
@@ -1692,7 +1744,6 @@
       const fragment = template.content.cloneNode(true);
       const labelElement = fragment.querySelector("[data-users-kpi-label]");
       const valueElement = fragment.querySelector("[data-users-kpi-value]");
-      const secondaryElement = fragment.querySelector("[data-users-kpi-secondary]");
       const deltaElement = fragment.querySelector("[data-users-kpi-delta]");
       const trendElement = fragment.querySelector("[data-users-kpi-trend]");
 
@@ -1701,11 +1752,7 @@
       }
 
       if (valueElement) {
-        valueElement.textContent = typeof kpi.value === "number" ? formatNumber(kpi.value) : kpi.value;
-      }
-
-      if (secondaryElement) {
-        secondaryElement.textContent = kpi.secondary || "";
+        valueElement.textContent = formatKpiHeadlineValue(kpi);
       }
 
       if (deltaElement) {
@@ -1725,22 +1772,47 @@
       const kpi = data.kpis[index];
 
       if (kpi?.sparkline?.length) {
-        mountChart(element, createKpiTrendOption(kpi.sparkline, kpi.deltaType, kpi.sparklineLabels || data.dailyActiveTrend?.labels || []));
+        mountChart(element, createKpiTrendOption(
+          kpi.sparkline,
+          kpi.deltaType,
+          kpi.sparklineLabels || data.dailyActiveTrend?.labels || [],
+          kpi.sparklineLabel || kpi.label,
+          kpiTrendValueFormat(kpi),
+          kpi.sparklineScope,
+          kpi.sparklineRender
+        ));
       }
     });
   }
 
-  function createKpiTrendOption(values, deltaType, labels = []) {
-    const lineColor = deltaType === "negative" ? tailwindColor("red-600") : tailwindColor("blue-400");
-    const fillColor = deltaType === "negative" ? tailwindAlpha("red-600", 0.08) : tailwindColor("blue-50");
-    const series = values.map((value) => Number(value) || 0);
+  function createKpiTrendOption(
+    values,
+    deltaType,
+    labels = [],
+    metricLabel = "Value",
+    valueFormat = "number",
+    trendScope = "period_to_date",
+    render = "area"
+  ) {
+    const lineColor = tailwindColor("blue-400");
+    const fillColor = tailwindColor("blue-50");
+    const series = values.map((value) => {
+      if (value === null || value === undefined) {
+        return null;
+      }
+
+      const numericValue = Number(value);
+      return Number.isFinite(numericValue) ? numericValue : null;
+    });
+    const numericSeries = finiteNumericValues(series);
     const trendLabels = alignTrendLabels(labels, series.length);
 
     return {
       animation: false,
-      tooltip: {
+      tooltip: analyticsTooltips.echarts({
         trigger: "axis",
-        confine: true,
+        appendTo: "body",
+        confine: false,
         axisPointer: {
           type: "line",
           lineStyle: {
@@ -1748,8 +1820,27 @@
             width: 1
           }
         },
-        valueFormatter: (value) => formatNumber(value)
-      },
+        formatter: (params) => {
+          const item = Array.isArray(params) ? params[0] : params;
+          const index = Number(item?.dataIndex) || 0;
+          const dateLabel = formatTrendDateLabel(trendLabels[index] || item?.axisValueLabel || item?.name || "");
+          const title = trendScope === "daily"
+            ? (dateLabel || "Daily value")
+            : (dateLabel ? `Through ${dateLabel}` : "Period to date");
+          const pointValue = series[index];
+
+          return analyticsTooltips.render({
+            title,
+            rows: [{
+              label: metricLabel,
+              value: pointValue === null
+                ? "No activity"
+                : formatKpiTrendValue(pointValue ?? item?.value ?? 0, valueFormat),
+              marker: { color: lineColor }
+            }]
+          });
+        }
+      }),
       grid: { left: 0, right: 0, top: 4, bottom: 0 },
       xAxis: {
         type: "category",
@@ -1760,17 +1851,22 @@
       yAxis: {
         type: "value",
         show: false,
-        min: Math.min(...series),
+        min: numericSeries.length ? Math.min(...numericSeries) : 0,
         max: compactAxisMax(series)
       },
       series: [
         {
           type: "line",
-          smooth: true,
+          smooth: trendScope !== "daily",
           showSymbol: false,
           data: series,
-          areaStyle: { color: fillColor },
-          lineStyle: { color: lineColor, width: 2 }
+          // A share is read against its own range, so it carries no fill down
+          // to zero the way a count does.
+          ...(render === "area" ? { areaStyle: { color: fillColor } } : {}),
+          lineStyle: { color: lineColor, width: 2 },
+          emphasis: {
+            disabled: true
+          }
         }
       ]
     };
@@ -1831,104 +1927,179 @@
     return `${Math.round(Number(value) || 0)}%`;
   }
 
-  function statusMixKey(status) {
-    return String(userStatusMetaFor(status).label || status || "")
-      .trim()
-      .replace(/\s+/g, "_")
-      .replace(/-/g, "_")
-      .toLowerCase();
-  }
+  const STATUS_MIX_SELECTED_LABEL = "Selected period";
+  const STATUS_MIX_PREVIOUS_LABEL = "Previous period";
 
-  function statusMixValue(row, status) {
-    if (!row) {
-      return 0;
-    }
+  function statusMixDistributionRow(distribution) {
+    const byLabel = new Map(
+      (Array.isArray(distribution) ? distribution : []).map((row) => [
+        userStatusMetaFor(row.status).label,
+        row
+      ])
+    );
 
-    const key = statusMixKey(status);
-
-    return Number(row[key]) || Number(row[status]) || 0;
-  }
-
-  function buildStatusMixTrendRows(statusMixByDate, labels, fallbackDistribution) {
-    const chartLabels = Array.isArray(labels) && labels.length ? labels : ["Current"];
-    const timelineRows = Array.isArray(statusMixByDate) ? statusMixByDate : [];
-    const rowsByDate = new Map(timelineRows.map((row) => [String(row.date || ""), row]));
-    const hasTimelineRows = chartLabels.some((label) => {
-      const row = rowsByDate.get(String(label));
-
-      return userStatusOrderLabels.some((status) => statusMixValue(row, status) > 0);
-    });
-    const fallbackRows = new Map((Array.isArray(fallbackDistribution) ? fallbackDistribution : []).map((row) => [
-      userStatusMetaFor(row.status).label,
-      row
-    ]));
-    const rows = userStatusOrderLabels.map((status) => {
-      const values = hasTimelineRows
-        ? chartLabels.map((label) => statusMixValue(rowsByDate.get(String(label)), status))
-        : Array.from({ length: chartLabels.length }, () => Number(fallbackRows.get(status)?.count) || 0);
-
-      return {
-        name: status,
-        color: statusColor(status),
-        values
-      };
-    });
-    const visibleRows = rows.filter((row) => row.values.some((value) => Number(value) > 0));
-
-    return visibleRows.length ? visibleRows : rows;
-  }
-
-  function normalizeDistributionRows(rows, pointCount) {
-    const totals = Array.from({ length: pointCount }, (_, pointIndex) => (
-      rows.reduce((sum, row) => sum + (Number(row.values[pointIndex]) || 0), 0)
-    ));
-
-    return rows.map((row) => ({
-      ...row,
-      pctValues: row.values.map((value, pointIndex) => (
-        totals[pointIndex] ? (Number(value) / totals[pointIndex]) * 100 : 0
-      ))
+    return userStatusOrderLabels.map((status) => ({
+      status,
+      count: Number(byLabel.get(status)?.count) || 0,
+      color: statusColor(status),
+      definition: userStatusMetaFor(status).definition || ""
     }));
   }
 
-  function layoutStackedBarEndLabels(rows) {
-    const minValue = 5;
-    const maxValue = 95;
-    const availableRange = maxValue - minValue;
-    const minGap = rows.length > 1 ? Math.min(8, availableRange / (rows.length - 1)) : 0;
-    const sorted = rows
-      .map((row, index) => ({
-        index,
-        value: Math.max(minValue, Math.min(maxValue, Number(row.midpoint) || 0))
-      }))
-      .sort((a, b) => a.value - b.value);
+  // Same treatment as Company health distribution: below this width a segment
+  // cannot hold a legible label, so it borrows room from the wide ones.
+  function statusMixSegments(statuses, rowIndex) {
+    const total = statuses.reduce((sum, item) => sum + item.count, 0);
+    const minPct = 4.5;
+    const rawSegments = statuses.map((item) => {
+      const rawPct = total ? (item.count / total) * 100 : 0;
 
-    if (!sorted.length) {
-      return {};
-    }
-
-    let previousValue = minValue - minGap;
-    sorted.forEach((item) => {
-      item.value = Math.max(item.value, previousValue + minGap);
-      previousValue = item.value;
+      return {
+        item,
+        rawPct,
+        isSmall: rawPct > 0 && rawPct < minPct
+      };
     });
+    const visibleSegments = rawSegments.filter((segment) => segment.rawPct > 0);
+    const smallSegments = visibleSegments.filter((segment) => segment.isSmall);
+    const regularSegments = visibleSegments.filter((segment) => !segment.isSmall);
+    const smallPctTotal = Math.min(42, smallSegments.length * minPct);
+    const regularRawTotal = regularSegments.reduce((sum, segment) => sum + segment.rawPct, 0) || 1;
+    const regularPctTotal = Math.max(0, 100 - smallPctTotal);
+    const smallPct = smallSegments.length ? smallPctTotal / smallSegments.length : 0;
+    let cursor = 0;
 
-    sorted[sorted.length - 1].value = Math.min(sorted[sorted.length - 1].value, maxValue);
+    return visibleSegments.map((segment) => {
+      const { item } = segment;
+      const widthPct = segment.isSmall ? smallPct : (segment.rawPct / regularRawTotal) * regularPctTotal;
+      const x0 = cursor;
+      const x1 = cursor + widthPct;
+      const labelText = widthPct < 5.5
+        ? formatNumber(item.count)
+        : `${item.status}\n${formatNumber(item.count)}`;
 
-    for (let index = sorted.length - 2; index >= 0; index -= 1) {
-      sorted[index].value = Math.min(sorted[index].value, sorted[index + 1].value - minGap);
-    }
+      cursor = x1;
 
-    sorted[0].value = Math.max(sorted[0].value, minValue);
+      return {
+        ...item,
+        rowIndex,
+        pct: segment.rawPct,
+        pctLabel: formatPercentRounded(segment.rawPct),
+        widthPct,
+        labelText,
+        value: [x0, x1, rowIndex]
+      };
+    });
+  }
 
-    for (let index = 1; index < sorted.length; index += 1) {
-      sorted[index].value = Math.max(sorted[index].value, sorted[index - 1].value + minGap);
-    }
+  function createStatusMixComparisonOption(selectedDistribution, previousDistribution) {
+    // Selected period on top: it is what the reader came for, and the previous
+    // period underneath is the thing it is measured against.
+    const rows = [
+      { label: STATUS_MIX_SELECTED_LABEL, statuses: statusMixDistributionRow(selectedDistribution) },
+      { label: STATUS_MIX_PREVIOUS_LABEL, statuses: statusMixDistributionRow(previousDistribution) }
+    ];
+    const segments = rows.flatMap((row, rowIndex) => statusMixSegments(row.statuses, rowIndex));
 
-    return sorted.reduce((lookup, item) => {
-      lookup[item.index] = Math.max(minValue, Math.min(maxValue, item.value));
-      return lookup;
-    }, {});
+    return {
+      animation: false,
+      tooltip: analyticsTooltips.echarts({
+        trigger: "item",
+        confine: true,
+        formatter: (params) => {
+          const item = params.data || {};
+
+          return analyticsTooltips.render({
+            title: `${rows[item.rowIndex]?.label || ""} — ${item.status || ""}`,
+            rows: [
+              { label: "Users", value: formatNumber(item.count || 0), marker: { color: item.color } },
+              { label: "Share", value: item.pctLabel || "0%" },
+              ...(item.definition ? [{ label: "Definition", value: item.definition }] : [])
+            ]
+          });
+        }
+      }),
+      grid: {
+        left: 104,
+        right: 8,
+        top: 18,
+        bottom: 18
+      },
+      xAxis: {
+        type: "value",
+        min: 0,
+        max: 100,
+        show: false
+      },
+      yAxis: {
+        type: "category",
+        inverse: true,
+        data: rows.map((row) => row.label),
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: {
+          color: tailwindColor("slate-600"),
+          fontSize: 12,
+          fontWeight: 500
+        }
+      },
+      series: [
+        {
+          type: "custom",
+          data: segments,
+          renderItem: (params, api) => {
+            const item = segments[params.dataIndex] || {};
+            const start = api.coord([api.value(0), api.value(2)]);
+            const end = api.coord([api.value(1), api.value(2)]);
+            const x = start[0];
+            const width = Math.max(1, end[0] - start[0]);
+            const height = 64;
+            const y = start[1] - height / 2;
+            const fontSize = width < 48 ? 11 : 12;
+
+            return {
+              type: "group",
+              children: [
+                {
+                  type: "rect",
+                  shape: { x, y, width, height, r: 5 },
+                  style: {
+                    fill: item.color,
+                    opacity: 0.66,
+                    stroke: chartTheme.colors.white,
+                    lineWidth: 2
+                  },
+                  emphasis: {
+                    style: {
+                      opacity: 0.78,
+                      lineWidth: 3
+                    }
+                  }
+                },
+                {
+                  type: "text",
+                  silent: true,
+                  style: {
+                    x: x + width / 2,
+                    y: y + height / 2,
+                    text: item.labelText,
+                    fill: "#000000",
+                    font: `500 ${fontSize}px Inter, ui-sans-serif, system-ui, sans-serif`,
+                    lineHeight: 15,
+                    align: "center",
+                    textAlign: "center",
+                    verticalAlign: "middle",
+                    textVerticalAlign: "middle",
+                    width: Math.max(8, width - 8),
+                    overflow: "truncate"
+                  }
+                }
+              ]
+            };
+          }
+        }
+      ]
+    };
   }
 
   function createEngagementBucketBarOption(rows) {
@@ -1938,7 +2109,7 @@
 
     return {
       animation: false,
-      tooltip: {
+      tooltip: analyticsTooltips.echarts({
         trigger: "item",
         confine: true,
         formatter: (params) => {
@@ -1946,21 +2117,15 @@
           const count = Number(row.count) || 0;
           const pct = total ? count / total * 100 : 0;
 
-          return `
-            <div>
-              <div style="margin-bottom:6px;font-weight:600;">${escapeHtml(row.label || "")}</div>
-              <div style="display:flex;gap:16px;justify-content:space-between;min-width:160px;">
-                <span>Users</span>
-                <strong>${formatNumber(count)}</strong>
-              </div>
-              <div style="display:flex;gap:16px;justify-content:space-between;min-width:160px;">
-                <span>Share</span>
-                <strong>${escapeHtml(formatPercentDecimal(pct))}</strong>
-              </div>
-            </div>
-          `;
+          return analyticsTooltips.render({
+            title: row.label || "",
+            rows: [
+              { label: "Users", value: formatNumber(count) },
+              { label: "Share", value: formatPercentDecimal(pct) }
+            ]
+          });
         }
-      },
+      }),
       grid: {
         left: 64,
         right: 64,
@@ -2006,203 +2171,21 @@
     };
   }
 
-  function createStatusStackedAreaOption(rows, labels) {
-    const chartLabels = Array.isArray(labels) && labels.length ? labels : ["Current"];
-    const statusRows = normalizeDistributionRows(rows || [], chartLabels.length);
-    let cumulativePct = 0;
-
-    statusRows.forEach((row) => {
-      const finalPct = row.pctValues[chartLabels.length - 1] || 0;
-
-      row.finalPct = finalPct;
-      row.midpoint = cumulativePct + finalPct / 2;
-      cumulativePct += finalPct;
-    });
-
-    const endLabelRows = statusRows.filter((row) => row.finalPct > 0);
-    const labelValues = layoutStackedBarEndLabels(endLabelRows);
-    const areaSeries = statusRows.map((row) => ({
-      name: row.name,
-      type: "line",
-      stack: "status",
-      smooth: 0.24,
-      showSymbol: false,
-      symbol: "none",
-      emphasis: {
-        disabled: true
-      },
-      itemStyle: {
-        color: row.color
-      },
-      lineStyle: {
-        color: row.color,
-        width: 1.25
-      },
-      areaStyle: {
-        color: row.color
-      },
-      data: row.pctValues.map((value, pointIndex) => ({
-        value,
-        count: Math.round(Number(row.values[pointIndex]) || 0)
-      }))
-    }));
-    const connectorSeries = {
-      name: "Status labels",
-      type: "custom",
-      coordinateSystem: "cartesian2d",
-      animation: false,
-      silent: true,
-      clip: false,
-      tooltip: { show: false },
-      data: endLabelRows.map((row, index) => ({
-        name: row.name,
-        value: [chartLabels.length - 1, row.midpoint, labelValues[index] ?? row.midpoint]
-      })),
-      renderItem: (params, api) => {
-        const row = endLabelRows[params.dataIndex] || {};
-        const areaPoint = api.coord([api.value(0), api.value(1)]);
-        const labelPoint = api.coord([api.value(0), api.value(2)]);
-        const areaRightX = areaPoint[0];
-        const elbowX = areaRightX + 14;
-        const labelX = areaRightX + 28;
-        const labelY = labelPoint[1];
-        const lineColor = rgbaFromHex(row.color, 0.72);
-
-        return {
-          type: "group",
-          children: [
-            {
-              type: "line",
-              shape: {
-                x1: areaRightX,
-                y1: areaPoint[1],
-                x2: elbowX,
-                y2: labelY
-              },
-              style: {
-                stroke: lineColor,
-                lineWidth: 1.5,
-                lineDash: [2, 3]
-              }
-            },
-            {
-              type: "line",
-              shape: {
-                x1: elbowX,
-                y1: labelY,
-                x2: labelX,
-                y2: labelY
-              },
-              style: {
-                stroke: lineColor,
-                lineWidth: 1.5,
-                lineDash: [2, 3]
-              }
-            },
-            {
-              type: "text",
-              style: {
-                x: labelX + 8,
-                y: labelY,
-                text: row.name,
-                fill: readableSeriesLabelColor(row.color),
-                font: "500 12px Inter, ui-sans-serif, system-ui, sans-serif",
-                align: "left",
-                verticalAlign: "middle",
-                width: 86,
-                overflow: "truncate"
-              }
-            }
-          ]
-        };
-      },
-      z: 6
-    };
-
-    return {
-      animation: false,
-      stateAnimation: {
-        duration: 260,
-        easing: "cubicOut"
-      },
-      color: statusRows.map((row) => row.color),
-      tooltip: {
-        trigger: "axis",
-        confine: true,
-        transitionDuration: 0.18,
-        formatter: (params) => {
-          const items = Array.isArray(params) ? params.filter((item) => item.seriesType === "line") : [params];
-
-          if (!items.length) {
-            return "";
-          }
-
-          const label = items[0]?.axisValueLabel || "";
-          const rowsMarkup = items
-            .slice()
-            .reverse()
-            .map((item) => `
-              <span style="display:flex;align-items:center;min-width:0;white-space:nowrap;">${item.marker}<span>${escapeHtml(item.seriesName)}</span></span>
-              <strong style="justify-self:end;text-align:right;font-variant-numeric:tabular-nums;">${escapeHtml(formatPercentRounded(item.value))}</strong>
-              <strong style="justify-self:end;text-align:right;font-variant-numeric:tabular-nums;">${escapeHtml(`${formatNumber(item.data?.count || 0)} users`)}</strong>
-            `)
-            .join("");
-
-          return `
-            <div style="min-width:194px;">
-              <div style="margin-bottom:6px;font-weight:600;">${escapeHtml(formatTrendDateLabel(label))}</div>
-              <div style="display:grid;grid-template-columns:minmax(78px,1fr) minmax(34px,max-content) minmax(70px,max-content);column-gap:10px;row-gap:4px;align-items:center;white-space:nowrap;">${rowsMarkup}</div>
-            </div>
-          `;
-        }
-      },
-      grid: {
-        left: 42,
-        right: 112,
-        top: 14,
-        bottom: 34
-      },
-      xAxis: {
-        type: "category",
-        data: chartLabels,
-        boundaryGap: false,
-        axisLine: { show: true, lineStyle: { color: tailwindColor("slate-300") } },
-        axisTick: { show: false },
-        axisLabel: {
-          color: tailwindColor("slate-500"),
-          hideOverlap: true,
-          formatter: formatTrendDateLabel
-        },
-        splitLine: { show: false }
-      },
-      yAxis: {
-        type: "value",
-        min: 0,
-        max: 100,
-        axisLine: { show: true, lineStyle: { color: tailwindColor("slate-300") } },
-        axisTick: { show: false },
-        axisLabel: { color: tailwindColor("slate-500"), formatter: (value) => `${value}%` },
-        splitLine: { show: true, lineStyle: { color: tailwindColor("slate-200") } }
-      },
-      series: areaSeries.concat(connectorSeries)
-    };
-  }
-
   function mountStatusMixChart(element, option) {
     return mountChart(element, option);
   }
 
   function mountEngagementDistribution(data) {
-    const labels = data.dailyActiveTrend?.labels || [];
-    const statusRows = buildStatusMixTrendRows(data.statusMixByDate || [], labels, data.statusDistribution || []);
-
     mountChart(
       document.getElementById("users-engagement-bucket-chart"),
       createEngagementBucketBarOption(data.engagementBuckets || [])
     );
     mountStatusMixChart(
       document.getElementById("users-status-distribution-chart"),
-      createStatusStackedAreaOption(statusRows, labels)
+      createStatusMixComparisonOption(
+        data.statusDistribution || [],
+        data.previousStatusDistribution || []
+      )
     );
   }
 
@@ -2320,34 +2303,32 @@
     const relativeActivityPct = adoptionCellRelativeActivityPct(cell, maxEngagedSeconds);
     const usageLabel = cell.used && relativeActivityPct <= 0 ? adoptionCellIntensityGrade(1).label : adoptionCellUsageLabel(relativeActivityPct);
     const relativeActivityLabel = formatPercent(relativeActivityPct);
+    const tooltipRows = [
+      { label: "Product area", value: cell.productArea },
+      { label: "Relative activity", value: relativeActivityLabel },
+      { label: "Usage intensity", value: usageLabel }
+    ];
 
     adoptionCellTooltipId += 1;
 
     if (!cell.used) {
       return {
         tooltipId,
-        tooltipText: `${userName}. ${cell.productArea}. Not used yet. Relative activity ${relativeActivityLabel}. ${usageLabel}.`,
-        tooltipHtml: `
-          <span class="companies-adoption-cell-tooltip__title">${escapeHtml(userName)}</span>
-          <span class="companies-adoption-cell-tooltip__row"><span>Product area</span><strong>${escapeHtml(cell.productArea)}</strong></span>
-          <span class="companies-adoption-cell-tooltip__row"><span>Relative activity</span><strong>${escapeHtml(relativeActivityLabel)}</strong></span>
-          <span class="companies-adoption-cell-tooltip__row"><span>Usage intensity</span><strong>${escapeHtml(usageLabel)}</strong></span>
-        `
+        tooltipText: `${userName}. Not used yet. ${analyticsTooltips.text(tooltipRows)}`,
+        tooltipHtml: analyticsTooltips.render({ title: userName, rows: tooltipRows })
       };
     }
 
+    tooltipRows.push(
+      { label: "Engaged", value: formatDuration(cell.engagedSeconds) },
+      { label: "Visits", value: formatNumber(cell.visits) },
+      { label: "Clicks", value: formatNumber(cell.clicks) }
+    );
+
     return {
       tooltipId,
-      tooltipText: `${userName}. ${cell.productArea}. Used during selected period. Relative activity ${relativeActivityLabel}. ${usageLabel}.`,
-      tooltipHtml: `
-        <span class="companies-adoption-cell-tooltip__title">${escapeHtml(userName)}</span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Product area</span><strong>${escapeHtml(cell.productArea)}</strong></span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Relative activity</span><strong>${escapeHtml(relativeActivityLabel)}</strong></span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Usage intensity</span><strong>${escapeHtml(usageLabel)}</strong></span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Engaged</span><strong>${escapeHtml(formatDuration(cell.engagedSeconds))}</strong></span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Visits</span><strong>${formatNumber(cell.visits)}</strong></span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Clicks</span><strong>${formatNumber(cell.clicks)}</strong></span>
-      `
+      tooltipText: `${userName}. Used during selected period. ${analyticsTooltips.text(tooltipRows)}`,
+      tooltipHtml: analyticsTooltips.render({ title: userName, rows: tooltipRows })
     };
   }
 
@@ -2443,23 +2424,79 @@
     return isPositive ? "positive" : "negative";
   }
 
-  function renderSplitChangeDelta(deltaValue, maxAbsDelta, label, invert = false) {
+  function previousPeriodValue(currentValue, deltaValue, unit) {
+    const current = Number(currentValue) || 0;
+    const delta = Number(deltaValue) || 0;
+
+    if (unit === "pp") {
+      return current - delta;
+    }
+
+    const divisor = 1 + delta / 100;
+    return divisor > 0 ? current / divisor : 0;
+  }
+
+  function formatPeriodMetricValue(value, valueType) {
+    const numericValue = Number(value) || 0;
+
+    if (valueType === "percent") {
+      return `${numericValue.toFixed(1)}%`;
+    }
+
+    if (valueType === "duration") {
+      return formatDuration(numericValue);
+    }
+
+    return formatNumber(Math.round(numericValue));
+  }
+
+  function formatPeriodDelta(deltaValue, unit) {
+    const numericValue = Number(deltaValue) || 0;
+    const prefix = numericValue > 0 ? "+" : "";
+
+    if (unit === "pp") {
+      return `${prefix}${numericValue.toFixed(1)} pp`;
+    }
+
+    const rounded = Math.round(numericValue * 10) / 10;
+    return `${prefix}${rounded}%`;
+  }
+
+  function renderSplitChangeDelta(currentValue, valueType, deltaValue, unit, maxAbsDelta, label, previousValue, deltaLabel = "", comparisonAvailable = true, invert = false) {
     const direction = deltaDirection(deltaValue, invert);
     const trackWidth = direction === "negative" ? 17 : 36;
     const barWidth = Number(deltaValue) === 0 ? 6 : Math.max(4, Math.round((Math.abs(Number(deltaValue) || 0) / Math.max(maxAbsDelta, 1)) * trackWidth));
     const formattedDelta = formatDeltaLabel(deltaValue);
     const tooltipId = `users-period-change-tooltip-${periodChangeTooltipId}`;
+    const hasExplicitPrevious = previousValue !== null && previousValue !== undefined && Number.isFinite(Number(previousValue));
+    const resolvedPreviousValue = hasExplicitPrevious
+      ? Number(previousValue)
+      : deltaLabel === "New"
+        ? 0
+        : previousPeriodValue(currentValue, deltaValue, unit);
+    const changeLabel = resolvedPreviousValue === 0 && Number(currentValue) > 0 ? "New" : formatPeriodDelta(deltaValue, unit);
+    const tooltipRows = comparisonAvailable === false
+      ? [
+        { label: "Current period", value: formatPeriodMetricValue(currentValue, valueType) },
+        { label: "Previous period", value: "No data" },
+        { label: "Change", value: "n/a" }
+      ]
+      : [
+        { label: "Current period", value: formatPeriodMetricValue(currentValue, valueType) },
+        { label: "Previous period", value: formatPeriodMetricValue(resolvedPreviousValue, valueType) },
+        { label: "Change", value: changeLabel }
+      ];
 
     periodChangeTooltipId += 1;
 
     return `
-      <div class="pages-change-delta metric-header-tooltip" data-change-direction="${direction}" style="--pages-change-bar-width: ${barWidth}px;" tabindex="0" aria-label="${escapeHtml(`${label}. Change ${formattedDelta}`)}" aria-describedby="${tooltipId}">
+      <div class="pages-change-delta metric-header-tooltip" data-change-direction="${direction}" style="--pages-change-bar-width: ${barWidth}px;" tabindex="0" aria-label="${escapeHtml(`${label}. ${analyticsTooltips.text(tooltipRows)}`)}" aria-describedby="${tooltipId}">
         <span class="pages-change-delta__plot">
           <span class="pages-change-delta__bar pages-change-delta__bar--${direction}"></span>
         </span>
         <span class="pages-change-delta__label ${deltaClass(deltaValue, invert)}">${escapeHtml(formattedDelta)}</span>
         <span id="${tooltipId}" class="metric-header-tooltip__content" role="tooltip">
-          <span class="pages-change-delta__tooltip-row">Change vs previous period: ${escapeHtml(formattedDelta)}</span>
+          ${analyticsTooltips.render({ rows: tooltipRows })}
         </span>
       </div>
     `;
@@ -2476,7 +2513,7 @@
       <td class="pages-split-change-cell py-3.5 pr-6 align-middle" data-split-metric="${escapeHtml(metric.key)}">
         <div class="pages-split-change-group">
           <div class="pages-metric-value">${metricBarValue(valueLabel, barValue, metric.label)}</div>
-          ${renderSplitChangeDelta(deltaValue, maxAbsDelta, metric.label)}
+          ${renderSplitChangeDelta(value, metric.valueType, deltaValue, metric.deltaUnit || "%", maxAbsDelta, metric.label, row[metric.previousKey], row[metric.deltaLabelKey], row.comparisonAvailable !== false && row.comparison_available !== false)}
         </div>
       </td>
     `;
@@ -2560,169 +2597,6 @@
     });
   }
 
-  function mountFloatingMetricTooltips() {
-    if (floatingMetricTooltipsMounted || !document.body) {
-      return;
-    }
-
-    floatingMetricTooltipsMounted = true;
-    document.documentElement.classList.add("metric-floating-tooltips-enabled");
-
-    const floatingTooltip = document.createElement("div");
-    floatingTooltip.className = "metric-header-tooltip__content metric-floating-tooltip";
-    floatingTooltip.dataset.tooltipKind = "delta";
-    floatingTooltip.dataset.visible = "false";
-    floatingTooltip.setAttribute("aria-hidden", "true");
-    floatingTooltip.setAttribute("role", "tooltip");
-    document.body.appendChild(floatingTooltip);
-
-    const viewportPadding = 8;
-    const verticalGap = 8;
-    const requestFrame = globalScope.requestAnimationFrame || ((callback) => globalScope.setTimeout(callback, 0));
-    let activeTrigger = null;
-    let positionAnimationFrame = 0;
-
-    const getTooltipTrigger = (target) => {
-      if (!target || typeof target.closest !== "function") {
-        return null;
-      }
-
-      return target.closest(".pages-change-delta.metric-header-tooltip, .companies-adoption-cell.metric-header-tooltip, .companies-matrix-heading .metric-header-tooltip");
-    };
-
-    const setTooltipVisible = (isVisible) => {
-      floatingTooltip.dataset.visible = String(isVisible);
-      floatingTooltip.setAttribute("aria-hidden", String(!isVisible));
-    };
-
-    const hideTooltip = (trigger = activeTrigger) => {
-      if (trigger && activeTrigger && trigger !== activeTrigger) {
-        return;
-      }
-
-      activeTrigger = null;
-      setTooltipVisible(false);
-    };
-
-    const updateTooltipPosition = () => {
-      if (!activeTrigger) {
-        return;
-      }
-
-      if (!activeTrigger.isConnected) {
-        hideTooltip();
-        return;
-      }
-
-      const triggerRect = activeTrigger.getBoundingClientRect();
-      const viewportWidth = document.documentElement.clientWidth || globalScope.innerWidth || 0;
-      const viewportHeight = document.documentElement.clientHeight || globalScope.innerHeight || 0;
-
-      if (
-        triggerRect.bottom < 0 ||
-        triggerRect.top > viewportHeight ||
-        triggerRect.right < 0 ||
-        triggerRect.left > viewportWidth
-      ) {
-        hideTooltip();
-        return;
-      }
-
-      const tooltipRect = floatingTooltip.getBoundingClientRect();
-      const shouldPlaceAbove =
-        triggerRect.bottom + verticalGap + tooltipRect.height > viewportHeight - viewportPadding &&
-        triggerRect.top - verticalGap - tooltipRect.height >= viewportPadding;
-      const desiredLeft = triggerRect.left + triggerRect.width / 2 - tooltipRect.width / 2;
-      const desiredTop = shouldPlaceAbove
-        ? triggerRect.top - verticalGap - tooltipRect.height
-        : triggerRect.bottom + verticalGap;
-      const maxLeft = Math.max(viewportPadding, viewportWidth - tooltipRect.width - viewportPadding);
-      const maxTop = Math.max(viewportPadding, viewportHeight - tooltipRect.height - viewportPadding);
-      const left = Math.min(Math.max(desiredLeft, viewportPadding), maxLeft);
-      const top = Math.min(Math.max(desiredTop, viewportPadding), maxTop);
-
-      floatingTooltip.dataset.placement = shouldPlaceAbove ? "top" : "bottom";
-      floatingTooltip.style.left = `${Math.round(left)}px`;
-      floatingTooltip.style.top = `${Math.round(top)}px`;
-    };
-
-    const schedulePositionUpdate = () => {
-      if (!activeTrigger || positionAnimationFrame) {
-        return;
-      }
-
-      positionAnimationFrame = requestFrame(() => {
-        positionAnimationFrame = 0;
-        updateTooltipPosition();
-      });
-    };
-
-    const showTooltip = (trigger) => {
-      const sourceTooltip = trigger.querySelector(".metric-header-tooltip__content");
-
-      if (!sourceTooltip) {
-        return;
-      }
-
-      activeTrigger = trigger;
-      floatingTooltip.innerHTML = sourceTooltip.innerHTML;
-      floatingTooltip.dataset.tooltipKind = trigger.dataset.tooltipKind || (trigger.closest(".companies-matrix-heading") ? "matrix-heading" : "delta");
-      floatingTooltip.style.left = "0px";
-      floatingTooltip.style.top = "0px";
-      setTooltipVisible(false);
-      updateTooltipPosition();
-      setTooltipVisible(true);
-    };
-
-    document.addEventListener("pointerover", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-
-      if (!trigger || trigger === activeTrigger) {
-        return;
-      }
-
-      showTooltip(trigger);
-    });
-
-    document.addEventListener("pointerout", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-      const relatedTarget = event.relatedTarget;
-
-      if (!trigger || (relatedTarget && trigger.contains(relatedTarget))) {
-        return;
-      }
-
-      hideTooltip(trigger);
-    });
-
-    document.addEventListener("focusin", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-
-      if (trigger) {
-        showTooltip(trigger);
-      }
-    });
-
-    document.addEventListener("focusout", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-      const relatedTarget = event.relatedTarget;
-
-      if (!trigger || (relatedTarget && trigger.contains(relatedTarget))) {
-        return;
-      }
-
-      hideTooltip(trigger);
-    });
-
-    document.addEventListener("scroll", schedulePositionUpdate, true);
-    globalScope.addEventListener("resize", schedulePositionUpdate);
-    globalScope.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        hideTooltip();
-      }
-    });
-  }
-
   function updateUsersTableSortButtons() {
     document.querySelectorAll("[data-users-table-sort]").forEach((button) => {
       const isActive = button.getAttribute("data-users-table-sort") === usersTableState.sortKey;
@@ -2733,6 +2607,12 @@
   }
 
   function getUsersTablePageCount(rows) {
+    const totalPages = Number(usersTablePagination()?.totalPages);
+
+    if (Number.isFinite(totalPages) && totalPages > 0) {
+      return Math.max(1, Math.ceil(totalPages));
+    }
+
     return Math.max(1, Math.ceil(rows.length / usersTablePageSize));
   }
 
@@ -2861,6 +2741,67 @@
     });
   }
 
+  function usersTableRequestOptions(targetPage) {
+    const globalCompany = readFilterValue("users-company-filter");
+    const tableCompany = readFilterValue("users-table-company");
+    const identifiedControl = document.getElementById("users-identified-filter");
+
+    return {
+      page: targetPage,
+      page_size: usersTablePageSize,
+      sort: usersTableState.sortKey,
+      direction: usersTableState.sortDirection,
+      period: currentData?.period || provider.DEFAULT_PERIOD,
+      company: tableCompany || globalCompany,
+      role: readFilterValue("users-table-role"),
+      status: readFilterValue("users-table-status"),
+      q: readFilterValue("users-table-search").trim(),
+      identified: (!identifiedControl || identifiedControl.checked) ? "1" : "0",
+      feature: readFilterValue("users-feature-filter")
+    };
+  }
+
+  function loadUsersTablePage(targetPage, options = {}) {
+    if (!serverUsersTableEnabled()) {
+      return false;
+    }
+
+    usersTableState.isLoading = true;
+    usersTableState.loadingToken += 1;
+
+    const token = usersTableState.loadingToken;
+    const rows = currentData?.users || [];
+
+    setUsersTableLoading(true);
+    renderUsersPagination(getUsersTablePageCount(rows));
+
+    if (options.scrollToTable && !isUsersTableHeaderVisible()) {
+      scrollUsersTableHeaderIntoView();
+    }
+
+    Promise.resolve()
+      .then(() => provider.loadUsersTable(usersTableRequestOptions(targetPage)))
+      .then((payload) => {
+        if (token !== usersTableState.loadingToken || !applyUsersTablePayload(payload)) {
+          return;
+        }
+
+        renderUsersTable();
+      })
+      .catch(() => null)
+      .finally(() => {
+        if (token !== usersTableState.loadingToken) {
+          return;
+        }
+
+        usersTableState.isLoading = false;
+        setUsersTableLoading(false);
+        renderUsersPagination(getUsersTablePageCount(currentData?.users || []));
+      });
+
+    return true;
+  }
+
   function simulateUsersTableLoad(onComplete) {
     if (usersTableState.isLoading) {
       return;
@@ -2896,6 +2837,10 @@
       return;
     }
 
+    if (loadUsersTablePage(targetPage, { scrollToTable: true })) {
+      return;
+    }
+
     simulateUsersTableLoad(() => {
       usersTableState.page = targetPage;
       renderUsersTable();
@@ -2909,23 +2854,28 @@
       return;
     }
 
-    const rows = getFilteredUsers();
+    const serverTable = hasServerUsersTable();
+    const rows = serverTable ? (currentData?.users || []) : getFilteredUsers();
     const totalPages = getUsersTablePageCount(rows);
 
     const companyShareMetric = { key: "companySharePct", label: "Company share", valueType: "percent", barMode: "percent" };
     const splitMetrics = [
-      { key: "engagedSeconds", label: "Engaged", valueType: "duration", deltaKey: "engagedDeltaPct" },
-      { key: "visitsCount", label: "Visits", valueType: "number", deltaKey: "visitsDeltaPct" }
+      { key: "engagedSeconds", label: "Engaged", valueType: "duration", deltaKey: "engagedDeltaPct", deltaUnit: "%", previousKey: "previousEngagedSeconds", deltaLabelKey: "engagedDeltaLabel" },
+      { key: "visitsCount", label: "Visits", valueType: "number", deltaKey: "visitsDeltaPct", deltaUnit: "%", previousKey: "previousVisitsCount", deltaLabelKey: "visitsDeltaLabel" }
     ];
     const maxValues = tableMaxValues(rows, [companyShareMetric, ...splitMetrics]);
     const maxDeltaValues = tableDeltaMaxValues(rows, splitMetrics);
+    const serverPage = Number(usersTablePagination()?.page);
+    if (Number.isFinite(serverPage) && serverPage > 0) {
+      usersTableState.page = Math.round(serverPage);
+    }
     usersTableState.page = Math.min(totalPages, Math.max(1, usersTableState.page));
     updateUsersTableSortButtons();
     renderUsersPagination(totalPages);
 
     const pageStart = (usersTableState.page - 1) * usersTablePageSize;
-    const pageRows = rows.slice(pageStart, pageStart + usersTablePageSize);
-    const areaAdoptionByUser = new Map(rows.map((user) => [user.id, buildUserAreaAdoption(user)]));
+    const pageRows = serverTable ? rows : rows.slice(pageStart, pageStart + usersTablePageSize);
+    const areaAdoptionByUser = new Map(pageRows.map((user) => [user.id, buildUserAreaAdoption(user)]));
     const maxAreaEngaged = Math.max(
       ...Array.from(areaAdoptionByUser.values()).flatMap((cells) => cells.map((cell) => cell.engagedSeconds || 0)),
       1
@@ -3167,9 +3117,9 @@
   function getConsistencyFilteredUsers(data) {
     const company = readFilterValue("users-company-filter");
     const feature = readFilterValue("users-feature-filter");
-    const sourceRows = Array.isArray(data.users) && data.users.length
-      ? data.users
-      : Array.isArray(data.scatter) ? data.scatter : [];
+    const sourceRows = Array.isArray(data.scatter) && data.scatter.length
+      ? data.scatter
+      : Array.isArray(data.users) ? data.users : [];
 
     return sourceRows
       .filter((user) => user.identified !== false)
@@ -3204,38 +3154,6 @@
       pct: (cell.value / total) * 100,
       color: cell.area === "Other" ? visitsCircleColors[9] : productAreaColor(cell.area)
     }));
-  }
-
-  function areaUsageMiniBar(user) {
-    const segments = areaUsageSegments(user);
-
-    if (!segments.length) {
-      return `<div style="margin-top:8px;color:${tailwindColor("slate-500")};">Area usage: no usage detected</div>`;
-    }
-
-    const bar = segments
-      .map((segment) => `<span title="${escapeHtml(segment.area)}" style="display:block;height:100%;width:${Math.max(3, segment.pct)}%;background:${segment.color};"></span>`)
-      .join("");
-    const rows = segments
-      .slice(0, 4)
-      .map((segment) => `
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;">
-          <span style="display:flex;align-items:center;gap:6px;min-width:0;">
-            <span style="width:8px;height:8px;border-radius:999px;background:${segment.color};display:inline-block;"></span>
-            <span>${escapeHtml(segment.area)}</span>
-          </span>
-          <strong>${escapeHtml(formatDuration(segment.engagedSeconds || segment.value))}</strong>
-        </div>
-      `)
-      .join("");
-
-    return `
-      <div style="margin-top:8px;">
-        <div style="margin-bottom:5px;font-weight:600;">Area usage</div>
-        <div style="display:flex;height:8px;overflow:hidden;border-radius:999px;background:${tailwindColor("slate-100")};">${bar}</div>
-        <div style="margin-top:6px;display:grid;gap:3px;">${rows}</div>
-      </div>
-    `;
   }
 
   function compareScatterStable(a, b) {
@@ -3492,12 +3410,10 @@
           0,
           Number(user.activityDropSeconds ?? user.activity_drop_seconds) || previousEngagedSeconds - metrics.totalEngagedSeconds
         );
-        const areaUsageLabel = segments.length
-          ? segments
-            .slice(0, 4)
-            .map((segment) => `${segment.area} ${formatDuration(segment.engagedSeconds || segment.value)}`)
-            .join(" · ")
-          : "No usage detected";
+        const areaUsageRows = segments.map((segment) => ({
+          label: segment.area,
+          value: formatDuration(segment.engagedSeconds || segment.value)
+        }));
 
         return {
           userKey: userStableKey(user),
@@ -3517,7 +3433,7 @@
           totalEngagedLabel: formatDuration(metrics.totalEngagedSeconds),
           avgEngagedLabel: formatDuration(metrics.avgEngagedPerSession),
           companyShareLabel: formatPercent(user.companySharePct),
-          areaUsageLabel
+          areaUsageRows
         };
       });
     const selectedRows = selectConsistencyScatterRows(rows);
@@ -3574,15 +3490,7 @@
         { name: "yMedian", value: yMedian }
       ],
       data: [
-        { name: "points", values: rows },
-        {
-          name: "labelPoints",
-          source: "points",
-          transform: [
-            { type: "filter", expr: "datum.showLabel" },
-            { type: "collect", sort: { field: ["labelPriority", "userName"], order: ["descending", "ascending"] } }
-          ]
-        }
+        { name: "points", values: rows }
       ],
       scales: [
         { name: "xScale", type: "linear", domain: [0, xDomainMax], nice: false, range: "width" },
@@ -3672,8 +3580,7 @@
               y: { signal: "max(0, min(height, scale('yScale', datum.avgEngagedPerSession) + (datum.jitterY || 0)))" },
               shape: { value: "circle" },
               tooltip: {
-                signal:
-                  "{'User': datum.userName, 'Company': datum.company, 'Status': datum.status, 'Sessions': datum.sessionsLabel, 'Sessions/week': datum.sessionsPerWeekLabel, 'Total engaged time': datum.totalEngagedLabel, 'Avg engaged/session': datum.avgEngagedLabel, 'Company share': datum.companyShareLabel, 'Area usage': datum.areaUsageLabel}"
+                signal: "datum"
               }
             },
             update: {
@@ -3696,17 +3603,15 @@
         {
           type: "text",
           interactive: false,
-          from: { data: "labelPoints" },
+          from: { data: "userPoints" },
           encode: {
             enter: {
-              x: { signal: "max(0, min(width, scale('xScale', datum.sessionsPerWeek) + (datum.jitterX || 0)))" },
-              y: { signal: "max(0, min(height, scale('yScale', datum.avgEngagedPerSession) + (datum.jitterY || 0)))" },
-              text: { field: "userName" },
+              text: { signal: "datum.datum.showLabel ? datum.datum.userName : ''" },
               fill: { value: chartTheme.colors.labelText },
               font: { value: "Inter, ui-sans-serif, system-ui, sans-serif" },
               fontSize: { value: 12 },
               fontWeight: { value: 400 },
-              opacity: { value: 1 },
+              opacity: { signal: "datum.datum.showLabel ? 1 : 0" },
               limit: { value: 118 },
               zindex: { value: 2 }
             }
@@ -3715,9 +3620,7 @@
             {
               type: "label",
               anchor: ["right", "top", "bottom", "left", "top-right", "bottom-right", "top-left", "bottom-left"],
-              avoidMarks: ["userPoints"],
-              offset: [8],
-              padding: 1,
+              offset: [3],
               size: [{ signal: "width" }, { signal: "height" }]
             }
           ]
@@ -3757,6 +3660,34 @@
     return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
   }
 
+  function formatUserConsistencyTooltip(point) {
+    const value = point && typeof point === "object" ? point : {};
+    const areaRows = Array.isArray(value.areaUsageRows) && value.areaUsageRows.length
+      ? value.areaUsageRows
+      : [{ label: "Usage", value: "No usage detected" }];
+
+    return analyticsTooltips.render({
+      title: value.userName || "User",
+      sections: [
+        {
+          rows: [
+            { label: "Company", value: value.company || "Unknown company" },
+            { label: "Status", value: value.status || "Unknown" },
+            { label: "Sessions", value: value.sessionsLabel || "0" },
+            { label: "Sessions/week", value: value.sessionsPerWeekLabel || "0" },
+            { label: "Total engaged time", value: value.totalEngagedLabel || "0m" },
+            { label: "Avg engaged/session", value: value.avgEngagedLabel || "0m" },
+            { label: "Company share", value: value.companyShareLabel || "0%" }
+          ]
+        },
+        {
+          title: "Area usage",
+          rows: areaRows
+        }
+      ]
+    });
+  }
+
   function mountConsistencyIntensityScatter(data) {
     const element = document.getElementById("users-breadth-depth-scatter");
 
@@ -3792,7 +3723,10 @@
 
       globalScope.vegaEmbed(element, createUserConsistencyScatterSpec(rows, { width }), {
         actions: false,
-        renderer: "canvas"
+        renderer: "canvas",
+        tooltip: {
+          formatTooltip: formatUserConsistencyTooltip
+        }
       })
         .then((result) => {
           if (element.__hymetryVegaRenderToken !== token) {
@@ -3843,10 +3777,15 @@
     };
     const color = heatmapMetricColors[activeHeatmapMetric] || chartTheme.series[0];
     const metricFormatter = activeHeatmapMetric === "engagedSeconds" ? formatDuration : formatNumber;
+    const metricLabel = {
+      engagedSeconds: "engaged time",
+      visits: "visits",
+      clicks: "clicks"
+    }[activeHeatmapMetric] || "activity";
 
     container.innerHTML = [
-      `<div class="users-heatmap__heading" role="columnheader">User</div>`,
-      ...columns.map((column) => `<div class="users-heatmap__heading" role="columnheader">${escapeHtml(column)}</div>`),
+      `<div class="users-heatmap__heading" role="columnheader">${tableHeaderTooltip("User", "User included in this feature activity comparison", "users-heatmap-tooltip-user")}</div>`,
+      ...columns.map((column, columnIndex) => `<div class="users-heatmap__heading" role="columnheader">${tableHeaderTooltip(column, `Daily ${metricLabel} in ${column} for each user during the selected period`, `users-heatmap-tooltip-column-${columnIndex}`, columnIndex === columns.length - 1 ? { align: "end" } : {})}</div>`),
       ...rows.flatMap((row) => [
         `
           <div class="users-heatmap__user" role="rowheader">
@@ -3901,6 +3840,76 @@
     return "users-badge--slate";
   }
 
+  /**
+   * Page one of the callout lists in the browser.
+   *
+   * These rows are bounded server-side and ride along in the payload, so there
+   * is nothing to fetch: paging is a slice. The markup matches the Users table's
+   * pagination so the page reads as one thing.
+   */
+  function renderCalloutPagination(selector, state, totalPages, actionAttribute, onNavigate) {
+    const container = document.querySelector(selector);
+
+    if (!container) {
+      return;
+    }
+
+    if (totalPages <= 1) {
+      container.hidden = true;
+      container.innerHTML = "";
+      return;
+    }
+
+    const currentPage = Math.min(totalPages, Math.max(1, state.page));
+
+    container.hidden = false;
+    container.innerHTML = `
+      ${
+        currentPage > 2
+          ? `<button type="button" class="font-medium text-sky-700 hover:text-sky-800" ${actionAttribute}="first">Go to first page</button>`
+          : `<span aria-hidden="true"></span>`
+      }
+      <div class="flex items-center justify-between gap-6 sm:justify-end">
+        ${
+          currentPage > 1
+            ? `<button type="button" class="inline-flex h-8 w-8 items-center justify-center text-sky-700 hover:text-sky-800" ${actionAttribute}="previous" aria-label="Back to previous page">${usersPaginationIcon("previous")}</button>`
+            : `<span class="invisible h-8 w-8" aria-hidden="true"></span>`
+        }
+        <span class="text-slate-700">Page ${currentPage}/${totalPages}</span>
+        ${
+          currentPage < totalPages
+            ? `<button type="button" class="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-transparent px-4 py-3 font-medium text-sky-700 duration-150 hover:bg-slate-100" ${actionAttribute}="next">Continue to next page ${usersPaginationIcon("next")}</button>`
+            : ""
+        }
+      </div>
+    `;
+
+    container.querySelectorAll(`[${actionAttribute}]`).forEach((button) => {
+      button.addEventListener("click", () => {
+        const action = button.getAttribute(actionAttribute);
+
+        state.page =
+          action === "first"
+            ? 1
+            : action === "previous"
+              ? Math.max(1, state.page - 1)
+              : Math.min(totalPages, state.page + 1);
+
+        onNavigate();
+      });
+    });
+  }
+
+  function calloutPageRows(rows, state) {
+    const totalPages = Math.max(1, Math.ceil(rows.length / calloutPageSize));
+
+    state.page = Math.min(totalPages, Math.max(1, state.page));
+
+    const start = (state.page - 1) * calloutPageSize;
+
+    return { totalPages, pageRows: rows.slice(start, start + calloutPageSize) };
+  }
+
   function renderUsersNeedingAttention(data) {
     const container = document.getElementById("users-attention-list");
 
@@ -3908,23 +3917,34 @@
       return;
     }
 
-    const rows = data.usersNeedingAttention || [];
+    const allRows = data.usersNeedingAttention || [];
 
-    if (!rows.length) {
+    if (!allRows.length) {
       container.innerHTML = `<div class="rounded-lg bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">No users need attention right now.</div>`;
+      renderCalloutPagination("[data-users-attention-pagination]", attentionListState, 1, "data-users-attention-page-action", () => {});
       return;
     }
+
+    const { totalPages, pageRows: rows } = calloutPageRows(allRows, attentionListState);
+
+    renderCalloutPagination(
+      "[data-users-attention-pagination]",
+      attentionListState,
+      totalPages,
+      "data-users-attention-page-action",
+      () => renderUsersNeedingAttention(data)
+    );
 
     container.innerHTML = `
       <div class="overflow-x-auto">
         <table class="w-full min-w-[720px] table-auto text-left">
           <thead class="border-b border-gray-300 bg-white text-slate-600">
             <tr>
-              <th scope="col" class="py-3 pl-0 pr-4 font-normal">User</th>
-              <th scope="col" class="py-3 pr-4 font-normal">Company</th>
-              <th scope="col" class="py-3 pr-4 font-normal">Status</th>
-              <th scope="col" class="py-3 pr-4 font-normal">Signal</th>
-              <th scope="col" class="py-3 pr-0 font-normal">Reason</th>
+              <th scope="col" class="py-3 pl-0 pr-4 font-normal">${tableHeaderTooltip("User", "User who needs attention based on recent activity", "users-attention-tooltip-user")}</th>
+              <th scope="col" class="py-3 pr-4 font-normal">${tableHeaderTooltip("Company", "Company account associated with this user", "users-attention-tooltip-company")}</th>
+              <th scope="col" class="py-3 pr-4 font-normal">${tableHeaderTooltip("Status", "User health state based on engagement, breadth, and recency", "users-attention-tooltip-status")}</th>
+              <th scope="col" class="py-3 pr-4 font-normal">${tableHeaderTooltip("Signal", "Recent usage change that caused this user to need attention", "users-attention-tooltip-signal")}</th>
+              <th scope="col" class="py-3 pr-0 font-normal">${tableHeaderTooltip("Reason", "Explanation of why this user was included", "users-attention-tooltip-reason", { align: "end" })}</th>
             </tr>
           </thead>
           <tbody class="text-slate-700">
@@ -3958,23 +3978,34 @@
       return;
     }
 
-    const rows = data.usersGainingMomentum || [];
+    const allRows = data.usersGainingMomentum || [];
 
-    if (!rows.length) {
+    if (!allRows.length) {
       container.innerHTML = `<div class="rounded-lg bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">No momentum signals found for this period.</div>`;
+      renderCalloutPagination("[data-users-momentum-pagination]", momentumListState, 1, "data-users-momentum-page-action", () => {});
       return;
     }
+
+    const { totalPages, pageRows: rows } = calloutPageRows(allRows, momentumListState);
+
+    renderCalloutPagination(
+      "[data-users-momentum-pagination]",
+      momentumListState,
+      totalPages,
+      "data-users-momentum-page-action",
+      () => renderUsersGainingMomentum(data)
+    );
 
     container.innerHTML = `
       <div class="overflow-x-auto">
         <table class="w-full min-w-[720px] table-auto text-left">
           <thead class="border-b border-gray-300 bg-white text-slate-600">
             <tr>
-              <th scope="col" class="py-3 pl-0 pr-4 font-normal">User</th>
-              <th scope="col" class="py-3 pr-4 font-normal">Company</th>
-              <th scope="col" class="py-3 pr-4 font-normal">Status</th>
-              <th scope="col" class="py-3 pr-4 font-normal">Signal</th>
-              <th scope="col" class="py-3 pr-0 font-normal">Reason</th>
+              <th scope="col" class="py-3 pl-0 pr-4 font-normal">${tableHeaderTooltip("User", "User whose recent activity is gaining momentum", "users-momentum-tooltip-user")}</th>
+              <th scope="col" class="py-3 pr-4 font-normal">${tableHeaderTooltip("Company", "Company account associated with this user", "users-momentum-tooltip-company")}</th>
+              <th scope="col" class="py-3 pr-4 font-normal">${tableHeaderTooltip("Status", "User health state based on engagement, breadth, and recency", "users-momentum-tooltip-status")}</th>
+              <th scope="col" class="py-3 pr-4 font-normal">${tableHeaderTooltip("Signal", "Recent positive usage change detected for this user", "users-momentum-tooltip-signal")}</th>
+              <th scope="col" class="py-3 pr-0 font-normal">${tableHeaderTooltip("Reason", "Explanation of why this user was included", "users-momentum-tooltip-reason", { align: "end" })}</th>
             </tr>
           </thead>
           <tbody class="text-slate-700">
@@ -4008,18 +4039,27 @@
       }
 
       control.__usersFilterMounted = true;
-      control.addEventListener("input", () => {
+      const affectsScatter = control.matches("[data-users-filter]");
+      const applyFilter = () => {
         usersTableState.page = 1;
-        renderUsersTable();
-        mountConsistencyIntensityScatter(currentData);
+        if (!loadUsersTablePage(1)) {
+          renderUsersTable();
+        }
+        if (affectsScatter) {
+          mountConsistencyIntensityScatter(currentData);
+        }
         refreshUserSearchResults();
-      });
-      control.addEventListener("change", () => {
-        usersTableState.page = 1;
-        renderUsersTable();
-        mountConsistencyIntensityScatter(currentData);
-        refreshUserSearchResults();
-      });
+      };
+      const isTextInput = control.matches('input[type="search"], input[type="text"]');
+
+      if (isTextInput) {
+        control.addEventListener("input", () => {
+          globalScope.clearTimeout(usersTableFilterDebounceId);
+          usersTableFilterDebounceId = globalScope.setTimeout(applyFilter, 180);
+        });
+      } else {
+        control.addEventListener("change", applyFilter);
+      }
     });
 
   }
@@ -4035,7 +4075,7 @@
       button.addEventListener("click", () => {
         const sortKey = button.getAttribute("data-users-table-sort") || "visitsCount";
 
-        if (!currentData || usersTableState.isLoading) {
+        if (!currentData) {
           return;
         }
 
@@ -4048,6 +4088,10 @@
 
         usersTableState.page = 1;
         updateUsersTableSortButtons();
+        if (loadUsersTablePage(1)) {
+          return;
+        }
+
         simulateUsersTableLoad(() => {
           renderUsersTable();
         });
@@ -4058,9 +4102,13 @@
   function renderAll(data) {
     currentData = data;
 
+    const initialTablePage = Number(usersTablePagination(data)?.page);
+    usersTableState.page = Number.isFinite(initialTablePage) && initialTablePage > 0
+      ? Math.round(initialTablePage)
+      : 1;
+
     syncProductAreaPalette(data);
     syncProductAreaHeadings();
-    renderPeriodSelector(data);
     populateFilters(data);
     mountCustomSelectDropdowns();
     mountUserSearch();
@@ -4081,20 +4129,6 @@
     renderAll(provider.getUsersAnalyticsData(period));
   }
 
-  function hydrateDeferredUsersData() {
-    if (typeof provider.loadDeferredUsersData !== "function") {
-      return;
-    }
-
-    provider.loadDeferredUsersData().then((data) => {
-      if (!data || document.body.dataset.usersView !== "overview") {
-        return;
-      }
-
-      renderAll(data);
-    });
-  }
-
   function getRequestedPeriod() {
     const params = new URLSearchParams(globalScope.location.search);
     return provider.coercePeriodKey(params.get("period") || params.get("days") || provider.DEFAULT_PERIOD);
@@ -4107,9 +4141,18 @@
 
     globalScope.addEventListener("resize", scheduleSplitChangeValueWidthSync);
     document.fonts?.ready?.then(scheduleSplitChangeValueWidthSync);
-    mountFloatingMetricTooltips();
     loadPeriod(getRequestedPeriod());
-    hydrateDeferredUsersData();
+  }
+
+  if (globalScope.__HymetryExposeTestHooks) {
+    globalScope.HymetryUsersAnalyticsTesting = {
+      createKpiTrendOption,
+      createStatusMixComparisonOption,
+      createUserConsistencyScatterSpec,
+      formatKpiHeadlineValue,
+      kpiTrendValueFormat,
+      statusMixDistributionRow
+    };
   }
 
   document.addEventListener("DOMContentLoaded", initUsersPage);

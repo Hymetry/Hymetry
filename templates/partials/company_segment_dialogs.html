@@ -1,0 +1,39 @@
+{% comment %}
+  Shared shell for the company segment dialogs (save, rename, delete, manage).
+  The body and footer are filled by static/js/shared/company-segments.js. Every
+  dialog here mutates a segment, so a surface that can only list and apply them —
+  the read-only demo — renders none of this.
+{% endcomment %}
+{% if company_attribute_filter.segments_manageable %}
+  <div
+    id="company-segment-dialog-layer"
+    class="company-segment-dialog-layer"
+    data-company-segment-dialog-layer
+    hidden>
+    <section
+      class="company-segment-dialog"
+      data-company-segment-dialog
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="company-segment-dialog-title">
+      <header class="company-segment-dialog__header">
+        <h2
+          id="company-segment-dialog-title"
+          class="company-segment-dialog__title"
+          data-company-segment-dialog-title
+          tabindex="-1"></h2>
+        <button
+          type="button"
+          class="company-segment-dialog__close"
+          data-company-segment-dialog-close
+          aria-label="Close">&times;</button>
+      </header>
+      <div class="company-segment-dialog__body" data-company-segment-dialog-body></div>
+      <footer class="company-segment-dialog__footer" data-company-segment-dialog-footer></footer>
+    </section>
+  </div>
+
+  <div class="company-segment-toast" data-company-segment-toast role="status" aria-live="polite" hidden></div>
+  <div class="sr-only" data-company-segment-live role="status" aria-live="polite" aria-atomic="true"></div>
+  <form class="hidden" aria-hidden="true">{% csrf_token %}</form>
+{% endif %}

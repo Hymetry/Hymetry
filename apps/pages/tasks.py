@@ -1,4 +1,7 @@
+import logging
+
 from celery import shared_task
+from django.http import QueryDict
 
 from apps.pages.company_analytics import build_companies_overview_cache, build_company_detail_cache
 from apps.pages.product_area_color_assignment import (
@@ -13,7 +16,14 @@ from apps.pages.services import (
     rebuild_project_pages_analytics,
     refresh_recent_projects_pages_analytics,
 )
+from apps.projects.company_attribute_filters import (
+    CompanyAttributeFilterValidationError,
+    parse_company_attribute_filters,
+)
 from apps.projects.models import Project, ProjectPageNamingState
+
+
+logger = logging.getLogger(__name__)
 
 
 PAGES_LOCK_RETRY_BASE_SECONDS = 30
@@ -50,12 +60,33 @@ def _locked_project_ids(result):
     return []
 
 
-def _retry_task_if_pages_lock_unavailable(task, result):
+def _retry_task_if_pages_lock_unavailable(task, result, *, best_effort=False):
+    """
+    Retry a task that lost the project rebuild lock, and decide how it ends.
+
+    A scheduled or explicitly invoked task that never wins the lock has dropped
+    a unit of work nothing else will redo, so it raises once the budget is spent
+    and the failure is visible. A best-effort warm queued by a web request has
+    not failed in the same sense: whoever holds the lock is rebuilding that
+    project, and the next request queues the warm again. Raising there reports
+    ordinary contention as an unhandled error, so it returns the skip instead
+    and leaves the record in the task result and the worker log.
+    """
+
     locked_project_ids = list(dict.fromkeys(_locked_project_ids(result)))
     if not locked_project_ids:
         return result
 
-    retries = getattr(task.request, 'retries', 0)
+    retries = int(getattr(task.request, 'retries', 0) or 0)
+    if best_effort and retries >= PAGES_LOCK_MAX_RETRIES:
+        logger.warning(
+            'Stopped waiting for the pages rebuild lock in %s for projects: %s (%s retries)',
+            task.name,
+            locked_project_ids,
+            retries,
+        )
+        return result
+
     countdown = _pages_lock_retry_countdown(retries)
     error = PagesRebuildLockUnavailable(
         f'Pages rebuild lock unavailable for projects: {locked_project_ids}'
@@ -90,7 +121,10 @@ def aggregate_page_daily_metrics(self, project_id, start_date, end_date):
 @shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
 def build_pages_overview_cache_task(self, project_id, range_key='last_30_days'):
     result = build_pages_overview_cache(project_id, range_key=range_key)
-    return _retry_task_if_pages_lock_unavailable(self, result)
+    return _retry_task_if_pages_lock_unavailable(self, result, best_effort=True)
+
+
+
 
 
 @shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
@@ -105,22 +139,74 @@ def build_users_overview_cache_task(self, project_id, range_key='last_30_days'):
     return _retry_task_if_pages_lock_unavailable(self, result)
 
 
+def _build_filtered_variant(task, surface, project_id, canonical_pairs, filters_hash, range_key):
+    from apps.pages import filtered_overview
+
+    result = filtered_overview.build_variant(
+        surface,
+        project_id,
+        canonical_pairs,
+        filters_hash,
+        range_key,
+    )
+    return _retry_task_if_pages_lock_unavailable(task, result, best_effort=True)
+
+
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def build_filtered_pages_overview_cache_task(
+    self,
+    project_id,
+    canonical_pairs,
+    filters_hash,
+    range_key='last_30_days',
+):
+    return _build_filtered_variant(
+        self, 'pages', project_id, canonical_pairs, filters_hash, range_key,
+    )
+
+
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def build_filtered_companies_overview_cache_task(
+    self,
+    project_id,
+    canonical_pairs,
+    filters_hash,
+    range_key='last_30_days',
+):
+    return _build_filtered_variant(
+        self, 'companies', project_id, canonical_pairs, filters_hash, range_key,
+    )
+
+
+@shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
+def build_filtered_users_overview_cache_task(
+    self,
+    project_id,
+    canonical_pairs,
+    filters_hash,
+    range_key='last_30_days',
+):
+    return _build_filtered_variant(
+        self, 'users', project_id, canonical_pairs, filters_hash, range_key,
+    )
+
+
 @shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
 def build_company_detail_cache_task(self, project_id, company_id, range_key='last_30_days'):
     result = build_company_detail_cache(project_id, company_id, range_key=range_key)
-    return _retry_task_if_pages_lock_unavailable(self, result)
+    return _retry_task_if_pages_lock_unavailable(self, result, best_effort=True)
 
 
 @shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
 def build_user_detail_cache_task(self, project_id, user_id, range_key='last_30_days'):
     result = build_user_detail_cache(project_id, user_id, range_key=range_key)
-    return _retry_task_if_pages_lock_unavailable(self, result)
+    return _retry_task_if_pages_lock_unavailable(self, result, best_effort=True)
 
 
 @shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
 def hydrate_pages_scatter_tooltips_cache_task(self, project_id, range_key='last_30_days'):
     result = hydrate_pages_scatter_tooltips_cache(project_id, range_key=range_key)
-    return _retry_task_if_pages_lock_unavailable(self, result)
+    return _retry_task_if_pages_lock_unavailable(self, result, best_effort=True)
 
 
 @shared_task(bind=True, max_retries=PAGES_LOCK_MAX_RETRIES)
@@ -137,6 +223,9 @@ def refresh_recent_pages_analytics_task(
     range_keys=None,
     exclude_project_ids=None,
 ):
+    if exclude_project_ids is None:
+        exclude_project_ids = ()
+
     result = refresh_recent_projects_pages_analytics(
         lookback_days=lookback_days,
         active_since_days=active_since_days,

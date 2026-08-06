@@ -104,12 +104,11 @@ function cloneTraits(value) {
 
 function normalizeCaptureModes(rawCapture) {
   const result = { recording: false, analytics: false };
-  const raw = safeString(rawCapture, 200) || 'analytics,recording';
+  const raw = safeString(rawCapture, 200) || 'recording';
   const values = raw.split(',').map((part) => part.trim().toLowerCase()).filter(Boolean);
 
   if (!values.length) {
     result.recording = true;
-    result.analytics = true;
     return result;
   }
 

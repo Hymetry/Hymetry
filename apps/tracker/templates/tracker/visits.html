@@ -1,0 +1,369 @@
+{% extends 'base.html' %}
+{% load static %}
+{% load tracker_extras %}
+
+{% block title %}Visits{% if not is_demo_view and project.name %} - {{ project.name }}{% endif %}{% endblock %}
+
+{% block extra_js %}
+  <link rel="stylesheet" href="{% static 'css/tracker/visits.css' %}?v=20260803-1" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/company-attribute-filters.css' %}?v=20260727-6" type="text/css" />
+{% endblock %}
+
+{% block nav %}
+  {% include 'tracker/recordings_nav.html' %}
+{% endblock %}
+
+{% block body_classes %}
+  class="h-full bg-slate-50 text-sm" data-visits-view="table"{% if project.id %} data-project-id="{{ project.id }}"{% endif %}
+{% endblock %}
+
+{% block content %}
+  {% firstof visits_range_key range_key selected_range "last_30_days" as current_range_key %}
+  {% firstof visits_sort_key sort_key "date_time" as current_sort_key %}
+  {% firstof visits_sort_direction sort_direction "desc" as current_sort_direction %}
+
+  <main class="page-shell w-full pb-12 pt-20">
+  <header class="visits-page-header">
+    <div class="visits-page-header__content">
+      <div class="visits-page-header__intro">
+        <h1 class="visits-page-title">Visits</h1>
+      </div>
+
+      <section class="visits-filter-bar" aria-label="Visit filters">
+        {% include 'partials/company_scope_selector.html' %}
+
+        <div
+          class="visits-filter visits-filter--entity"
+          data-visits-filter="entity"
+          data-selected-type="{{ visits_entity_type }}"
+          data-selected-id="{{ visits_entity_id }}"
+          data-range="{{ current_range_key }}"
+          data-options-url="{{ visits_entity_options_url }}">
+          <div class="visits-filter__control">
+            <button
+              id="visits-entity-filter-button"
+              type="button"
+              class="visits-filter__button"
+              data-visits-filter-trigger
+              data-has-selection="{% if visits_entity_type and visits_entity_id %}true{% else %}false{% endif %}"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-labelledby="visits-entity-filter-label"
+              aria-controls="visits-entity-filter-popover">
+              <span
+                id="visits-entity-filter-label"
+                class="visits-filter__label"
+                data-visits-filter-label
+                data-placeholder="{% if visits_entity_type and visits_entity_id %}false{% else %}true{% endif %}">
+                {% if visits_entity_type == 'company' %}Company: {{ visits_entity_label }}{% elif visits_entity_type == 'user' %}User: {{ visits_entity_label }}{% else %}Any company or user{% endif %}
+              </span>
+              <svg class="visits-filter__chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
+                <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="visits-filter__clear"
+              data-visits-filter-clear
+              aria-label="Clear company or user filter"
+              {% if not visits_entity_type or not visits_entity_id %}hidden{% endif %}>×</button>
+            <div id="visits-entity-filter-popover" class="visits-filter__popover" data-visits-filter-popover hidden>
+              <div class="visits-filter__search-shell">
+                <label for="visits-entity-search" class="sr-only">Search companies and users</label>
+                <input
+                  id="visits-entity-search"
+                  type="search"
+                  class="visits-filter__search"
+                  data-visits-entity-search
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-controls="visits-entity-filter-options"
+                  aria-expanded="false"
+                  autocomplete="off"
+                  placeholder="Search companies or users…">
+              </div>
+              <div
+                id="visits-entity-filter-options"
+                class="visits-filter__options"
+                data-visits-entity-options
+                role="listbox"
+                aria-label="Company or user options">
+                <div class="visits-filter__empty" role="status">Loading companies and users…</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div
+          class="visits-filter visits-filter--page"
+          data-visits-filter="page"
+          data-selected-type="{{ visits_page_filter_type }}"
+          data-selected-id="{{ visits_page_filter_id }}">
+          <div class="visits-filter__control">
+            <button
+              id="visits-page-filter-button"
+              type="button"
+              class="visits-filter__button"
+              data-visits-filter-trigger
+              data-has-selection="{% if visits_page_filter_type and visits_page_filter_id %}true{% else %}false{% endif %}"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-labelledby="visits-page-filter-label"
+              aria-controls="visits-page-filter-popover">
+              <span
+                id="visits-page-filter-label"
+                class="visits-filter__label"
+                data-visits-filter-label
+                data-placeholder="{% if visits_page_filter_type and visits_page_filter_id %}false{% else %}true{% endif %}">
+                {% if visits_page_filter_type == 'area' %}Area: {{ visits_page_filter_label }}{% elif visits_page_filter_type == 'page' %}Page: {{ visits_page_filter_label }}{% else %}Any page{% endif %}
+              </span>
+              <svg class="visits-filter__chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
+                <path d="M480-346.85 253.85-573 291-610.15l189 189 189-189L706.15-573 480-346.85Z" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="visits-filter__clear"
+              data-visits-filter-clear
+              aria-label="Clear page or product area filter"
+              {% if not visits_page_filter_type or not visits_page_filter_id %}hidden{% endif %}>×</button>
+            <div id="visits-page-filter-popover" class="visits-filter__popover" data-visits-filter-popover hidden>
+              <div class="visits-filter__search-shell">
+                <label for="visits-page-search" class="sr-only">Search product areas and pages</label>
+                <input
+                  id="visits-page-search"
+                  type="search"
+                  class="visits-filter__search"
+                  data-visits-page-search
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-controls="visits-page-filter-options"
+                  aria-expanded="false"
+                  autocomplete="off"
+                  placeholder="Search product areas or pages…">
+              </div>
+              <div
+                id="visits-page-filter-options"
+                class="visits-filter__options"
+                data-visits-page-options
+                role="listbox"
+                aria-label="Page or product area options"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="visits-filter visits-filter--range">
+          {% comment %}
+            Visits lists activity by recency rather than aggregating a period,
+            so unlike the analytical screens its range includes today.
+          {% endcomment %}
+          <nav class="visits-period-selector" aria-label="Date range">
+            <a href="{{ visits_range_urls.last_7_days }}" class="visits-period-selector__button" title="Last 7 days, including today" aria-label="Last 7 days, including today"{% if current_range_key == 'last_7_days' %} aria-current="page" aria-pressed="true"{% else %} aria-pressed="false"{% endif %}>7d</a>
+            <a href="{{ visits_range_urls.last_30_days }}" class="visits-period-selector__button" title="Last 30 days, including today" aria-label="Last 30 days, including today"{% if current_range_key == 'last_30_days' %} aria-current="page" aria-pressed="true"{% else %} aria-pressed="false"{% endif %}>30d</a>
+          </nav>
+        </div>
+      </section>
+      {% include 'partials/company_attribute_filter_summary.html' %}
+      {% include 'partials/company_segment_review_banner.html' %}
+    </div>
+  </header>
+
+  <div class="visits-card overflow-hidden rounded-xl border border-slate-200 bg-white pt-2 shadow-sm">
+  <div class="visits-layout">
+    {% if visit_rows %}
+      <div class="visits-table-shell visits-table-shell--with-play flex-1 min-w-0 flex flex-col -mt-4 pr-2 pl-4 bg-white">
+      <div class="visits-table-heading-row flex items-start mb-2">
+            <div class="visits-session-header ml-4" role="row">
+              <div class="visits-play-column-header" aria-hidden="true"></div>
+
+              <div role="columnheader" aria-sort="{% if current_sort_key == 'user' %}{% if current_sort_direction == 'asc' %}ascending{% else %}descending{% endif %}{% else %}none{% endif %}">
+                <span class="metric-header-tooltip">
+                  <a
+                    class="visits-table-sort-button"
+                    href="{% if sort_urls.user %}{{ sort_urls.user }}{% else %}?range={{ current_range_key }}&amp;sort=user&amp;direction={% if current_sort_key == 'user' and current_sort_direction == 'asc' %}desc{% else %}asc{% endif %}{% endif %}"
+                    {% if current_sort_key == 'user' %}data-sort-direction="{{ current_sort_direction }}"{% endif %}
+                    aria-describedby="visits-header-tooltip-user">User</a>
+                  <span id="visits-header-tooltip-user" class="metric-header-tooltip__content" role="tooltip">The user associated with this visit.</span>
+                </span>
+              </div>
+
+              <div role="columnheader" aria-sort="{% if current_sort_key == 'company' %}{% if current_sort_direction == 'asc' %}ascending{% else %}descending{% endif %}{% else %}none{% endif %}">
+                <span class="metric-header-tooltip">
+                  <a
+                    class="visits-table-sort-button"
+                    href="{% if sort_urls.company %}{{ sort_urls.company }}{% else %}?range={{ current_range_key }}&amp;sort=company&amp;direction={% if current_sort_key == 'company' and current_sort_direction == 'asc' %}desc{% else %}asc{% endif %}{% endif %}"
+                    {% if current_sort_key == 'company' %}data-sort-direction="{{ current_sort_direction }}"{% endif %}
+                    aria-describedby="visits-header-tooltip-company">Company</a>
+                  <span id="visits-header-tooltip-company" class="metric-header-tooltip__content" role="tooltip">The company account associated with the user during this visit.</span>
+                </span>
+              </div>
+
+              <div role="columnheader" aria-sort="{% if current_sort_key == 'date_time' %}{% if current_sort_direction == 'asc' %}ascending{% else %}descending{% endif %}{% else %}none{% endif %}">
+                <span class="metric-header-tooltip">
+                  <a
+                    class="visits-table-sort-button"
+                    href="{% if sort_urls.date_time %}{{ sort_urls.date_time }}{% elif sort_urls.started_at %}{{ sort_urls.started_at }}{% else %}?range={{ current_range_key }}&amp;sort=date_time&amp;direction={% if current_sort_key == 'date_time' and current_sort_direction == 'desc' %}asc{% else %}desc{% endif %}{% endif %}"
+                    {% if current_sort_key == 'date_time' %}data-sort-direction="{{ current_sort_direction }}"{% endif %}
+                    aria-describedby="visits-header-tooltip-date-time">Date / time</a>
+                  <span id="visits-header-tooltip-date-time" class="metric-header-tooltip__content" role="tooltip">The date and time when the visit started.</span>
+                </span>
+              </div>
+
+              <div role="columnheader" aria-sort="{% if current_sort_key == 'duration' %}{% if current_sort_direction == 'asc' %}ascending{% else %}descending{% endif %}{% else %}none{% endif %}">
+                <span class="metric-header-tooltip">
+                  <a
+                    class="visits-table-sort-button"
+                    href="{% if sort_urls.duration %}{{ sort_urls.duration }}{% else %}?range={{ current_range_key }}&amp;sort=duration&amp;direction={% if current_sort_key == 'duration' and current_sort_direction == 'desc' %}asc{% else %}desc{% endif %}{% endif %}"
+                    {% if current_sort_key == 'duration' %}data-sort-direction="{{ current_sort_direction }}"{% endif %}
+                    aria-describedby="visits-header-tooltip-duration">Duration</a>
+                  <span id="visits-header-tooltip-duration" class="metric-header-tooltip__content" role="tooltip">Elapsed analytical time from the first observed event to the last. Inactive periods are included; the bar shows observed active time.</span>
+                </span>
+              </div>
+
+              <div role="columnheader" aria-sort="{% if current_sort_key == 'unique_pages' %}{% if current_sort_direction == 'asc' %}ascending{% else %}descending{% endif %}{% else %}none{% endif %}">
+                <span class="metric-header-tooltip">
+                  <a
+                    class="visits-table-sort-button"
+                    href="{% if sort_urls.unique_pages %}{{ sort_urls.unique_pages }}{% else %}?range={{ current_range_key }}&amp;sort=unique_pages&amp;direction={% if current_sort_key == 'unique_pages' and current_sort_direction == 'desc' %}asc{% else %}desc{% endif %}{% endif %}"
+                    {% if current_sort_key == 'unique_pages' %}data-sort-direction="{{ current_sort_direction }}"{% endif %}
+                    aria-describedby="visits-header-tooltip-unique-pages">Unique pages</a>
+                  <span id="visits-header-tooltip-unique-pages" class="metric-header-tooltip__content" role="tooltip">Number of distinct pages with observed user activity during the visit.</span>
+                </span>
+              </div>
+            </div>
+
+            <div class="visits-chart-header flex-1 pl-2 py-2">
+              <div class="visits-timeline-heading">
+                <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="visits-header-tooltip-active-time-by-page">
+                  Observed active time by page (doesn’t include inactivity)
+                  <span id="visits-header-tooltip-active-time-by-page" class="metric-header-tooltip__content" role="tooltip">How the visit’s observed active time was distributed across pages. Bar length shows total active time. Product areas with the most active time come first; within each area, pages with the most active time come first.</span>
+                </span>
+              </div>
+              <div id="timeline-ruler">
+                <div class="relative h-4" data-visits-timeline-ticks aria-hidden="true"></div>
+              </div>
+            </div>
+          </div>
+
+          <ul class="list-none p-0 m-0" data-visits-session-list>
+            {% for row in visit_rows %}
+              {% firstof row.user_label row.user_name row.user_id "Unknown" as visit_user_label %}
+              {% firstof row.company_label row.company_name row.company_id "Unknown" as visit_company_label %}
+              <li class="relative{% if forloop.first %} max-w-full{% endif %}">
+                <a
+                  class="flex cursor-pointer items-start outline outline-transparent transition-colors duration-150 hover:outline-1 hover:outline-slate-200 hover:bg-slate-50 visits-session-link"
+                  href="{{ row.replay_url }}"
+                  aria-label="Open replay for {{ visit_user_label }}">
+                  <p class="visits-session-meta py-2 ml-4 mt-0.5 font-medium text-slate-800">
+                    <span aria-hidden="true"></span>
+                    <span>{{ visit_user_label }}</span>
+                    <span>{{ visit_company_label }}</span>
+                    <span>
+                      {% if row.started_at_label %}
+                        {{ row.started_at_label }}
+                      {% elif row.started_at_local %}
+                        {{ row.started_at_local|format_in_project_timezone:project_timezone }}
+                      {% elif row.started_at %}
+                        {{ row.started_at|format_in_project_timezone:project_timezone }}
+                      {% else %}
+                        &mdash;
+                      {% endif %}
+                    </span>
+                    <span>{% if row.duration_label %}{{ row.duration_label }}{% else %}{{ row.duration_seconds|default:0 }}s{% endif %}</span>
+                    <span>{% if row.unique_pages_label %}{{ row.unique_pages_label }}{% else %}{{ row.unique_pages|default:0 }} page{{ row.unique_pages|default:0|pluralize }}{% endif %}</span>
+                  </p>
+
+                  <div class="chart-container visits-stacked-chart-container pl-2 py-2 dragscroll overflow-x-auto custom-scroll" data-visits-chart>
+                    {% if row.data_preparing %}
+                      <span class="visits-row-status">Visit data is being prepared</span>
+                    {% elif row.chart_data %}
+                      {{ row.chart_data|json_script }}
+                    {% elif row.segments %}
+                      {{ row.segments|json_script }}
+                    {% else %}
+                      {{ row.chart_segments|json_script }}
+                    {% endif %}
+                  </div>
+                </a>
+                <a
+                  class="visits-play-button"
+                  href="{{ row.replay_url }}"
+                  aria-label="Play recording for {{ visit_user_label }}"
+                  title="Play recording">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
+                    <path d="M390-318.46 641.54-480 390-641.54v323.08ZM480.07-100q-78.84 0-148.21-29.92t-120.68-81.21q-51.31-51.29-81.25-120.63Q100-401.1 100-479.93q0-78.84 29.92-148.21t81.21-120.68q51.29-51.31 120.63-81.25Q401.1-860 479.93-860q78.84 0 148.21 29.92t120.68 81.21q51.31 51.29 81.25 120.63Q860-558.9 860-480.07q0 78.84-29.92 148.21t-81.21 120.68q-51.29 51.31-120.63 81.25Q558.9-100 480.07-100Z" />
+                  </svg>
+                </a>
+                <div class="visits-session-entity-links">
+                  {% if row.user_url %}<a class="text-sky-800 hover:text-sky-900" href="{{ row.user_url }}">{{ visit_user_label }}</a>{% else %}<span>{{ visit_user_label }}</span>{% endif %}
+                  {% if row.company_url %}<a class="text-sky-800 hover:text-sky-900" href="{{ row.company_url }}">{{ visit_company_label }}</a>{% else %}<span>{{ visit_company_label }}</span>{% endif %}
+                </div>
+                {% if not forloop.last %}<div class="ml-4 h-px bg-slate-200"></div>{% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+
+          <div id="pagination-bar" style="margin-top: 60px;">
+            <nav class="visits-pagination mb-6 flex flex-col gap-4 px-6 sm:flex-row sm:items-center sm:justify-between" aria-label="Visits pagination">
+              {% if page_obj.number > 2 %}
+                <a href="?{{ pagination_query }}&amp;page=1" class="font-medium text-sky-700 hover:text-sky-800">Go to first page</a>
+              {% else %}
+                <span aria-hidden="true"></span>
+              {% endif %}
+
+              <div class="visits-pagination-meta">
+                <span>{{ paginator.count }} sessions</span>
+                <button type="button" onclick="window.location.reload();" class="visits-page-refresh" aria-label="Refresh visits">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <path d="M12.0386 19.5C9.94474 19.5 8.17132 18.7736 6.71832 17.3207C5.26516 15.8679 4.53857 14.0948 4.53857 12.0015C4.53857 9.90817 5.26516 8.13458 6.71832 6.68075C8.17132 5.22692 9.94474 4.5 12.0386 4.5C13.2077 4.5 14.3142 4.75992 15.3578 5.27975C16.4013 5.79975 17.2692 6.53342 17.9616 7.48075V4.5H19.4616V10.6152H13.3463V9.1155H17.2963C16.7693 8.15 16.0385 7.38942 15.1038 6.83375C14.1693 6.27792 13.1476 6 12.0386 6C10.3719 6 8.95524 6.58333 7.78857 7.75C6.62191 8.91667 6.03857 10.3333 6.03857 12C6.03857 13.6667 6.62191 15.0833 7.78857 16.25C8.95524 17.4167 10.3719 18 12.0386 18C13.3219 18 14.4802 17.6333 15.5136 16.9C16.5469 16.1667 17.2719 15.2 17.6886 14H19.2693C18.8155 15.632 17.9216 16.9567 16.5876 17.974C15.2536 18.9913 13.7372 19.5 12.0386 19.5Z" fill="currentColor" />
+                  </svg>
+                </button>
+              </div>
+
+              <div class="flex items-center justify-between gap-6 sm:justify-end">
+                {% if page_obj.has_previous %}
+                  <a href="{% if previous_url %}{{ previous_url }}{% else %}?range={{ current_range_key }}&amp;sort={{ current_sort_key }}&amp;direction={{ current_sort_direction }}&amp;page={{ page_obj.previous_page_number }}{% endif %}" data-visits-pagination-link class="inline-flex items-center text-sky-700 duration-150 hover:text-sky-800" aria-label="Go to previous page">
+                    <svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor" aria-hidden="true">
+                      <path d="m504-480 184 184-42 42-226-226 226-226 42 42-184 184Z" />
+                    </svg>
+                  </a>
+                {% else %}
+                  <span class="invisible h-8 w-8" aria-hidden="true"></span>
+                {% endif %}
+
+                <span class="text-slate-700">Page {{ page_obj.number }}/{{ paginator.num_pages }}</span>
+
+                {% if page_obj.has_next %}
+                  <a href="{% if next_url %}{{ next_url }}{% else %}?range={{ current_range_key }}&amp;sort={{ current_sort_key }}&amp;direction={{ current_sort_direction }}&amp;page={{ page_obj.next_page_number }}{% endif %}" data-visits-pagination-link class="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-transparent px-4 py-3 font-medium text-sky-700 duration-150 hover:bg-slate-100">
+                    Continue to next page
+                    <svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor" aria-hidden="true">
+                      <path d="m504-480-184-184 42-42 226 226-226 226-42-42 184-184Z" />
+                    </svg>
+                  </a>
+                {% endif %}
+              </div>
+            </nav>
+          </div>
+      </div>
+    {% else %}
+      <div class="visits-empty-state">
+        <img src="{% static 'svg/no-sessions.svg' %}" alt="" />
+        <div>
+          <p class="visits-empty-state__title">No visits found</p>
+          <p class="mt-1">There are no recorded visits in the selected period.</p>
+        </div>
+      </div>
+    {% endif %}
+  </div>
+  </div>
+  </main>
+
+  {% include 'partials/company_attribute_filter_dialog.html' %}
+  {{ visits_page_filter_groups|json_script:"visits-page-filter-data" }}
+  <script src="{% static 'js/shared/company-attribute-filters.js' %}?v=20260727-5"></script>
+  <script src="{% static 'js/shared/company-segments.js' %}?v=20260727-7"></script>
+  <script src="{% static 'js/tracker/visits-filters.js' %}?v=20260717-1"></script>
+  <script src="{% static 'echarts/lib/echarts.min.js' %}"></script>
+  <script src="{% static 'js/tracker/visits-chart-helpers.js' %}?v=20260718-3"></script>
+  <script src="{% static 'js/tracker/visits-charts.js' %}?v=20260718-1"></script>
+{% endblock %}

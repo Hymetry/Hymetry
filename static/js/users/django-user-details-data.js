@@ -53,12 +53,18 @@
     return `${nextUrl.pathname}${nextUrl.search}`;
   }
 
-  function optionsUrl(baseUrl, query, periodDays, limit = 20) {
+  function optionsUrl(baseUrl, query, periodDays, limit = 20, alphabetical = false) {
     const nextUrl = new URL(baseUrl, globalScope.location.origin);
     const rangeKey = rangeByPeriod[Number(periodDays) || defaultPeriodDays] || rangeByPeriod[defaultPeriodDays] || "last_30_days";
 
     nextUrl.searchParams.set("range", rangeKey);
     nextUrl.searchParams.set("limit", String(limit));
+
+    if (alphabetical) {
+      nextUrl.searchParams.set("sort", "alphabetical");
+    } else {
+      nextUrl.searchParams.delete("sort");
+    }
 
     if (String(query || "").trim()) {
       nextUrl.searchParams.set("q", String(query || "").trim());
@@ -147,7 +153,7 @@
       return Promise.resolve([]);
     }
 
-    return globalScope.fetch(optionsUrl(baseUrl, query, options.periodDays, options.limit || 20), {
+    return globalScope.fetch(optionsUrl(baseUrl, query, options.periodDays, options.limit || 20, options.alphabetical), {
       credentials: "same-origin",
       headers: {
         Accept: "application/json"

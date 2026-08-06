@@ -1,7 +1,12 @@
 from django.urls import path
 
 from apps.pages import views as pages_views
-from apps.projects import views
+from apps.projects import (
+    company_attribute_filter_views,
+    company_attribute_views,
+    company_segment_views,
+    views,
+)
 from apps.projects.url_helpers import project_pk_slug_view, project_slug_view, workspace_slug_view
 from apps.tracker import views as tracker_views
 
@@ -147,9 +152,44 @@ urlpatterns = [
         name='project_users_data',
     ),
     path(
+        '<slug:workspace_slug>/projects/<int:project_id>/users/table-data',
+        project_slug_view(views.project_users_table_data),
+        name='project_users_table_data',
+    ),
+    path(
         '<slug:workspace_slug>/projects/<int:project_id>/users/options',
         project_slug_view(views.project_user_options),
         name='project_user_options',
+    ),
+    path(
+        '<slug:workspace_slug>/projects/<int:project_id>/analytics/variant-status',
+        project_slug_view(views.project_analytics_variant_status),
+        name='project_analytics_variant_status',
+    ),
+    path(
+        '<slug:workspace_slug>/projects/<int:project_id>/company-attribute-filter-preview',
+        project_slug_view(company_attribute_filter_views.project_company_attribute_filter_preview),
+        name='project_company_attribute_filter_preview',
+    ),
+    path(
+        '<slug:workspace_slug>/projects/<int:project_id>/company-segments',
+        project_slug_view(company_segment_views.project_company_segments),
+        name='project_company_segments',
+    ),
+    path(
+        '<slug:workspace_slug>/projects/<int:project_id>/company-segments/create',
+        project_slug_view(company_segment_views.create_project_company_segment),
+        name='create_project_company_segment',
+    ),
+    path(
+        '<slug:workspace_slug>/projects/<int:project_id>/company-segments/<str:segment_id>/update',
+        project_slug_view(company_segment_views.update_project_company_segment),
+        name='update_project_company_segment',
+    ),
+    path(
+        '<slug:workspace_slug>/projects/<int:project_id>/company-segments/<str:segment_id>/delete',
+        project_slug_view(company_segment_views.delete_project_company_segment),
+        name='delete_project_company_segment',
     ),
     path(
         '<slug:workspace_slug>/projects/<int:project_id>/users/<str:user_id>/table-data',
@@ -162,17 +202,42 @@ urlpatterns = [
         name='project_user_detail',
     ),
     path(
-        '<slug:workspace_slug>/projects/<int:project_id>/settings',
+        '<slug:workspace_slug>/projects/<int:project_id>/settings/setup',
         project_slug_view(views.project_settings),
         name='project_settings',
     ),
     path(
-        '<slug:workspace_slug>/projects/<int:project_id>/product-areas',
+        '<slug:workspace_slug>/projects/<int:project_id>/settings',
+        project_slug_view(views.project_settings),
+        name='legacy_project_settings',
+    ),
+    path(
+        '<slug:workspace_slug>/projects/<int:project_id>/settings/company-attributes',
+        project_slug_view(company_attribute_views.project_company_attributes),
+        name='project_company_attributes',
+    ),
+    path(
+        '<slug:workspace_slug>/projects/<int:project_id>/settings/company-attributes/table-data',
+        project_slug_view(company_attribute_views.project_company_attributes_table_data),
+        name='project_company_attributes_table_data',
+    ),
+    path(
+        '<slug:workspace_slug>/projects/<int:project_id>/settings/company-attributes/definitions',
+        project_slug_view(company_attribute_views.save_project_company_attributes),
+        name='save_project_company_attributes',
+    ),
+    path(
+        '<slug:workspace_slug>/projects/<int:project_id>/settings/company-attributes/companies/<str:company_id>/values',
+        project_slug_view(company_attribute_views.save_project_company_attribute_values),
+        name='save_project_company_attribute_values',
+    ),
+    path(
+        '<slug:workspace_slug>/projects/<int:project_id>/settings/product-areas',
         project_slug_view(views.project_product_areas),
         name='project_product_areas',
     ),
     path(
-        '<slug:workspace_slug>/projects/<int:project_id>/product-areas/update-guidance',
+        '<slug:workspace_slug>/projects/<int:project_id>/settings/product-areas/update-guidance',
         project_slug_view(views.update_page_structure_guidance),
         name='update_page_structure_guidance',
     ),
@@ -207,9 +272,19 @@ urlpatterns = [
         name='recordings',
     ),
     path(
+        '<slug:workspace_slug>/projects/<int:project_id>/visits/filter-options',
+        project_slug_view(tracker_views.visits_filter_options),
+        name='visits_filter_options',
+    ),
+    path(
         '<slug:workspace_slug>/projects/<int:project_id>/visits/<uuid:session_id>/data',
         project_slug_view(tracker_views.get_consolidated_data),
         name='get_consolidated_data',
+    ),
+    path(
+        '<slug:workspace_slug>/projects/<int:project_id>/visits/<uuid:session_id>/stream',
+        project_slug_view(tracker_views.replay_stream),
+        name='replay_stream',
     ),
     path(
         '<slug:workspace_slug>/projects/<int:project_id>/visits/<uuid:session_id>',

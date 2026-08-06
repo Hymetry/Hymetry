@@ -3,6 +3,18 @@
   const bodyElement = globalScope.document?.body;
   const pageDetailsHelpers = globalScope.HymetryPageDetailsHelpers || {};
   const metricDynamicsHelpers = globalScope.HymetryMetricDynamics || {};
+  const tooltipUi = globalScope.HymetryAnalyticsTooltips || {
+    echarts: (options = {}) => options,
+    render: (options = {}) => {
+      const sections = Array.isArray(options.sections) && options.sections.length
+        ? options.sections
+        : [{ rows: options.rows || [] }];
+      const title = options.title ? `<div style="margin-bottom:6px;font-weight:600;">${escapeHtml(options.title)}</div>` : "";
+      const body = sections.map((section, sectionIndex) => `${sectionIndex ? '<div style="border-top:1px solid #e2e8f0;margin:6px 0;"></div>' : ""}${(section.rows || []).map((row) => `<div style="display:flex;justify-content:space-between;gap:16px;"><span>${escapeHtml(row.label)}</span><strong>${escapeHtml(row.value)}</strong></div>`).join("")}`).join("");
+      return `<div>${title}${body}</div>`;
+    },
+    text: (rows = []) => rows.map((row) => `${row.label}: ${row.value}`).join(". ")
+  };
   const pageDetailsPeriodOptions = pageDetailsHelpers.PERIOD_OPTIONS || [7, 30, 90, 180];
   const defaultPageDetailsPeriod = pageDetailsHelpers.DEFAULT_PERIOD_DAYS || 30;
   const coercePageDetailPeriod = pageDetailsHelpers.coercePageDetailPeriod || ((value) => (pageDetailsPeriodOptions.includes(Number(value)) ? Number(value) : defaultPageDetailsPeriod));
@@ -21,8 +33,8 @@
     return {
       actualSeries: current,
       current,
-      currentStraightTrendSeries: current,
-      currentTrend: current,
+      currentStraightTrendSeries: [],
+      currentTrend: [],
       benchmarkStraightTrendSeries: [],
       benchmark: [],
       benchmarkUnavailableReason: "Benchmark unavailable: not enough comparable data.",
@@ -31,6 +43,9 @@
       hiddenPeerTraceCount: 0
     };
   });
+  const getMetricDynamicsShape = metricDynamicsHelpers.getMetricDynamicsShape
+    || (() => ({ name: "cumulative_total", step: false, filled: true, selfTrend: false }));
+  const buildStraightTrendLine = metricDynamicsHelpers.buildStraightTrendLine || (() => []);
   const setMetricDynamicsLoadingState = metricDynamicsHelpers.setMetricDynamicsLoadingState || (() => false);
   const getMetricDynamicsAxisBounds = metricDynamicsHelpers.getMetricDynamicsAxisBounds || (() => ({ min: "dataMin", max: "dataMax" }));
   const shouldShowRelatedPages = pageDetailsHelpers.shouldShowRelatedPages || ((rows, currentId) => Array.isArray(rows) && rows.some((row) => row.pageId !== currentId && row.page_rule_id !== currentId));
@@ -76,7 +91,7 @@
   }
 
   const pageSearchDebounceMs = 220;
-  const recentPagesStorageKey = "hymetry:recent-pages";
+  const recentPagesStorageKey = `hymetry:recent-pages:${document.body?.dataset.projectId || "unknown-project"}`;
   let currentOverviewData = null;
   let currentDetailOverviewData = null;
   let currentPageDetailsData = null;
@@ -162,6 +177,7 @@
   let detailPageSelectorMounted = false;
   let pageMetricsSortMounted = false;
   let detailPaginatedTableSortMounted = false;
+  let tableChangeTooltipId = 0;
   const overviewPageSearchState = {
     activeIndex: -1,
     isOpen: false,
@@ -182,6 +198,17 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
+  }
+
+  function tableHeaderTooltip(label, description, tooltipId, options = {}) {
+    const alignmentClass = options.align === "end" ? " metric-header-tooltip--end" : "";
+
+    return `
+      <span class="metric-header-tooltip${alignmentClass}" tabindex="0" aria-describedby="${escapeHtml(tooltipId)}">
+        ${escapeHtml(label)}
+        <span id="${escapeHtml(tooltipId)}" class="metric-header-tooltip__content" role="tooltip">${escapeHtml(description)}</span>
+      </span>
+    `;
   }
 
   function formatNumber(value) {
@@ -250,13 +277,17 @@
   function formatDurationShort(totalSeconds) {
     const seconds = Math.max(0, Math.round(Number(totalSeconds) || 0));
     const hours = Math.floor(seconds / 3600);
-    const minutes = Math.round((seconds % 3600) / 60);
+    const minutes = Math.floor((seconds % 3600) / 60);
 
     if (hours > 0) {
       return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
     }
 
-    return `${minutes}m`;
+    if (minutes > 0) {
+      return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+    }
+
+    return `${seconds}s`;
   }
 
   function clampPct(value) {
@@ -386,6 +417,14 @@
         return;
       }
 
+      if (
+        value === null ||
+        value === undefined ||
+        typeof value === "boolean" ||
+        (typeof value === "string" && !value.trim())
+      ) {
+        return;
+      }
       const numericValue = Number(value);
       if (Number.isFinite(numericValue)) {
         output.push(numericValue);
@@ -496,6 +535,17 @@
     series: chartSeriesColors
   };
 
+  const TOP_PAGES_TIME_SERIES_LIMIT = 5;
+
+  function currentStraightTrendLineStyle(color) {
+    return {
+      color,
+      type: [6, 4],
+      opacity: 0.58,
+      width: 2
+    };
+  }
+
   let productAreaColorByName = new Map();
   const productAreaColorResolver = globalScope.HymetryProductAreaColors?.createResolver({
     resolveColor: tailwindColor,
@@ -590,6 +640,7 @@
     addColorLookup(data?.product_area_colors);
     addColorLookup(data?.productAreaColors);
     addMany(data?.product_area_summary);
+    addMany(data?.page_selector_rows);
     addMany(data?.rows);
     addMany(data?.change_aware_rows);
 
@@ -790,12 +841,84 @@
     return row?.page_group || row?.productAreaName || row?.product_area || row?.product_area_name || "Unassigned";
   }
 
+  function slugifyPageSearchArea(value) {
+    return String(value ?? "")
+      .normalize("NFKD")
+      .replace(/[^\x00-\x7F]/g, "")
+      .toLowerCase()
+      .replace(/[^\w\s-]/g, "")
+      .replace(/[-\s]+/g, "-")
+      .replace(/^[-_]+|[-_]+$/g, "");
+  }
+
+  function pageSearchAreaKey(row) {
+    return row?.product_area_key
+      || row?.productAreaKey
+      || row?.product_area_id
+      || row?.productAreaId
+      || slugifyPageSearchArea(pageSearchArea(row))
+      || "unassigned";
+  }
+
+  function pageSearchIdentity(row) {
+    const backendKey = row?.page_display_key || row?.pageDisplayKey;
+
+    if (backendKey) {
+      return normalizePageSearchValue(backendKey);
+    }
+
+    const normalizedName = normalizePageSearchValue(pageSearchName(row));
+
+    if (!normalizedName) {
+      return `id:${pageRuleId(row)}`;
+    }
+
+    return `${normalizePageSearchValue(pageSearchAreaKey(row)) || "unassigned"}::${normalizedName}`;
+  }
+
+  function disambiguatePageLabels(items, nameForItem, areaNameForItem, areaKeyForItem) {
+    const safeItems = Array.isArray(items) ? items : [];
+    const names = safeItems.map((item) => String(nameForItem(item) || "Page").trim() || "Page");
+    const normalizedNames = names.map((name) => normalizePageSearchValue(name));
+    const nameCounts = normalizedNames.reduce((counts, name) => {
+      counts.set(name, (counts.get(name) || 0) + 1);
+      return counts;
+    }, new Map());
+    const labels = safeItems.map((item, index) => {
+      if ((nameCounts.get(normalizedNames[index]) || 0) <= 1) return names[index];
+      return `${names[index]} \u00b7 ${areaNameForItem(item) || "Unassigned"}`;
+    });
+    const labelCounts = labels.reduce((counts, label) => {
+      const key = normalizePageSearchValue(label);
+      counts.set(key, (counts.get(key) || 0) + 1);
+      return counts;
+    }, new Map());
+
+    return labels.map((label, index) => {
+      if ((labelCounts.get(normalizePageSearchValue(label)) || 0) <= 1) return label;
+      const areaKey = String(areaKeyForItem(safeItems[index]) || "").trim();
+      return areaKey ? `${label} (${areaKey})` : label;
+    });
+  }
+
+  function pageChartLabels(rows) {
+    return disambiguatePageLabels(
+      rows,
+      pageSearchName,
+      pageSearchArea,
+      pageSearchAreaKey
+    );
+  }
+
   function getPageSearchRows(data = null) {
     const sourceRows = [
+      ...(Array.isArray(data?.page_selector_rows) ? data.page_selector_rows : []),
       ...(Array.isArray(data?.rows) ? data.rows : []),
       ...(Array.isArray(data?.change_aware_rows) ? data.change_aware_rows : []),
+      ...(Array.isArray(currentDetailOverviewData?.page_selector_rows) ? currentDetailOverviewData.page_selector_rows : []),
       ...(Array.isArray(currentDetailOverviewData?.rows) ? currentDetailOverviewData.rows : []),
       ...(Array.isArray(currentDetailOverviewData?.change_aware_rows) ? currentDetailOverviewData.change_aware_rows : []),
+      ...(Array.isArray(currentOverviewData?.page_selector_rows) ? currentOverviewData.page_selector_rows : []),
       ...(Array.isArray(currentOverviewData?.rows) ? currentOverviewData.rows : []),
       ...(Array.isArray(currentOverviewData?.change_aware_rows) ? currentOverviewData.change_aware_rows : [])
     ];
@@ -866,6 +989,21 @@
     });
   }
 
+  function dedupePageSearchRows(rows) {
+    const seen = new Set();
+
+    return rows.filter((row) => {
+      const key = pageSearchIdentity(row);
+
+      if (seen.has(key)) {
+        return false;
+      }
+
+      seen.add(key);
+      return true;
+    });
+  }
+
   function getInitialPageSearchResults(rows, options = {}) {
     const excludedId = options.excludePageRuleId || "";
     const rowsById = new Map(rows.map((row) => [pageRuleId(row), row]));
@@ -873,10 +1011,18 @@
     const recentPages = recentPageIds
       .map((id) => rowsById.get(id))
       .filter((row) => row && pageRuleId(row) !== excludedId);
-    const fallbackPages = sortPageSearchRows(rows, options.preferredArea)
+    const fallbackPages = rows.slice()
+      .sort((a, b) => pageSearchName(a).localeCompare(pageSearchName(b)))
       .filter((row) => pageRuleId(row) !== excludedId && !recentPageIds.includes(pageRuleId(row)));
+    const preferredResults = dedupePageSearchRows([...recentPages, ...fallbackPages]);
 
-    return [...recentPages, ...fallbackPages].slice(0, 8);
+    if (preferredResults.length) {
+      return preferredResults.slice(0, 8);
+    }
+
+    return dedupePageSearchRows(rows.slice()
+      .sort((a, b) => pageSearchName(a).localeCompare(pageSearchName(b))))
+      .slice(0, 8);
   }
 
   function getPageSearchMatches(rows, query, options = {}) {
@@ -887,7 +1033,7 @@
       return getInitialPageSearchResults(rows, options);
     }
 
-    return sortPageSearchRows(rows, options.preferredArea)
+    return dedupePageSearchRows(sortPageSearchRows(rows, options.preferredArea)
       .filter((row) => {
         if (pageRuleId(row) === excludedId) {
           return false;
@@ -896,7 +1042,7 @@
         const searchableText = `${pageSearchName(row)} ${pageSearchArea(row)} ${pageRuleId(row)}`.toLowerCase();
 
         return searchableText.includes(normalizedQuery);
-      })
+      }))
       .slice(0, 8);
   }
 
@@ -1059,6 +1205,8 @@
     }
 
     overviewPageSearchMounted = true;
+
+    root.addEventListener("overview-quick-jumper:close", closeOverviewPageSearchDropdown);
 
     input.addEventListener("input", () => {
       scheduleOverviewPageSearchUpdate(input.value);
@@ -1471,16 +1619,134 @@
     `;
   }
 
-  function createKpiTrendOption(values, scopeElement = null, labels = []) {
-    const series = Array.isArray(values) ? values.map((value) => Number(value) || 0) : [];
-    const trendLabels = alignTrendLabels(labels, series.length);
+  // The card value is formatted server-side but its trend points are raw, so the
+  // KPI carries the unit its series is measured in.
+  function formatKpiTrendValue(value, trendFormat) {
+    if (finiteNumericValues([value]).length === 0) {
+      return "Unavailable";
+    }
+
+    if (trendFormat === "duration") {
+      return formatDurationWithSeconds(value);
+    }
+
+    if (trendFormat === "percent") {
+      return `${formatNumber(Math.round(Number(value) || 0))}%`;
+    }
+
+    return formatNumber(value);
+  }
+
+  // Two period totals side by side, so the reader compares the bar lengths
+  // rather than following a line that has no days in between.
+  function createKpiPeriodComparisonOption(kpi, scopeElement = null) {
+    const [previousValue, currentValue] = finiteNumericValues(kpi.trend_values).length === 2
+      ? kpi.trend_values.map((value) => Number(value) || 0)
+      : [0, 0];
+    const labels = Array.isArray(kpi.trend_labels) && kpi.trend_labels.length === 2
+      ? kpi.trend_labels
+      : ["Previous period", "Selected period"];
     const trendTheme = createScopedTrendTheme(scopeElement, "--pages-kpi-trend", "blue-400", 0.14);
+    const metricLabel = kpi.trend_label || "Companies";
+    const deltaValue = Number(kpi.trend_delta_value ?? kpi.delta_value);
+    // Selected period reads first, so it sits on top with the stronger colour;
+    // the previous period keeps the same hue at lower weight.
+    const bars = [
+      { label: labels[1], value: currentValue, color: trendTheme.line },
+      { label: labels[0], value: previousValue, color: rgbaFromHex(trendTheme.line, 0.38) || trendTheme.fill }
+    ];
 
     return {
       animation: false,
-      tooltip: {
+      tooltip: tooltipUi.echarts({
+        trigger: "item",
+        appendTo: "body",
+        confine: false,
+        formatter: (params) => {
+          const bar = bars[params.dataIndex] || {};
+
+          return tooltipUi.render({
+            title: bar.label || "",
+            rows: [
+              { label: metricLabel, value: formatNumber(bar.value) },
+              ...(Number.isFinite(deltaValue)
+                ? [{ label: "Change", value: formatSignedPercent(deltaValue) }]
+                : [])
+            ]
+          });
+        }
+      }),
+      grid: {
+        left: 88,
+        right: 40,
+        top: 2,
+        bottom: 2
+      },
+      xAxis: {
+        type: "value",
+        show: false,
+        min: 0,
+        max: compactAxisMax(bars.map((bar) => bar.value))
+      },
+      yAxis: {
+        type: "category",
+        inverse: true,
+        data: bars.map((bar) => bar.label),
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: {
+          color: chartTheme.colors.mutedText,
+          fontSize: 11
+        }
+      },
+      series: [
+        {
+          type: "bar",
+          barWidth: 14,
+          data: bars.map((bar) => ({ value: bar.value, itemStyle: { color: bar.color } })),
+          itemStyle: {
+            borderRadius: [0, 3, 3, 0]
+          },
+          label: {
+            show: true,
+            position: "right",
+            color: chartTheme.colors.text,
+            fontSize: 11,
+            fontWeight: 500,
+            formatter: (params) => formatNumber(params.value)
+          },
+          emphasis: {
+            disabled: true
+          }
+        }
+      ]
+    };
+  }
+
+  function createKpiTrendOption(
+    values,
+    scopeElement = null,
+    labels = [],
+    metricLabel = "Value",
+    trendFormat = "number",
+    trendScope = "period_to_date"
+  ) {
+    const series = Array.isArray(values)
+      ? values.map((value) => {
+          const numbers = finiteNumericValues([value]);
+          return numbers.length ? numbers[0] : null;
+        })
+      : [];
+    const trendLabels = alignTrendLabels(labels, series.length);
+    const trendTheme = createScopedTrendTheme(scopeElement, "--pages-kpi-trend", "blue-400", 0.14);
+    const finitePointCount = finiteNumericValues(series).length;
+
+    return {
+      animation: false,
+      tooltip: tooltipUi.echarts({
         trigger: "axis",
-        confine: true,
+        appendTo: "body",
+        confine: false,
         axisPointer: {
           type: "line",
           lineStyle: {
@@ -1488,8 +1754,21 @@
             width: 1
           }
         },
-        valueFormatter: (value) => formatNumber(value)
-      },
+        formatter: (params) => {
+          const item = (Array.isArray(params) ? params : [params])[0];
+          const dateLabel = item?.axisValueLabel || "";
+          const title = trendScope === "daily"
+            ? dateLabel
+            : (dateLabel ? `Through ${dateLabel}` : "Period to date");
+
+          return item
+            ? tooltipUi.render({
+                title,
+                rows: [{ label: metricLabel, value: formatKpiTrendValue(item.value, trendFormat) }]
+              })
+            : "";
+        }
+      }),
       grid: {
         left: 0,
         right: 0,
@@ -1512,8 +1791,11 @@
         {
           type: "line",
           data: series,
-          smooth: true,
-          symbol: "none",
+          // A daily observation is a real point and must not be smoothed away.
+          smooth: trendScope !== "daily",
+          connectNulls: false,
+          symbol: finitePointCount === 1 ? "circle" : "none",
+          symbolSize: 6,
           lineStyle: {
             color: trendTheme.line,
             width: 2
@@ -1529,17 +1811,38 @@
     };
   }
 
+  function isKpiPeriodComparison(kpi) {
+    return kpi?.trend_scope === "period_comparison"
+      && finiteNumericValues(kpi?.trend_values).length === 2;
+  }
+
   function mountKpiTrendCharts(container, kpis, labels = []) {
     container.querySelectorAll("[data-kpi-trend-index]").forEach((element) => {
       const index = Number(element.getAttribute("data-kpi-trend-index"));
       const kpi = kpis[index];
 
-      if (!kpi?.trend_values?.length) {
+      if (finiteNumericValues(kpi?.trend_values).length === 0) {
         return;
       }
 
-      mountChart(element, createKpiTrendOption(kpi.trend_values, element, kpi.trend_labels || labels));
+      if (isKpiPeriodComparison(kpi)) {
+        mountChart(element, createKpiPeriodComparisonOption(kpi, element));
+        return;
+      }
+
+      mountChart(element, createKpiTrendOption(
+        kpi.trend_values,
+        element,
+        kpi.trend_labels || labels,
+        kpi.trend_label || kpi.label || "Value",
+        kpi.trend_format,
+        kpi.trend_scope
+      ));
     });
+  }
+
+  function kpiNoTrendContext(kpi) {
+    return String(kpi?.context_line || "").trim();
   }
 
   function renderKpiCards(data) {
@@ -1570,6 +1873,8 @@
       const valueElement = fragment.querySelector("[data-pages-kpi-value]");
       const deltaElement = fragment.querySelector("[data-pages-kpi-delta]");
       const trendElement = fragment.querySelector("[data-pages-kpi-trend]");
+      const contextElement = fragment.querySelector("[data-pages-kpi-context]");
+      const hasTrend = finiteNumericValues(kpi?.trend_values).length > 0;
 
       if (labelElement) {
         labelElement.textContent = kpi.label;
@@ -1585,7 +1890,24 @@
       }
 
       if (trendElement) {
-        trendElement.setAttribute("data-kpi-trend-index", index);
+        trendElement.hidden = !hasTrend;
+        if (hasTrend) {
+          trendElement.setAttribute("data-kpi-trend-index", index);
+        } else {
+          trendElement.removeAttribute("data-kpi-trend-index");
+        }
+
+        // Two labelled bars need more vertical room than a sparkline.
+        if (isKpiPeriodComparison(kpi)) {
+          trendElement.classList.remove("h-12");
+          trendElement.classList.add("h-16");
+        }
+      }
+
+      if (contextElement) {
+        const contextText = hasTrend ? "" : kpiNoTrendContext(kpi);
+        contextElement.textContent = contextText;
+        contextElement.hidden = !contextText;
       }
 
       grid.appendChild(fragment);
@@ -1615,9 +1937,10 @@
 
     return {
       animation: false,
-      tooltip: {
+      tooltip: tooltipUi.echarts({
         trigger: "axis",
-        confine: true,
+        appendTo: "body",
+        confine: false,
         axisPointer: {
           type: "line",
           lineStyle: {
@@ -1625,8 +1948,21 @@
             width: 1
           }
         },
-        valueFormatter: (value) => formatProductAreaTrendValue(value, config.metricKey)
-      },
+        formatter: (params) => {
+          const item = (Array.isArray(params) ? params : [params])[0];
+          // This series is per-day, so the point is the value on that date
+          // rather than the running total up to it.
+          return item
+            ? tooltipUi.render({
+                title: item.axisValueLabel || "",
+                rows: [{
+                  label: config.label || "Value",
+                  value: formatProductAreaTrendValue(item.value, config.metricKey)
+                }]
+              })
+            : "";
+        }
+      }),
       grid: {
         left: 0,
         right: 0,
@@ -1642,21 +1978,20 @@
       yAxis: {
         type: "value",
         show: false,
-        min: "dataMin",
-        max: compactAxisMax(series)
+        // Every row in a metric column shares this scale, so a tall line means
+        // more activity than the row above it rather than just a busier row.
+        min: 0,
+        max: Number.isFinite(Number(config.axisMax)) ? Number(config.axisMax) : compactAxisMax(series)
       },
       series: [
         {
           type: "line",
           data: series,
-          smooth: true,
+          smooth: false,
           symbol: "none",
           lineStyle: {
             color: trendTheme.line,
             width: 2
-          },
-          areaStyle: {
-            color: trendTheme.fill
           },
           emphasis: {
             disabled: true
@@ -1666,12 +2001,13 @@
     };
   }
 
-  function registerProductAreaTrendPayload({ areaName, metricLabel, metricKey, trendValues }) {
+  function registerProductAreaTrendPayload({ areaName, metricLabel, metricKey, trendValues, axisMax }) {
     const index = productAreaTrendPayloads.length;
 
     productAreaTrendPayloads.push({
       label: `${areaName} ${metricLabel}`,
       metricKey,
+      axisMax,
       values: trendValues
     });
 
@@ -1764,16 +2100,27 @@
 
     switch (metricKey) {
       case "companies":
-        return { valueLabel: formatNumber(row.companies_count), currentValue: row.companies_count, deltaValue: comparisonAvailable ? row.companies_change_pct : 0, deltaUnit: "%", barValue: row.companies_bar_value, comparisonAvailable };
+        return { valueLabel: formatNumber(row.companies_count), valueType: "count", currentValue: row.companies_count, deltaValue: comparisonAvailable ? row.companies_change_pct : 0, deltaLabel: row.deltas?.companies?.label, deltaUnit: "%", barValue: row.companies_bar_value, comparisonAvailable };
       case "adoption":
-        return { valueLabel: `${row.adoption_pct}%`, currentValue: row.adoption_pct, deltaValue: comparisonAvailable ? row.adoption_change_pp : 0, deltaUnit: "pp", barValue: row.adoption_bar_value, comparisonAvailable };
+        return { valueLabel: `${row.adoption_pct}%`, valueType: "percent", currentValue: row.adoption_pct, deltaValue: comparisonAvailable ? row.adoption_change_pp : 0, deltaLabel: row.deltas?.adoption?.label, deltaUnit: "pp", barValue: row.adoption_bar_value, comparisonAvailable };
       case "users":
-        return { valueLabel: formatNumber(row.users_count), currentValue: row.users_count, deltaValue: comparisonAvailable ? row.users_change_pct : 0, deltaUnit: "%", barValue: row.users_bar_value, comparisonAvailable };
+        return { valueLabel: formatNumber(row.users_count), valueType: "count", currentValue: row.users_count, deltaValue: comparisonAvailable ? row.users_change_pct : 0, deltaLabel: row.deltas?.users?.label, deltaUnit: "%", barValue: row.users_bar_value, comparisonAvailable };
       case "engaged":
-        return { valueLabel: formatDurationShort(row.engaged_seconds), currentValue: row.engaged_seconds, deltaValue: comparisonAvailable ? row.engaged_change_pct : 0, deltaUnit: "%", barValue: row.engaged_bar_value, comparisonAvailable };
+        return { valueLabel: formatDurationShort(row.engaged_seconds), valueType: "duration", currentValue: row.engaged_seconds, deltaValue: comparisonAvailable ? row.engaged_change_pct : 0, deltaLabel: row.deltas?.engaged?.label, deltaUnit: "%", barValue: row.engaged_bar_value, comparisonAvailable };
       default:
         return null;
     }
+  }
+
+  // The sparklines are read down a column, comparing product areas with each
+  // other, so each column needs one scale built from every row in it.
+  function getProductAreaTrendScaleByMetric(rows) {
+    return productAreaSummaryMetrics.reduce((lookup, metric) => {
+      lookup[metric.key] = compactAxisMax(
+        rows.flatMap((row) => row.trends?.[metric.key] || []),
+      );
+      return lookup;
+    }, {});
   }
 
   function getProductAreaChangeScaleByMetric(rows) {
@@ -1799,7 +2146,7 @@
 
   function renderProductAreaSplitChangeDeltaCell(display, metric, maxAbsDelta) {
     if (display.comparisonAvailable === false) {
-      const tooltip = renderPeriodChangeTooltip(display, metric);
+      const tooltip = renderPeriodChangeTooltip(display);
 
       return `
         <div class="pages-change-delta metric-header-tooltip" data-change-direction="neutral" style="--pages-change-bar-width: 6px;" tabindex="0" aria-label="${escapeHtml(`${metric.label}. ${tooltip.tooltipText}`)}" aria-describedby="${tooltip.tooltipId}">
@@ -1818,7 +2165,7 @@
     const trackWidth = direction === "negative" ? 17 : 36;
     const barWidth = roundedDelta === 0 ? 6 : Math.max(4, Math.round((Math.abs(deltaValue) / Math.max(maxAbsDelta, 1)) * trackWidth));
     const formattedDelta = formatDelta(deltaValue, display.deltaUnit);
-    const tooltip = renderPeriodChangeTooltip(display, metric);
+    const tooltip = renderPeriodChangeTooltip(display);
 
     return `
       <div class="pages-change-delta metric-header-tooltip" data-change-direction="${direction}" style="--pages-change-bar-width: ${barWidth}px;" tabindex="0" aria-label="${escapeHtml(`${metric.label}. ${tooltip.tooltipText}`)}" aria-describedby="${tooltip.tooltipId}">
@@ -1831,14 +2178,20 @@
     `;
   }
 
-  function renderProductAreaMetricCell({ areaName, row, metric, trendValues, maxAbsDelta }) {
+  function renderProductAreaMetricCell({ areaName, row, metric, trendValues, maxAbsDelta, trendAxisMax }) {
     const display = getProductAreaMetricDisplay(row, metric.key);
 
     if (!display) {
       return "";
     }
 
-    const trendIndex = registerProductAreaTrendPayload({ areaName, metricLabel: metric.label, metricKey: metric.key, trendValues });
+    const trendIndex = registerProductAreaTrendPayload({
+      areaName,
+      metricLabel: metric.label,
+      metricKey: metric.key,
+      trendValues,
+      axisMax: trendAxisMax
+    });
 
     return `
       <td class="product-area-metric-cell pages-split-change-cell py-3.5 align-middle" data-split-metric="${escapeHtml(metric.key)}">
@@ -1865,6 +2218,7 @@
     const rows = buildProductAreaSummaryRows(data);
     productAreaTrendPayloads = [];
     const changeScaleByMetric = getProductAreaChangeScaleByMetric(rows);
+    const trendScaleByMetric = getProductAreaTrendScaleByMetric(rows);
 
     if (!rows.length) {
       tbody.innerHTML = `<tr><td colspan="6" class="px-6 py-10 text-center text-slate-500">No product area data found for this period.</td></tr>`;
@@ -1884,28 +2238,32 @@
               row,
               metric: productAreaSummaryMetrics[0],
               trendValues: row.trends.companies,
-              maxAbsDelta: changeScaleByMetric.companies
+              maxAbsDelta: changeScaleByMetric.companies,
+              trendAxisMax: trendScaleByMetric.companies
             })}
             ${renderProductAreaMetricCell({
               areaName,
               row,
               metric: productAreaSummaryMetrics[1],
               trendValues: row.trends.adoption,
-              maxAbsDelta: changeScaleByMetric.adoption
+              maxAbsDelta: changeScaleByMetric.adoption,
+              trendAxisMax: trendScaleByMetric.adoption
             })}
             ${renderProductAreaMetricCell({
               areaName,
               row,
               metric: productAreaSummaryMetrics[2],
               trendValues: row.trends.users,
-              maxAbsDelta: changeScaleByMetric.users
+              maxAbsDelta: changeScaleByMetric.users,
+              trendAxisMax: trendScaleByMetric.users
             })}
             ${renderProductAreaMetricCell({
               areaName,
               row,
               metric: productAreaSummaryMetrics[3],
               trendValues: row.trends.engaged,
-              maxAbsDelta: changeScaleByMetric.engaged
+              maxAbsDelta: changeScaleByMetric.engaged,
+              trendAxisMax: trendScaleByMetric.engaged
             })}
           </tr>
         `;
@@ -1995,10 +2353,6 @@
     return pageMetricsState.sortKey;
   }
 
-  function getOverviewSearch() {
-    return (document.getElementById("pages-global-search")?.value || "").trim().toLowerCase();
-  }
-
   function sortChangeRows(rows, sortKey) {
     const metric = changeTableMetrics[sortKey] || changeTableMetrics.companies;
 
@@ -2070,73 +2424,77 @@
     return divisor > 0 ? current / divisor : 0;
   }
 
-  function formatCountMetricValue(value, singular, plural = `${singular}s`) {
-    const rounded = Math.round(Number(value) || 0);
-    const unit = Math.abs(rounded) === 1 ? singular : plural;
-
-    return `${formatNumber(rounded)} ${unit}`;
-  }
-
-  function formatPeriodMetricValue(value, metricKey) {
+  function formatPeriodMetricValue(value, valueType, fallbackLabel = "") {
     const numericValue = Number(value) || 0;
 
-    switch (metricKey) {
-      case "companies":
-        return formatCountMetricValue(numericValue, "company", "companies");
-      case "users":
-        return formatCountMetricValue(numericValue, "user");
-      case "visits":
-        return formatCountMetricValue(numericValue, "visit");
-      case "adoption":
-      case "penetration":
-      case "interaction":
-        return `${formatNumber(Math.round(numericValue))}%`;
-      case "engaged":
-      case "avg_visit":
-        return formatDurationShort(numericValue);
-      case "clicks_per_visit":
-        return `${numericValue.toFixed(1)} clicks / visit`;
-      default:
-        return formatNumber(Math.round(numericValue));
+    if (valueType === "percent") {
+      return `${numericValue.toFixed(1)}%`;
     }
+
+    if (valueType === "duration") {
+      return fallbackLabel || formatDurationShort(numericValue);
+    }
+
+    if (valueType === "ratio") {
+      return numericValue.toFixed(1);
+    }
+
+    return formatNumber(Math.round(numericValue));
   }
 
-  function buildPeriodChangeTooltip(display, metric) {
-    const currentValue = Number(display.currentValue) || 0;
+  function formatPeriodDelta(deltaValue, unit) {
+    const numericValue = Number(deltaValue) || 0;
+    const prefix = numericValue > 0 ? "+" : "";
+
+    if (unit === "pp") {
+      return `${prefix}${numericValue.toFixed(1)} pp`;
+    }
+
+    const rounded = Math.round(numericValue * 10) / 10;
+    return `${prefix}${formatNumber(rounded)}%`;
+  }
+
+  function buildPeriodChangeTooltip(display) {
+    const currentLabel = formatPeriodMetricValue(display.currentValue, display.valueType, display.valueLabel);
 
     if (display.comparisonAvailable === false) {
-      return [
-        `Current period: ${formatPeriodMetricValue(currentValue, metric.key)}`,
-        "Previous period: no data",
-        "Change: n/a"
-      ].join("\n");
+      return {
+        rows: [
+          { label: "Current period", value: currentLabel },
+          { label: "Previous period", value: "No data" },
+          { label: "Change", value: "n/a" }
+        ]
+      };
     }
 
     const deltaValue = Number(display.deltaValue) || 0;
-    const previousValue = previousPeriodValue(currentValue, deltaValue, display.deltaUnit);
+    const previousValue = display.deltaLabel === "New"
+      ? 0
+      : previousPeriodValue(display.currentValue, deltaValue, display.deltaUnit);
+    const previousLabel = formatPeriodMetricValue(previousValue, display.valueType);
+    const isNew = previousValue === 0 && Number(display.currentValue) > 0;
 
-    return [
-      `Current period: ${formatPeriodMetricValue(currentValue, metric.key)}`,
-      `Previous period: ${formatPeriodMetricValue(previousValue, metric.key)}`,
-      `Change: ${formatDelta(deltaValue, display.deltaUnit)}`
-    ].join("\n");
+    return {
+      rows: [
+        { label: "Current period", value: currentLabel },
+        { label: "Previous period", value: previousLabel },
+        { label: "Change", value: isNew ? "New" : formatPeriodDelta(deltaValue, display.deltaUnit) }
+      ]
+    };
   }
 
   let periodChangeTooltipId = 0;
 
-  function renderPeriodChangeTooltip(display, metric) {
-    const tooltip = buildPeriodChangeTooltip(display, metric);
+  function renderPeriodChangeTooltip(display) {
+    const tooltip = buildPeriodChangeTooltip(display);
     const tooltipId = `period-change-tooltip-${periodChangeTooltipId}`;
 
     periodChangeTooltipId += 1;
 
     return {
       tooltipId,
-      tooltipText: tooltip.replace(/\s+/g, " "),
-      tooltipHtml: tooltip
-        .split("\n")
-        .map((line) => `<span class="pages-change-delta__tooltip-row">${escapeHtml(line)}</span>`)
-        .join("")
+      tooltipText: tooltipUi.text(tooltip.rows),
+      tooltipHtml: tooltipUi.render({ rows: tooltip.rows })
     };
   }
 
@@ -2165,23 +2523,23 @@
 
     switch (metricKey) {
       case "companies":
-        return { valueLabel: formatNumber(row.companies_count), currentValue: row.companies_count, deltaValue: hasComparison ? row.companies_change_pct : 0, deltaUnit: "%", barValue: row.companies_bar_value, barClass: "bg-c-blue", comparisonAvailable: hasComparison };
+        return { valueLabel: formatNumber(row.companies_count), valueType: "count", currentValue: row.companies_count, deltaValue: hasComparison ? row.companies_change_pct : 0, deltaLabel: row.deltas?.companies?.label, deltaUnit: "%", barValue: row.companies_bar_value, barClass: "bg-c-blue", comparisonAvailable: hasComparison };
       case "adoption":
-        return { valueLabel: `${row.adoption_pct}%`, currentValue: row.adoption_pct, deltaValue: hasComparison ? row.adoption_change_pp : 0, deltaUnit: "pp", barValue: row.adoption_bar_value, barClass: "bg-c-teal", comparisonAvailable: hasComparison };
+        return { valueLabel: `${row.adoption_pct}%`, valueType: "percent", currentValue: row.adoption_pct, deltaValue: hasComparison ? row.adoption_change_pp : 0, deltaLabel: row.deltas?.adoption?.label, deltaUnit: "pp", barValue: row.adoption_bar_value, barClass: "bg-c-teal", comparisonAvailable: hasComparison };
       case "users":
-        return { valueLabel: formatNumber(row.users_count), currentValue: row.users_count, deltaValue: hasComparison ? row.users_change_pct : 0, deltaUnit: "%", barValue: row.users_bar_value, barClass: "bg-c-green", comparisonAvailable: hasComparison };
+        return { valueLabel: formatNumber(row.users_count), valueType: "count", currentValue: row.users_count, deltaValue: hasComparison ? row.users_change_pct : 0, deltaLabel: row.deltas?.users?.label, deltaUnit: "%", barValue: row.users_bar_value, barClass: "bg-c-green", comparisonAvailable: hasComparison };
       case "penetration":
-        return { valueLabel: `${row.penetration_pct}%`, currentValue: row.penetration_pct, deltaValue: hasComparison ? row.penetration_change_pp : 0, deltaUnit: "pp", barValue: row.penetration_bar_value, barClass: "bg-c-light-blue", comparisonAvailable: hasComparison };
+        return { valueLabel: `${row.penetration_pct}%`, valueType: "percent", currentValue: row.penetration_pct, deltaValue: hasComparison ? row.penetration_change_pp : 0, deltaLabel: row.deltas?.penetration?.label, deltaUnit: "pp", barValue: row.penetration_bar_value, barClass: "bg-c-light-blue", comparisonAvailable: hasComparison };
       case "visits":
-        return { valueLabel: formatNumber(row.visits_count), currentValue: row.visits_count, deltaValue: hasComparison ? row.visits_change_pct : 0, deltaUnit: "%", barValue: row.visits_bar_value, barClass: "bg-c-purple", comparisonAvailable: hasComparison };
+        return { valueLabel: formatNumber(row.visits_count), valueType: "count", currentValue: row.visits_count, deltaValue: hasComparison ? row.visits_change_pct : 0, deltaLabel: row.deltas?.visits?.label, deltaUnit: "%", barValue: row.visits_bar_value, barClass: "bg-c-purple", comparisonAvailable: hasComparison };
       case "engaged":
-        return { valueLabel: row.engaged_label, currentValue: row.engaged_seconds, deltaValue: hasComparison ? row.engaged_change_pct : 0, deltaUnit: "%", barValue: row.engaged_bar_value, barClass: "bg-c-orange", comparisonAvailable: hasComparison };
+        return { valueLabel: row.engaged_label, valueType: "duration", currentValue: row.engaged_seconds, deltaValue: hasComparison ? row.engaged_change_pct : 0, deltaLabel: row.deltas?.engaged?.label, deltaUnit: "%", barValue: row.engaged_bar_value, barClass: "bg-c-orange", comparisonAvailable: hasComparison };
       case "avg_visit":
-        return { valueLabel: row.avg_visit_label, currentValue: row.avg_visit_seconds, deltaValue: hasComparison ? row.avg_visit_change_pct : 0, deltaUnit: "%", barValue: row.avg_visit_bar_value, barClass: "bg-c-rose", comparisonAvailable: hasComparison };
+        return { valueLabel: row.avg_visit_label, valueType: "duration", currentValue: row.avg_visit_seconds, deltaValue: hasComparison ? row.avg_visit_change_pct : 0, deltaLabel: row.deltas?.avg_visit?.label, deltaUnit: "%", barValue: row.avg_visit_bar_value, barClass: "bg-c-rose", comparisonAvailable: hasComparison };
       case "interaction":
-        return { valueLabel: `${row.interaction_pct}%`, currentValue: row.interaction_pct, deltaValue: hasComparison ? row.interaction_change_pp : 0, deltaUnit: "pp", barValue: row.interaction_bar_value, barClass: "bg-c-red", comparisonAvailable: hasComparison };
+        return { valueLabel: `${row.interaction_pct}%`, valueType: "percent", currentValue: row.interaction_pct, deltaValue: hasComparison ? row.interaction_change_pp : 0, deltaLabel: row.deltas?.interaction?.label, deltaUnit: "pp", barValue: row.interaction_bar_value, barClass: "bg-c-red", comparisonAvailable: hasComparison };
       case "clicks_per_visit":
-        return { valueLabel: row.clicks_per_visit.toFixed(1), currentValue: row.clicks_per_visit, deltaValue: hasComparison ? row.clicks_per_visit_change_pct : 0, deltaUnit: "%", barValue: row.clicks_per_visit_bar_value, barClass: "bg-c-brown", comparisonAvailable: hasComparison };
+        return { valueLabel: row.clicks_per_visit.toFixed(1), valueType: "ratio", currentValue: row.clicks_per_visit, deltaValue: hasComparison ? row.clicks_per_visit_change_pct : 0, deltaLabel: row.deltas?.clicks_per_visit?.label, deltaUnit: "%", barValue: row.clicks_per_visit_bar_value, barClass: "bg-c-brown", comparisonAvailable: hasComparison };
       default:
         return null;
     }
@@ -2197,12 +2555,23 @@
     return changeMetricBarCell(metric.valueLabel, metric.deltaValue, metric.deltaUnit, metric.barValue, metric.barClass);
   }
 
-  function actionMetricBarCell(valueLabel, deltaValue, unit, barValue, barClass) {
+  function actionMetricBarCell(valueLabel, currentValue, valueType, deltaValue, unit, barValue, barClass, deltaLabel = "") {
+    const formattedChange = formatDelta(deltaValue, unit);
+    const tooltipId = `top-actions-change-tooltip-${tableChangeTooltipId}`;
+    const tooltip = buildPeriodChangeTooltip({ valueLabel, currentValue, valueType, deltaValue, deltaUnit: unit, deltaLabel });
+    const tooltipText = tooltipUi.text(tooltip.rows);
+    const tooltipHtml = tooltipUi.render({ rows: tooltip.rows });
+
+    tableChangeTooltipId += 1;
+
     return `
       <div class="w-full">
         <div class="flex w-full items-center justify-between gap-3">
           <span class="min-w-0 flex-1 whitespace-nowrap text-left font-medium leading-tight text-slate-900">${escapeHtml(valueLabel)}</span>
-          <span class="flex-none whitespace-nowrap text-right font-medium leading-tight ${deltaTextClass(deltaValue)}" style="min-width: 44px;">${escapeHtml(formatDelta(deltaValue, unit))}</span>
+          <span class="table-change-tooltip metric-header-tooltip flex-none whitespace-nowrap text-right font-medium leading-tight ${deltaTextClass(deltaValue)}" style="min-width: 44px;" tabindex="0" aria-label="${escapeHtml(tooltipText)}" aria-describedby="${tooltipId}">
+            ${escapeHtml(formattedChange)}
+            <span id="${tooltipId}" class="metric-header-tooltip__content" role="tooltip">${tooltipHtml}</span>
+          </span>
         </div>
         <div class="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
           <div class="h-full rounded-full ${barClass}" style="width: ${clampPct(barValue)}%"></div>
@@ -2298,9 +2667,9 @@
 
     return `
       <div
-        class="${isCompact ? "" : "w-full"}"
-        style="${isCompact ? `width: ${compactWidth}px; height: ${compactHeight}px;` : "min-width: 108px;"}"
-        aria-label="${escapeHtml(label)}"
+         class="${isCompact ? "" : "w-full"}"
+         style="${isCompact ? `width: ${compactWidth}px; height: ${compactHeight}px;` : "min-width: 108px;"}"
+        aria-label="${escapeHtml(`${label}. Daily ${metricConfig.deltaUnit} change versus the previous period.`)}"
         title="${escapeHtml(`${metric.label}: daily ${metricConfig.deltaUnit} change vs previous period`)}">
         ${isCompact ? renderRelativeChangeLineTrend(values, { width: compactWidth, height: compactHeight }) : renderRelativeChangeTrend(values)}
       </div>
@@ -2406,17 +2775,7 @@
   }
 
   function getVisibleChangeRows(rows) {
-    const sortMetric = getChangeTableSort();
-    const search = getOverviewSearch();
-    const filteredRows = rows.filter((row) => {
-      if (!search) {
-        return true;
-      }
-
-      return String(row.page_name || "").toLowerCase().includes(search);
-    });
-
-    return sortChangeRows(filteredRows, sortMetric);
+    return sortChangeRows(rows, getChangeTableSort());
   }
 
   function getPageMetricsPageCount(rows) {
@@ -2599,8 +2958,7 @@
       page: targetPage,
       page_size: pageMetricsPageSize,
       sort: pageMetricsState.sortKey,
-      direction: pageMetricsState.sortDirection,
-      q: getOverviewSearch()
+      direction: pageMetricsState.sortDirection
     }).then((payload) => {
       if (token !== pageMetricsState.loadingToken) {
         return;
@@ -2709,7 +3067,7 @@
     }
 
     if (display.comparisonAvailable === false) {
-      const tooltip = renderPeriodChangeTooltip(display, metric);
+      const tooltip = renderPeriodChangeTooltip(display);
 
       return `
         <div class="pages-change-delta metric-header-tooltip" data-change-direction="neutral" style="--pages-change-bar-width: 6px;" tabindex="0" aria-label="${escapeHtml(`${metric.label}. ${tooltip.tooltipText}`)}" aria-describedby="${tooltip.tooltipId}">
@@ -2728,7 +3086,7 @@
     const trackWidth = direction === "negative" ? 17 : 36;
     const barWidth = roundedDelta === 0 ? 6 : Math.max(4, Math.round((Math.abs(deltaValue) / Math.max(maxAbsDelta, 1)) * trackWidth));
     const formattedDelta = formatDelta(deltaValue, display.deltaUnit);
-    const tooltip = renderPeriodChangeTooltip(display, metric);
+    const tooltip = renderPeriodChangeTooltip(display);
 
     return `
       <div class="pages-change-delta metric-header-tooltip" data-change-direction="${direction}" style="--pages-change-bar-width: ${barWidth}px;" tabindex="0" aria-label="${escapeHtml(`${metric.label}. ${tooltip.tooltipText}`)}" aria-describedby="${tooltip.tooltipId}">
@@ -2750,32 +3108,6 @@
         </div>
       </td>
     `;
-  }
-
-  function mountPageRowNavigation(tbody) {
-    tbody.querySelectorAll("[data-page-detail-href]").forEach((row) => {
-      const href = row.getAttribute("data-page-detail-href");
-
-      if (!href) {
-        return;
-      }
-
-      row.addEventListener("click", (event) => {
-        if (event.target.closest("a, button, input, select, textarea")) {
-          return;
-        }
-
-        globalScope.location.href = href;
-      });
-      row.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter" && event.key !== " ") {
-          return;
-        }
-
-        event.preventDefault();
-        globalScope.location.href = href;
-      });
-    });
   }
 
   function renderPageMetrics2Rows(sortedRows) {
@@ -2810,7 +3142,7 @@
         const link = detailHref(row.page_rule_id);
 
         return `
-          <tr class="group cursor-pointer align-middle hover:bg-slate-50" data-page-detail-href="${link}" tabindex="0">
+          <tr class="group align-middle hover:bg-slate-50">
             <td class="sticky left-0 z-[1] bg-white py-3.5 pl-0 pr-6 font-medium group-hover:bg-slate-50">
               <a class="text-sky-800 underline-offset-2 hover:underline" href="${link}">${pageName}</a>
             </td>
@@ -2829,7 +3161,6 @@
       .join("");
 
     syncSplitChangeValueWidths(tbody);
-    mountPageRowNavigation(tbody);
   }
 
   function renderChangeAwareRows(rows) {
@@ -2957,169 +3288,6 @@
     mountStickyTableHeaders("[data-sticky-table-header] table");
   }
 
-  let floatingDeltaTooltipsMounted = false;
-
-  function mountFloatingDeltaTooltips() {
-    if (floatingDeltaTooltipsMounted || !document.body) {
-      return;
-    }
-
-    floatingDeltaTooltipsMounted = true;
-    document.documentElement.classList.add("metric-floating-tooltips-enabled");
-
-    const floatingTooltip = document.createElement("div");
-    floatingTooltip.className = "metric-header-tooltip__content metric-floating-tooltip";
-    floatingTooltip.dataset.tooltipKind = "delta";
-    floatingTooltip.dataset.visible = "false";
-    floatingTooltip.setAttribute("aria-hidden", "true");
-    floatingTooltip.setAttribute("role", "tooltip");
-    document.body.appendChild(floatingTooltip);
-
-    const viewportPadding = 8;
-    const verticalGap = 8;
-    let activeTrigger = null;
-    let positionAnimationFrame = 0;
-
-    const getTooltipTrigger = (target) => {
-      if (!target || typeof target.closest !== "function") {
-        return null;
-      }
-
-      return target.closest(".pages-change-delta.metric-header-tooltip");
-    };
-
-    const setTooltipVisible = (isVisible) => {
-      floatingTooltip.dataset.visible = String(isVisible);
-      floatingTooltip.setAttribute("aria-hidden", String(!isVisible));
-    };
-
-    const hideTooltip = (trigger = activeTrigger) => {
-      if (trigger && activeTrigger && trigger !== activeTrigger) {
-        return;
-      }
-
-      activeTrigger = null;
-      setTooltipVisible(false);
-    };
-
-    const updateTooltipPosition = () => {
-      if (!activeTrigger) {
-        return;
-      }
-
-      if (!activeTrigger.isConnected) {
-        hideTooltip();
-        return;
-      }
-
-      const triggerRect = activeTrigger.getBoundingClientRect();
-      const viewportWidth = document.documentElement.clientWidth || globalScope.innerWidth || 0;
-      const viewportHeight = document.documentElement.clientHeight || globalScope.innerHeight || 0;
-
-      if (
-        triggerRect.bottom < 0 ||
-        triggerRect.top > viewportHeight ||
-        triggerRect.right < 0 ||
-        triggerRect.left > viewportWidth
-      ) {
-        hideTooltip();
-        return;
-      }
-
-      const tooltipRect = floatingTooltip.getBoundingClientRect();
-      const shouldPlaceAbove =
-        triggerRect.bottom + verticalGap + tooltipRect.height > viewportHeight - viewportPadding &&
-        triggerRect.top - verticalGap - tooltipRect.height >= viewportPadding;
-      const desiredLeft = triggerRect.left + triggerRect.width / 2 - tooltipRect.width / 2;
-      const desiredTop = shouldPlaceAbove
-        ? triggerRect.top - verticalGap - tooltipRect.height
-        : triggerRect.bottom + verticalGap;
-      const maxLeft = Math.max(viewportPadding, viewportWidth - tooltipRect.width - viewportPadding);
-      const maxTop = Math.max(viewportPadding, viewportHeight - tooltipRect.height - viewportPadding);
-      const left = Math.min(Math.max(desiredLeft, viewportPadding), maxLeft);
-      const top = Math.min(Math.max(desiredTop, viewportPadding), maxTop);
-
-      floatingTooltip.dataset.placement = shouldPlaceAbove ? "top" : "bottom";
-      floatingTooltip.style.left = `${Math.round(left)}px`;
-      floatingTooltip.style.top = `${Math.round(top)}px`;
-    };
-
-    const schedulePositionUpdate = () => {
-      if (!activeTrigger || positionAnimationFrame) {
-        return;
-      }
-
-      positionAnimationFrame = globalScope.requestAnimationFrame(() => {
-        positionAnimationFrame = 0;
-        updateTooltipPosition();
-      });
-    };
-
-    const showTooltip = (trigger) => {
-      const sourceTooltip = trigger.querySelector(".metric-header-tooltip__content");
-
-      if (!sourceTooltip) {
-        return;
-      }
-
-      activeTrigger = trigger;
-      floatingTooltip.innerHTML = sourceTooltip.innerHTML;
-      floatingTooltip.style.left = "0px";
-      floatingTooltip.style.top = "0px";
-      setTooltipVisible(false);
-      updateTooltipPosition();
-      setTooltipVisible(true);
-    };
-
-    document.addEventListener("pointerover", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-
-      if (!trigger || trigger === activeTrigger) {
-        return;
-      }
-
-      showTooltip(trigger);
-    });
-
-    document.addEventListener("pointerout", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-      const relatedTarget = event.relatedTarget;
-
-      if (!trigger || (relatedTarget && trigger.contains(relatedTarget))) {
-        return;
-      }
-
-      hideTooltip(trigger);
-    });
-
-    document.addEventListener("focusin", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-
-      if (trigger) {
-        showTooltip(trigger);
-      }
-    });
-
-    document.addEventListener("focusout", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-      const relatedTarget = event.relatedTarget;
-
-      if (!trigger || (relatedTarget && trigger.contains(relatedTarget))) {
-        return;
-      }
-
-      hideTooltip(trigger);
-    });
-
-    document.addEventListener("scroll", schedulePositionUpdate, true);
-    globalScope.addEventListener("resize", schedulePositionUpdate);
-    globalScope.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        hideTooltip();
-      }
-    });
-  }
-
   function renderOverviewTopActionsByPageGroup(data) {
     const container = document.getElementById("overview-top-actions-grid");
 
@@ -3134,8 +3302,15 @@
       return;
     }
 
+    const groupLabels = disambiguatePageLabels(
+      groups,
+      (group) => group.page_name || group.page_group,
+      (group) => group.product_area_name || group.productAreaName || "Unassigned",
+      (group) => group.product_area_key || group.productAreaKey
+    );
+
     container.innerHTML = groups
-      .map((group) => {
+      .map((group, groupIndex) => {
         const actions = (group.actions || [])
           .slice()
           .sort((a, b) => b.clicks - a.clicks)
@@ -3144,7 +3319,7 @@
 
         return `
           <article class="min-w-0 rounded-lg border border-slate-200 bg-white p-4">
-            <h3 class="text-sm font-semibold text-slate-900">${escapeHtml(group.page_group)}</h3>
+            <h3 class="text-sm font-semibold text-slate-900">${escapeHtml(groupLabels[groupIndex])}</h3>
             <table class="mt-3 w-full text-left text-sm" style="table-layout: fixed;">
               <colgroup>
                 <col />
@@ -3153,21 +3328,24 @@
               </colgroup>
               <thead class="border-b border-gray-300 text-slate-600">
                 <tr>
-                  <th class="py-3 pr-6 font-normal">Top actions</th>
-                  <th class="py-3 pr-6 text-left font-normal">Clicks</th>
-                  <th class="py-3 text-left font-normal">% visits</th>
+                  <th class="py-3 pr-6 font-normal">${tableHeaderTooltip("Top actions", "Most clicked elements recorded for this page", `top-actions-tooltip-action-${groupIndex}`)}</th>
+                  <th class="py-3 pr-6 text-left font-normal">${tableHeaderTooltip("Clicks", "Number of clicks on the action and its change from the previous period", `top-actions-tooltip-clicks-${groupIndex}`)}</th>
+                  <th class="py-3 text-left font-normal">${tableHeaderTooltip("% visits", "Share of page visits that included the action and its change from the previous period", `top-actions-tooltip-visits-${groupIndex}`, { align: "end" })}</th>
                 </tr>
               </thead>
               <tbody class="text-slate-700">
                 ${actions
                   .map(
-                    (action) => `
+                    (action, actionIndex) => `
                       <tr>
                         <td class="py-3.5 pr-6">
-                          <span class="block truncate font-medium leading-6 text-slate-900" title="${escapeHtml(action.element_key)}">${escapeHtml(action.element_key)}</span>
+                          <span class="metric-header-tooltip min-w-0 w-full" tabindex="0" aria-describedby="top-action-name-tooltip-${groupIndex}-${actionIndex}">
+                            <span class="block min-w-0 truncate font-medium leading-6 text-slate-900">${escapeHtml(action.element_key)}</span>
+                            <span id="top-action-name-tooltip-${groupIndex}-${actionIndex}" class="metric-header-tooltip__content" role="tooltip">${escapeHtml(action.element_key)}</span>
+                          </span>
                         </td>
-                        <td class="py-3.5 pr-6 tabular-nums">${actionMetricBarCell(formatNumber(action.clicks), action.clicks_change_pct, "%", (action.clicks / maxClicks) * 100, "bg-c-orange")}</td>
-                        <td class="py-3.5 tabular-nums">${actionMetricBarCell(`${action.visits_pct}%`, action.visits_change_pp, "pp", action.visits_pct, "bg-c-purple")}</td>
+                        <td class="py-3.5 pr-6 tabular-nums">${actionMetricBarCell(formatNumber(action.clicks), action.clicks, "count", action.clicks_change_pct, "%", (action.clicks / maxClicks) * 100, "bg-c-orange", action.clicks_change_label)}</td>
+                        <td class="py-3.5 tabular-nums">${actionMetricBarCell(`${action.visits_pct}%`, action.visits_pct, "percent", action.visits_change_pp, "pp", action.visits_pct, "bg-c-purple", action.visits_change_label)}</td>
                       </tr>
                     `
                   )
@@ -3299,7 +3477,7 @@
               strokeWidth: { value: 1.5 }
             },
             update: {
-              cursor: { value: "pointer" },
+              cursor: { value: "default" },
               fill: [
                 { test: "hoveredCompany === datum.company_name", value: chartTheme.colors.rose },
                 { value: pointColor }
@@ -3318,7 +3496,7 @@
               ],
               tooltip: {
                 signal:
-                  "{'Company name': datum.company_name, 'Avg active users': datum.active_users_label, 'Avg engaged time / user': datum.avg_engaged_label, 'Total engaged time': datum.total_engaged_label, 'Visits': format(datum.visits, ',')}"
+                  "{'title': datum.company_name, 'Avg active users': datum.active_users_label, 'Avg engaged time / user': datum.avg_engaged_label, 'Total engaged time': datum.total_engaged_label, 'Visits': format(datum.visits, ',')}"
               }
             }
           }
@@ -3500,20 +3678,13 @@
     mountProductAreaFilter();
     mountPageMetricsSort();
     mountSplitChangeValueWidthSync();
-    mountFloatingDeltaTooltips();
+    tooltipUi.mountFloatingTooltips?.();
     mountPageMetricsStickyHeader();
     renderOverviewTopActionsByPageGroup(data);
     renderCompanyEngagementByPageGroup(data);
+    mountTwoWayMovement(data);
     mountOverviewCharts(data);
 
-    document.getElementById("pages-global-search")?.addEventListener("input", () => {
-      pageMetricsState.page = 1;
-      if (loadPageMetricsTablePage(1)) {
-        return;
-      }
-
-      renderChangeAwareRows(data.change_aware_rows);
-    });
   }
 
   function getRequestedPageRuleId() {
@@ -3818,38 +3989,6 @@
     return formatNumber(Math.round(numericValue));
   }
 
-  function renderPeriodSelector(data, onSelectPeriod) {
-    const container = document.getElementById("page-period-selector");
-
-    if (!container) {
-      return;
-    }
-
-    container.innerHTML = pageDetailsPeriodOptions
-      .map((days) => {
-        const isActive = days === data.period.days;
-
-        return `
-          <button
-            type="button"
-            data-page-period="${days}"
-            aria-pressed="${String(isActive)}"
-            class="px-3 py-1.5 text-sm font-medium duration-150 ${isActive ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"}">
-            ${days}d
-          </button>
-        `;
-      })
-      .join("");
-
-    container.querySelectorAll("[data-page-period]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const periodDays = coercePageDetailPeriod(button.getAttribute("data-page-period"));
-
-        onSelectPeriod(periodDays, { allowRedirect: true });
-      });
-    });
-  }
-
   function renderPageDetailsHeader(data) {
     const page = data.page || {};
     const title = page.displayName || page.pageName || page.pageRuleId || page.route || "Page";
@@ -3924,12 +4063,12 @@
     const displayValue = Number.isFinite(value) ? formatMetricTooltipValueByType(value, valueType) : "-";
 
     return `
-      <div style="display:flex;gap:16px;justify-content:space-between;min-width:220px;">
-        <span style="display:inline-flex;align-items:center;gap:8px;min-width:0;">
+      <div class="analytics-tooltip__row analytics-tooltip__row--marker">
+        <span class="analytics-tooltip__marker" aria-hidden="true">
           ${lineSample}
-          <span>${escapeHtml(label)}</span>
         </span>
-        <strong>${escapeHtml(displayValue)}</strong>
+        <span class="analytics-tooltip__label">${escapeHtml(label)}</span>
+        <strong class="analytics-tooltip__value">${escapeHtml(displayValue)}</strong>
       </div>
     `;
   }
@@ -3965,7 +4104,7 @@
       .map((peer) => metricTooltipRow(peer.name || "Peer", peer.value, valueType, { color: tailwindAlpha("slate-400", 0.55) }))
       .join("");
 
-    return `<div style="margin-top:6px;padding-top:2px;">${peerRows}</div>`;
+    return `<div class="analytics-tooltip__divider"></div><div class="analytics-tooltip__rows">${peerRows}</div>`;
   }
 
   function pageMetricDynamicsShowPeers() {
@@ -3989,10 +4128,16 @@
       selectedPeriodDays: options.selectedPeriodDays,
       showPeers: options.showPeers,
       currentEntityId: metric.pageId || metric.pageRuleId || metric.id,
-      minPeerCount: 3
+      minPeerCount: 5
     });
     const actualSeries = dynamics.actualSeries || dynamics.current || currentValues;
-    const currentTrendSeries = dynamics.currentStraightTrendSeries || dynamics.currentTrend || [];
+    const shape = dynamics.shape || getMetricDynamicsShape(metric.key || metric.valueType);
+    // A running total can only climb, so a fitted line through it restates the
+    // shape already on screen. Emptying the series here also keeps it out of the
+    // tooltip and the axis bounds.
+    const currentTrendSeries = shape.selfTrend
+      ? (dynamics.currentStraightTrendSeries || dynamics.currentTrend || [])
+      : [];
     const benchmarkTrendSeries = dynamics.benchmarkStraightTrendSeries || dynamics.benchmark || [];
     const peerSeriesList = dynamics.peerSeriesList || dynamics.peerTraces || [];
     const yAxisBounds = getMetricDynamicsAxisBounds([
@@ -4004,7 +4149,7 @@
 
     return {
       animation: false,
-      tooltip: {
+      tooltip: tooltipUi.echarts({
         trigger: "axis",
         appendTo: "body",
         confine: false,
@@ -4024,17 +4169,19 @@
           const benchmarkValue = benchmarkTrendSeries[index];
 
           return `
-            <div>
-              <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(formatDetailDate(dates[index]))}</div>
-              ${metricTooltipRow("Actual", actualValue, metric.valueType, { color: chartTheme.colors.primary })}
-              ${Number.isFinite(trendValue) ? metricTooltipRow("Current trend", trendValue, metric.valueType, { color: chartTheme.colors.primary, dashed: true }) : ""}
-              ${Number.isFinite(benchmarkValue) ? metricTooltipRow("Other pages trend", benchmarkValue, metric.valueType, { color: chartTheme.colors.warning, dashed: true }) : ""}
+            <div class="analytics-tooltip">
+              <div class="analytics-tooltip__title">${escapeHtml(`Through ${formatDetailDate(dates[index])}`)}</div>
+              <div class="analytics-tooltip__rows">
+                ${metricTooltipRow("Period to date", actualValue, metric.valueType, { color: chartTheme.colors.primary })}
+                ${Number.isFinite(trendValue) ? metricTooltipRow("Period-to-date trend", trendValue, metric.valueType, { color: chartTheme.colors.primary, dashed: true }) : ""}
+                ${Number.isFinite(benchmarkValue) ? metricTooltipRow("Other pages trend", benchmarkValue, metric.valueType, { color: chartTheme.colors.warning, dashed: true }) : ""}
+              </div>
               ${metricTooltipPeerRows(peerSeriesList, index, metric.valueType)}
-              ${!benchmarkTrendSeries.length && dynamics.benchmarkUnavailableReason ? `<div style="margin-top:6px;color:${chartTheme.colors.mutedText};">${escapeHtml(dynamics.benchmarkUnavailableReason)}</div>` : ""}
+              ${!benchmarkTrendSeries.length && dynamics.benchmarkUnavailableReason ? `<div style="margin-top:6px;">${escapeHtml(dynamics.benchmarkUnavailableReason)}</div>` : ""}
             </div>
           `;
         }
-      },
+      }),
       grid: {
         left: 0,
         right: 0,
@@ -4094,30 +4241,24 @@
             data: currentTrendSeries,
             smooth: false,
             symbol: "none",
-            lineStyle: {
-              color: chartTheme.colors.primary,
-              type: [6, 4],
-              opacity: 0.58,
-              width: 2
-            },
+            lineStyle: currentStraightTrendLineStyle(chartTheme.colors.primary),
             emphasis: {
               disabled: true
             },
             z: 4
           } : null,
           {
-            name: "Actual",
+            name: "Period to date",
             type: "line",
             data: actualSeries,
-            smooth: true,
+            step: shape.step ? "end" : false,
+            smooth: !shape.step,
             symbol: "none",
             lineStyle: {
               color: chartTheme.colors.primary,
               width: 2.5
             },
-            areaStyle: {
-              color: tailwindAlpha("c-blue", 0.08)
-            },
+            ...(shape.filled ? { areaStyle: { color: tailwindAlpha("c-blue", 0.08) } } : {}),
             emphasis: {
               disabled: true
             },
@@ -4310,28 +4451,28 @@
   const detailMetricsWithoutDelta = new Set(["avg_visit", "clicks_per_visit"]);
 
   const relatedPagesMetrics = [
-    { key: "companies", label: "Companies", valueType: "count", deltaUnit: "%", value: (row) => row.companies, delta: (row) => row.companiesChange },
-    { key: "adoption", label: "Adoption", valueType: "percent", deltaUnit: "pp", value: (row) => row.adoption, delta: (row) => row.adoptionChange, barMode: "percent" },
-    { key: "users", label: "Users", valueType: "count", deltaUnit: "%", value: (row) => row.users, delta: (row) => row.usersChange },
-    { key: "visits", label: "Visits", valueType: "count", deltaUnit: "%", value: (row) => row.visits, delta: (row) => row.visitsChange },
-    { key: "engaged", label: "Engaged", valueType: "duration", deltaUnit: "%", value: (row) => row.engaged, delta: (row) => row.engagedChange, displayLabel: (row) => row.engagedLabel },
-    { key: "interaction", label: "Interaction", valueType: "percent", deltaUnit: "pp", value: (row) => row.interaction, delta: (row) => row.interactionChange, barMode: "percent" }
+    { key: "companies", label: "Companies", valueType: "count", deltaUnit: "%", value: (row) => row.companies, delta: (row) => row.companiesChange, deltaLabel: (row) => row.companiesChangeLabel },
+    { key: "adoption", label: "Adoption", valueType: "percent", deltaUnit: "pp", value: (row) => row.adoption, delta: (row) => row.adoptionChange, deltaLabel: (row) => row.adoptionChangeLabel, barMode: "percent" },
+    { key: "users", label: "Users", valueType: "count", deltaUnit: "%", value: (row) => row.users, delta: (row) => row.usersChange, deltaLabel: (row) => row.usersChangeLabel },
+    { key: "visits", label: "Visits", valueType: "count", deltaUnit: "%", value: (row) => row.visits, delta: (row) => row.visitsChange, deltaLabel: (row) => row.visitsChangeLabel },
+    { key: "engaged", label: "Engaged", valueType: "duration", deltaUnit: "%", value: (row) => row.engaged, delta: (row) => row.engagedChange, deltaLabel: (row) => row.engagedChangeLabel, displayLabel: (row) => row.engagedLabel },
+    { key: "interaction", label: "Interaction", valueType: "percent", deltaUnit: "pp", value: (row) => row.interaction, delta: (row) => row.interactionChange, deltaLabel: (row) => row.interactionChangeLabel, barMode: "percent" }
   ];
 
   const pageChampionMetrics = [
-    { key: "engaged", label: "Engaged", valueType: "duration", deltaUnit: "%", value: (row) => row.engagedSeconds, delta: (row) => row.engagedChange, displayLabel: (row) => row.engaged },
-    { key: "visits", label: "Visits", valueType: "count", deltaUnit: "%", value: (row) => row.visits, delta: (row) => row.visitsChange },
+    { key: "engaged", label: "Engaged", valueType: "duration", deltaUnit: "%", value: (row) => row.engagedSeconds, delta: (row) => row.engagedChange, deltaLabel: (row) => row.engagedChangeLabel, displayLabel: (row) => row.engaged },
+    { key: "visits", label: "Visits", valueType: "count", deltaUnit: "%", value: (row) => row.visits, delta: (row) => row.visitsChange, deltaLabel: (row) => row.visitsChangeLabel },
     { key: "avg_visit", label: "Avg / visit", valueType: "duration", showDelta: false, value: (row) => row.engagedSeconds / Math.max(Number(row.visits) || 1, 1), displayLabel: (row) => row.avgVisit },
-    { key: "clicks", label: "Clicks", valueType: "count", deltaUnit: "%", value: (row) => row.clicks, delta: (row) => row.clicksChange }
+    { key: "clicks", label: "Clicks", valueType: "count", deltaUnit: "%", value: (row) => row.clicks, delta: (row) => row.clicksChange, deltaLabel: (row) => row.clicksChangeLabel }
   ];
 
   const pageCompanyMetrics = [
-    { key: "users", label: "Users", valueType: "count", deltaUnit: "%", value: (row) => row.users, delta: (row) => row.usersChange },
-    { key: "page_penetration", label: "Page penetration", valueType: "percent", deltaUnit: "pp", value: (row) => row.pagePenetration, delta: (row) => row.pagePenetrationChange, barMode: "percent" },
-    { key: "visits", label: "Visits", valueType: "count", deltaUnit: "%", value: (row) => row.visits, delta: (row) => row.visitsChange },
-    { key: "engaged", label: "Engaged", valueType: "duration", deltaUnit: "%", value: (row) => row.engagedSeconds, delta: (row) => row.engagedChange, displayLabel: (row) => row.engaged },
-    { key: "avg_user", label: "Avg / user", valueType: "duration", deltaUnit: "%", value: (row) => row.engagedSeconds / Math.max(Number(row.users) || 1, 1), delta: (row) => row.avgUserChange, displayLabel: (row) => row.avgUser },
-    { key: "interaction", label: "Interaction", valueType: "percent", deltaUnit: "pp", value: (row) => row.interaction, delta: (row) => row.interactionChange, barMode: "percent" }
+    { key: "users", label: "Users", valueType: "count", deltaUnit: "%", value: (row) => row.users, delta: (row) => row.usersChange, deltaLabel: (row) => row.usersChangeLabel },
+    { key: "page_penetration", label: "Page penetration", valueType: "percent", deltaUnit: "pp", value: (row) => row.pagePenetration, delta: (row) => row.pagePenetrationChange, deltaLabel: (row) => row.pagePenetrationChangeLabel, barMode: "percent" },
+    { key: "visits", label: "Visits", valueType: "count", deltaUnit: "%", value: (row) => row.visits, delta: (row) => row.visitsChange, deltaLabel: (row) => row.visitsChangeLabel },
+    { key: "engaged", label: "Engaged", valueType: "duration", deltaUnit: "%", value: (row) => row.engagedSeconds, delta: (row) => row.engagedChange, deltaLabel: (row) => row.engagedChangeLabel, displayLabel: (row) => row.engaged },
+    { key: "avg_user", label: "Avg / user", valueType: "duration", deltaUnit: "%", value: (row) => row.engagedSeconds / Math.max(Number(row.users) || 1, 1), delta: (row) => row.avgUserChange, deltaLabel: (row) => row.avgUserChangeLabel, displayLabel: (row) => row.avgUser },
+    { key: "interaction", label: "Interaction", valueType: "percent", deltaUnit: "pp", value: (row) => row.interaction, delta: (row) => row.interactionChange, deltaLabel: (row) => row.interactionChangeLabel, barMode: "percent" }
   ];
 
   const pageCompaniesDefaultSortDirections = {
@@ -4354,10 +4495,10 @@
   };
 
   const pageActionMetrics = [
-    { key: "clicks", label: "Clicks", valueType: "count", deltaUnit: "%", value: (row) => row.clicks, delta: (row) => row.clicksChange },
-    { key: "visits_pct", label: "% visits", valueType: "percent", deltaUnit: "pp", value: (row) => row.visitsPct, delta: (row) => row.visitsPctChange, barMode: "percent" },
-    { key: "users", label: "Users", valueType: "count", deltaUnit: "%", value: (row) => row.users, delta: (row) => row.usersChange },
-    { key: "companies", label: "Companies", valueType: "count", deltaUnit: "%", value: (row) => row.companies, delta: (row) => row.companiesChange }
+    { key: "clicks", label: "Clicks", valueType: "count", deltaUnit: "%", value: (row) => row.clicks, delta: (row) => row.clicksChange, deltaLabel: (row) => row.clicksChangeLabel },
+    { key: "visits_pct", label: "% visits", valueType: "percent", deltaUnit: "pp", value: (row) => row.visitsPct, delta: (row) => row.visitsPctChange, deltaLabel: (row) => row.visitsPctChangeLabel, barMode: "percent" },
+    { key: "users", label: "Users", valueType: "count", deltaUnit: "%", value: (row) => row.users, delta: (row) => row.usersChange, deltaLabel: (row) => row.usersChangeLabel },
+    { key: "companies", label: "Companies", valueType: "count", deltaUnit: "%", value: (row) => row.companies, delta: (row) => row.companiesChange, deltaLabel: (row) => row.companiesChangeLabel }
   ];
 
   function shouldShowDetailMetricDelta(metric) {
@@ -4394,8 +4535,10 @@
 
     return {
       valueLabel,
+      valueType: metric.valueType,
       currentValue,
       deltaValue: shouldShowDetailMetricDelta(metric) ? (hasComparison ? Number(metric.delta?.(row)) || 0 : 0) : null,
+      deltaLabel: metric.deltaLabel?.(row),
       deltaUnit: metric.deltaUnit || "%",
       barValue,
       comparisonAvailable: hasComparison
@@ -4410,32 +4553,21 @@
     `;
   }
 
-  function formatDetailTooltipValue(value, valueType) {
-    return formatDetailValueByType(value, valueType);
-  }
-
   function renderDetailDelta(display, metric, maxAbsDelta) {
     if (display.deltaValue === null || display.deltaValue === undefined) {
       return "";
     }
 
     if (display.comparisonAvailable === false) {
-      const tooltipId = `detail-period-change-tooltip-${periodChangeTooltipId}`;
-      const tooltipRows = [
-        `Current period: ${display.valueLabel}`,
-        "Previous period: no data",
-        "Change: n/a"
-      ];
-
-      periodChangeTooltipId += 1;
+      const tooltip = renderPeriodChangeTooltip(display);
 
       return `
-        <div class="pages-change-delta metric-header-tooltip" data-change-direction="neutral" style="--pages-change-bar-width: 6px;" tabindex="0" aria-label="${escapeHtml(`${metric.label}. ${tooltipRows.join(" ")}`)}" aria-describedby="${tooltipId}">
+        <div class="pages-change-delta metric-header-tooltip" data-change-direction="neutral" style="--pages-change-bar-width: 6px;" tabindex="0" aria-label="${escapeHtml(`${metric.label}. ${tooltip.tooltipText}`)}" aria-describedby="${tooltip.tooltipId}">
           <span class="pages-change-delta__plot">
             <span class="pages-change-delta__bar pages-change-delta__bar--neutral"></span>
           </span>
           <span class="pages-change-delta__label text-slate-500">n/a</span>
-          <span id="${tooltipId}" class="metric-header-tooltip__content" role="tooltip">${tooltipRows.map((line) => `<span class="pages-change-delta__tooltip-row">${escapeHtml(line)}</span>`).join("")}</span>
+          <span id="${tooltip.tooltipId}" class="metric-header-tooltip__content" role="tooltip">${tooltip.tooltipHtml}</span>
         </div>
       `;
     }
@@ -4446,23 +4578,15 @@
     const trackWidth = direction === "negative" ? 17 : 36;
     const barWidth = roundedDelta === 0 ? 6 : Math.max(4, Math.round((Math.abs(deltaValue) / Math.max(maxAbsDelta, 1)) * trackWidth));
     const formattedDelta = formatDelta(deltaValue, display.deltaUnit);
-    const previousValue = previousPeriodValue(display.currentValue, deltaValue, display.deltaUnit);
-    const tooltipId = `detail-period-change-tooltip-${periodChangeTooltipId}`;
-    const tooltipRows = [
-      `Current period: ${display.valueLabel}`,
-      `Previous period: ${formatDetailTooltipValue(previousValue, metric.valueType)}`,
-      `Change: ${formattedDelta}`
-    ];
-
-    periodChangeTooltipId += 1;
+    const tooltip = renderPeriodChangeTooltip(display);
 
     return `
-      <div class="pages-change-delta metric-header-tooltip" data-change-direction="${direction}" style="--pages-change-bar-width: ${barWidth}px;" tabindex="0" aria-label="${escapeHtml(`${metric.label}. ${tooltipRows.join(" ")}`)}" aria-describedby="${tooltipId}">
+      <div class="pages-change-delta metric-header-tooltip" data-change-direction="${direction}" style="--pages-change-bar-width: ${barWidth}px;" tabindex="0" aria-label="${escapeHtml(`${metric.label}. ${tooltip.tooltipText}`)}" aria-describedby="${tooltip.tooltipId}">
         <span class="pages-change-delta__plot">
           <span class="pages-change-delta__bar pages-change-delta__bar--${direction}"></span>
         </span>
         <span class="pages-change-delta__label ${deltaTextClass(deltaValue)}">${escapeHtml(formattedDelta)}</span>
-        <span id="${tooltipId}" class="metric-header-tooltip__content" role="tooltip">${tooltipRows.map((line) => `<span class="pages-change-delta__tooltip-row">${escapeHtml(line)}</span>`).join("")}</span>
+        <span id="${tooltip.tooltipId}" class="metric-header-tooltip__content" role="tooltip">${tooltip.tooltipHtml}</span>
       </div>
     `;
   }
@@ -5171,7 +5295,12 @@
     return {
       pageName,
       visits: Math.max(0, Math.round(Number(page?.visits) || Number(page?.value) || 0)),
-      route: page?.route || ""
+      route: page?.route || "",
+      productAreaKey: String(page?.productAreaKey || page?.product_area_key || "").trim(),
+      productAreaName: String(
+        page?.productAreaName || page?.product_area_name || page?.productArea || page?.product_area || "Unassigned"
+      ).trim() || "Unassigned",
+      productAreaColor: String(page?.productAreaColor || page?.product_area_color || page?.color || "").trim()
     };
   }
 
@@ -5188,6 +5317,11 @@
       const existingPage = byPageName.get(normalizedPage.pageName) || { ...normalizedPage, visits: 0 };
       existingPage.visits += normalizedPage.visits;
       existingPage.route = existingPage.route || normalizedPage.route;
+      existingPage.productAreaKey = existingPage.productAreaKey || normalizedPage.productAreaKey;
+      existingPage.productAreaName = existingPage.productAreaName === "Unassigned"
+        ? normalizedPage.productAreaName
+        : existingPage.productAreaName;
+      existingPage.productAreaColor = existingPage.productAreaColor || normalizedPage.productAreaColor;
       byPageName.set(normalizedPage.pageName, existingPage);
     });
 
@@ -5207,16 +5341,27 @@
     );
     const previousPages = aggregateFlowPages(flow.previousPages);
     const nextPages = aggregateFlowPages(flow.nextPages);
-    const nodes = [{
-      name: "current-page",
-      label: currentPageName,
-      role: "current",
-      value: currentVisits
-    }];
+    const currentProductAreaName = String(data.page?.productAreaName || data.page?.product_area_name || "Unassigned").trim() || "Unassigned";
+    const currentProductAreaColor = productAreaColor(
+      currentProductAreaName,
+      data.page?.productAreaColor || data.page?.product_area_color || ""
+    );
+    const nodes = [];
     const links = [];
 
-    const addNode = (name, label, role, value) => {
-      nodes.push({ name, label, role, value });
+    const addNode = (name, label, role, value, areaName = "", explicitColor = "") => {
+      const nodeColor = areaName
+        ? productAreaColor(areaName, explicitColor)
+        : chartTheme.colors.mutedText;
+      nodes.push({
+        name,
+        label,
+        role,
+        value,
+        productAreaName: areaName,
+        productAreaColor: nodeColor,
+        itemStyle: { color: nodeColor }
+      });
     };
 
     const addLink = (source, target, value, sourceLabel, targetLabel) => {
@@ -5224,15 +5369,24 @@
       links.push({ source, target, value: safeValue, sourceLabel, targetLabel });
     };
 
+    addNode(
+      "current-page",
+      currentPageName,
+      "current",
+      currentVisits,
+      currentProductAreaName,
+      currentProductAreaColor
+    );
+
     previousPages.forEach((page, index) => {
       const nodeName = `previous-${index}`;
-      addNode(nodeName, page.pageName, "previous", page.visits);
+      addNode(nodeName, page.pageName, "previous", page.visits, page.productAreaName, page.productAreaColor);
       addLink(nodeName, "current-page", page.visits, page.pageName, currentPageName);
     });
 
     nextPages.forEach((page, index) => {
       const nodeName = `next-${index}`;
-      addNode(nodeName, page.pageName, "next", page.visits);
+      addNode(nodeName, page.pageName, "next", page.visits, page.productAreaName, page.productAreaColor);
       addLink("current-page", nodeName, page.visits, currentPageName, page.pageName);
     });
 
@@ -5253,17 +5407,23 @@
     }
 
     return {
-      tooltip: {
+      tooltip: tooltipUi.echarts({
         trigger: "item",
         formatter: (params) => {
           if (params.dataType === "edge") {
-            return `${escapeHtml(params.data.sourceLabel || params.data.source)} to ${escapeHtml(params.data.targetLabel || params.data.target)}<br />${formatNumber(params.data.value)} visits`;
+            return tooltipUi.render({
+              title: `${params.data.sourceLabel || params.data.source} to ${params.data.targetLabel || params.data.target}`,
+              rows: [{ label: "Visits", value: formatNumber(params.data.value) }]
+            });
           }
 
           const value = Number(params.data?.value) || 0;
-          return `${escapeHtml(params.data?.label || params.name)}<br />${formatNumber(value)} visits`;
+          return tooltipUi.render({
+            title: params.data?.label || params.name,
+            rows: [{ label: "Visits", value: formatNumber(value) }]
+          });
         }
-      },
+      }),
       series: [
         {
           type: "sankey",
@@ -5293,12 +5453,7 @@
           itemStyle: {
             borderColor: chartTheme.colors.white,
             borderWidth: 1
-          },
-          levels: [
-            { depth: 0, itemStyle: { color: chartTheme.colors.mutedText } },
-            { depth: 1, itemStyle: { color: chartTheme.series[0] } },
-            { depth: 2, itemStyle: { color: chartTheme.series[1] } }
-          ]
+          }
         }
       ]
     };
@@ -5347,8 +5502,9 @@
     }
   }
 
-  function renderPageDetails(data, onSelectPeriod) {
+  function renderPageDetails(data) {
     currentPageDetailsData = data;
+    syncProductAreaPalette(data);
     pageCompaniesState.page = 1;
     pageCompaniesState.isLoading = false;
     pageCompaniesState.loadingToken += 1;
@@ -5360,7 +5516,6 @@
     renderPageDetailsHeader(data);
     mountDetailPageSelector();
     mountPageDetailPaginatedTableSort();
-    renderPeriodSelector(data, onSelectPeriod);
     renderPageMetricDynamics(data);
     renderRelatedPagesCard(data);
     renderPageChampionsTable(data);
@@ -5375,14 +5530,26 @@
       .sort((a, b) => config.value(b) - config.value(a))
       .slice(0, config.limit || 6);
     const topValues = topRows.map((row) => config.value(row));
+    const topLabels = pageChartLabels(topRows);
 
     return {
       color: [config.color || chartTheme.colors.primary],
-      tooltip: {
+      tooltip: tooltipUi.echarts({
         trigger: "axis",
         axisPointer: { type: "shadow" },
-        valueFormatter: (value) => `${formatNumber(value)}${config.suffix || ""}`
-      },
+        formatter: (params) => {
+          const item = (Array.isArray(params) ? params : [params])[0];
+          return item
+            ? tooltipUi.render({
+                title: item.axisValueLabel || item.name || "",
+                rows: [{
+                  label: config.name || "Value",
+                  value: `${formatNumber(item.value)}${config.suffix || ""}`
+                }]
+              })
+            : "";
+        }
+      }),
       grid: {
         left: 112,
         right: 28,
@@ -5403,7 +5570,7 @@
       yAxis: {
         type: "category",
         inverse: true,
-        data: topRows.map((row) => row.page_name),
+        data: topLabels,
         axisTick: { show: false },
         axisLine: { show: false },
         axisLabel: { color: chartTheme.colors.text }
@@ -5460,7 +5627,7 @@
     });
 
     return {
-      tooltip: {
+      tooltip: tooltipUi.echarts({
         trigger: "item",
         confine: true,
         formatter: (params) => {
@@ -5469,24 +5636,20 @@
           const pageGroup = node.page_group || node.name || "Unassigned";
           const share = ((node.engaged_seconds || 0) / totalEngagedSeconds) * 100;
 
-          return `
-            <div>
-              <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(node.name || params.name)}</div>
-              ${
-                isGroup
-                  ? `<div>Product area / page group: <strong>${escapeHtml(pageGroup)}</strong></div><div>Pages: <strong>${formatNumber(node.page_count || node.children?.length || 0)}</strong></div>`
-                  : `<div>Product area / page group: <strong>${escapeHtml(pageGroup)}</strong></div>`
-              }
-              <div>Engaged time: <strong>${escapeHtml(formatDurationShort(node.engaged_seconds))}</strong></div>
-              <div>Visits: <strong>${formatNumber(node.visits_count || 0)}</strong></div>
-              <div>Companies: <strong>${formatNumber(node.companies_count || 0)}</strong></div>
-              <div>Adoption: <strong>${formatNumber(node.adoption_pct || 0)}%</strong></div>
-              <div>Share of time: <strong>${share.toFixed(1)}%</strong></div>
-              <div>Change vs previous period: <strong>${escapeHtml(formatSignedPercent(node.engaged_change_pct))}</strong></div>
-            </div>
-          `;
+          const rows = [
+            { label: "Product area / page group", value: pageGroup },
+            ...(isGroup ? [{ label: "Pages", value: formatNumber(node.page_count || node.children?.length || 0) }] : []),
+            { label: "Engaged time", value: formatDurationShort(node.engaged_seconds) },
+            { label: "Visits", value: formatNumber(node.visits_count || 0) },
+            { label: "Companies", value: formatNumber(node.companies_count || 0) },
+            { label: "Adoption", value: `${formatNumber(node.adoption_pct || 0)}%` },
+            { label: "Share of time", value: `${share.toFixed(1)}%` },
+            { label: "Change vs previous period", value: formatSignedPercent(node.engaged_change_pct) }
+          ];
+
+          return tooltipUi.render({ title: node.name || params.name, rows });
         }
-      },
+      }),
       series: [
         {
           type: "treemap",
@@ -5609,6 +5772,27 @@
     return 0;
   }
 
+  // The payload carries more pages than the chart can hold legibly, and the
+  // product-area filter may have removed some of them, so the top five are
+  // picked here from whatever survived rather than at build time.
+  function topPagesTimeSeriesRows(data) {
+    const rows = Array.isArray(data?.series) ? data.series : [];
+    const seriesTotal = (row) => {
+      const explicitTotal = Number(row?.total);
+
+      if (Number.isFinite(explicitTotal)) {
+        return explicitTotal;
+      }
+
+      return finiteNumericValues(row?.values).reduce((sum, value) => sum + value, 0);
+    };
+
+    return rows
+      .slice()
+      .sort((a, b) => seriesTotal(b) - seriesTotal(a))
+      .slice(0, TOP_PAGES_TIME_SERIES_LIMIT);
+  }
+
   function getTopPagesTimeValueExtent(seriesRows) {
     const values = seriesRows
       .flatMap((row) => (Array.isArray(row.values) ? row.values : []))
@@ -5717,23 +5901,34 @@
 
   function createTopPagesTimeOption(timeData, config) {
     const data = timeData || { labels: [], series: [], granularity: "day" };
-    const seriesRows = Array.isArray(data.series) ? data.series : [];
+    const seriesRows = topPagesTimeSeriesRows(data);
     const labelSpacerCategory = "";
     const xAxisLabels = (Array.isArray(data.labels) ? data.labels : []).concat(labelSpacerCategory);
     const formatValue = config.formatValue || formatNumber;
     const labelSeriesSuffix = " label connector";
-    const valueExtent = getTopPagesTimeValueExtent(seriesRows);
+    const trendSeriesSuffix = " hover trend";
+    const trendValuesBySeriesIndex = seriesRows.map((row) => buildStraightTrendLine(
+      row.values,
+      config.selectedPeriodDays || data.labels?.length
+    ));
+    const valueExtent = getTopPagesTimeValueExtent(
+      seriesRows.concat(trendValuesBySeriesIndex.map((values) => ({ values })))
+    );
     const labelValuesBySeriesIndex = layoutTopPagesEndLabels(seriesRows, valueExtent, {
       plotHeight: 254,
       labelGap: 18,
       labelPadding: 8
     });
+    const seriesLabels = pageChartLabels(seriesRows);
     const lineSeries = seriesRows.map((row, index) => {
       const color = chartTheme.series[index % chartTheme.series.length];
+      const seriesLabel = seriesLabels[index];
 
       return {
-        name: row.page_name,
+        name: seriesLabel,
         type: "line",
+        cursor: "default",
+        triggerLineEvent: true,
         smooth: true,
         showSymbol: false,
         symbol: "circle",
@@ -5745,12 +5940,14 @@
         lineStyle: {
           color,
           width: 2
-        }
+        },
+        z: 5
       };
     });
     const connectorSeries = seriesRows.map((row, index) => {
       const color = chartTheme.series[index % chartTheme.series.length];
       const labelColor = readableSeriesLabelColor(color);
+      const seriesLabel = seriesLabels[index];
       const lastValue = getLastNumericValue(row.values);
       const labelValue = labelValuesBySeriesIndex[index] ?? lastValue;
       const connectorData = Array.from({ length: xAxisLabels.length }, () => null);
@@ -5759,10 +5956,12 @@
       connectorData[Math.max(xAxisLabels.length - 1, 0)] = labelValue;
 
       return {
-        name: `${row.page_name}${labelSeriesSuffix}`,
+        name: `${seriesLabel}${labelSeriesSuffix}`,
         type: "line",
         animation: false,
-        silent: true,
+        silent: false,
+        triggerLineEvent: true,
+        cursor: "default",
         showSymbol: false,
         connectNulls: false,
         data: connectorData,
@@ -5778,7 +5977,7 @@
           fontWeight: "500",
           width: 92,
           overflow: "truncate",
-          formatter: () => row.page_name
+          formatter: () => seriesLabel
         },
         lineStyle: {
           color,
@@ -5792,37 +5991,68 @@
         z: 6
       };
     });
+    const trendSeries = seriesRows.map((row, index) => {
+      const color = chartTheme.series[index % chartTheme.series.length];
+      const seriesLabel = seriesLabels[index];
+      const trendValues = trendValuesBySeriesIndex[index];
+      const visibleLineStyle = currentStraightTrendLineStyle(color);
 
+      return {
+        name: `${seriesLabel}${trendSeriesSuffix}`,
+        type: "line",
+        animation: false,
+        silent: true,
+        smooth: false,
+        symbol: "none",
+        data: trendValues.length
+          ? trendValues.concat(null)
+          : Array.from({ length: xAxisLabels.length }, () => null),
+        tooltip: {
+          show: false
+        },
+        lineStyle: {
+          ...visibleLineStyle,
+          opacity: 0
+        },
+        emphasis: {
+          lineStyle: visibleLineStyle
+        },
+        blur: {
+          lineStyle: {
+            opacity: 0
+          }
+        },
+        z: 4
+      };
+    });
     return {
       color: chartTheme.series,
-      tooltip: {
+      tooltip: tooltipUi.echarts({
         trigger: "axis",
         confine: true,
         axisPointer: {
           type: "line"
         },
         formatter: (params) => {
-          const items = (Array.isArray(params) ? params : [params]).filter((item) => !String(item.seriesName || "").endsWith(labelSeriesSuffix));
+          const items = (Array.isArray(params) ? params : [params]).filter((item) => (
+            Number(item.seriesIndex) >= 0 && Number(item.seriesIndex) < lineSeries.length
+          ));
           const heading = items[0]?.axisValueLabel || "";
 
           if (!items.length) {
             return "";
           }
 
-          const rows = items
-            .map(
-              (item) => `
-                <div style="display:flex;gap:16px;justify-content:space-between;min-width:180px;">
-                  <span>${item.marker}${escapeHtml(item.seriesName)}</span>
-                  <strong>${escapeHtml(formatValue(item.value))}</strong>
-                </div>
-              `
-            )
-            .join("");
-
-          return `<div><div style="margin-bottom:6px;font-weight:600;">${escapeHtml(heading)}</div>${rows}</div>`;
+          return tooltipUi.render({
+            title: heading,
+            rows: items.map((item) => ({
+              label: item.seriesName,
+              value: formatValue(item.value),
+              marker: { color: item.color, type: "line" }
+            }))
+          });
         }
-      },
+      }),
       grid: {
         left: 56,
         right: 112,
@@ -5854,24 +6084,110 @@
         },
         splitLine: { show: false }
       },
-      series: lineSeries.concat(connectorSeries)
+      series: lineSeries.concat(connectorSeries, trendSeries)
     };
   }
 
+  function bindTopPagesTimeHover(chart, lineSeriesCount, element = null) {
+    const count = Math.max(0, Number(lineSeriesCount) || 0);
+
+    if (!chart || !count) {
+      return chart;
+    }
+
+    let activeSeriesIndex = null;
+    const mainSeriesIndexFor = (params) => {
+      const seriesIndex = Number(params?.seriesIndex);
+
+      if (
+        params?.seriesType !== "line"
+        || !Number.isInteger(seriesIndex)
+        || seriesIndex < 0
+        || seriesIndex >= count * 2
+      ) {
+        return null;
+      }
+
+      return seriesIndex < count ? seriesIndex : seriesIndex - count;
+    };
+    const clearActiveSeries = () => {
+      if (activeSeriesIndex === null) {
+        return;
+      }
+
+      const seriesIndex = activeSeriesIndex;
+      activeSeriesIndex = null;
+      chart.dispatchAction({
+        type: "downplay",
+        batch: [
+          { seriesIndex },
+          { seriesIndex: count * 2 + seriesIndex }
+        ]
+      });
+    };
+
+    chart.on("mouseover", (params) => {
+      const seriesIndex = mainSeriesIndexFor(params);
+
+      if (seriesIndex === null || seriesIndex === activeSeriesIndex) {
+        return;
+      }
+
+      clearActiveSeries();
+      activeSeriesIndex = seriesIndex;
+      chart.dispatchAction({
+        type: "highlight",
+        batch: [
+          { seriesIndex },
+          { seriesIndex: count * 2 + seriesIndex, notBlur: true }
+        ]
+      });
+    });
+
+    chart.on("mouseout", (params) => {
+      if (mainSeriesIndexFor(params) === activeSeriesIndex) {
+        clearActiveSeries();
+      }
+    });
+
+    chart.getZr()?.on("globalout", clearActiveSeries);
+    element?.addEventListener?.("pointerleave", clearActiveSeries);
+    element?.addEventListener?.("mouseleave", clearActiveSeries);
+    globalScope.addEventListener("mousemove", (event) => {
+      if (activeSeriesIndex !== null && element && !element.contains(event.target)) {
+        clearActiveSeries();
+      }
+    });
+    return chart;
+  }
+
+  function mountTopPagesTimeChart(element, timeData, config) {
+    const lineSeriesCount = topPagesTimeSeriesRows(timeData).length;
+    const chart = mountChart(element, createTopPagesTimeOption(timeData, config));
+
+    return bindTopPagesTimeHover(chart, lineSeriesCount, element);
+  }
+
   function mountOverviewCharts(data) {
-    mountChart(
+    const selectedPeriodDays = getRequestedPeriodDays();
+
+    mountTopPagesTimeChart(
       document.getElementById("top-pages-visits-time-chart"),
-      createTopPagesTimeOption(data.top_pages_by_visits_over_time, {
+      data.top_pages_by_visits_over_time,
+      {
         yAxisName: "Visits",
-        formatValue: formatNumber
-      })
+        formatValue: formatNumber,
+        selectedPeriodDays
+      }
     );
-    mountChart(
+    mountTopPagesTimeChart(
       document.getElementById("top-pages-engaged-time-chart"),
-      createTopPagesTimeOption(data.top_pages_by_engaged_time_over_time, {
+      data.top_pages_by_engaged_time_over_time,
+      {
         yAxisName: "Time spent",
-        formatValue: formatDurationShort
-      })
+        formatValue: formatDurationShort,
+        selectedPeriodDays
+      }
     );
     mountChart(document.getElementById("engaged-time-treemap-chart"), createEngagedTimeTreemapOption(data));
     mountChart(document.getElementById("overview-flow-chart"), createSankeyOption(data));
@@ -5921,10 +6237,21 @@
 
     return {
       color: [chartTheme.colors.primary],
-      tooltip: {
+      tooltip: tooltipUi.echarts({
         trigger: "axis",
-        valueFormatter: (value) => (metric === "engaged_time" ? `${value}h` : formatNumber(value))
-      },
+        formatter: (params) => {
+          const item = (Array.isArray(params) ? params : [params])[0];
+          return item
+            ? tooltipUi.render({
+                title: item.axisValueLabel || "",
+                rows: [{
+                  label: metricLabels[metric],
+                  value: metric === "engaged_time" ? `${item.value}h` : formatNumber(item.value)
+                }]
+              })
+            : "";
+        }
+      }),
       grid: {
         left: 48,
         right: 20,
@@ -5988,7 +6315,8 @@
     });
   }
 
-  const overviewSankeyMaxLinks = 18;
+  const overviewSankeyMaxLinks = 12;
+  const overviewSankeyMaxNodes = 10;
 
   function wouldCreateSankeyCycle(adjacency, source, target) {
     if (source === target) {
@@ -6035,17 +6363,18 @@
       });
     });
 
-    const ensureNode = (label, productArea = {}) => {
-      const cleanLabel = String(label || "Unassigned").trim() || "Unassigned";
+    const ensureNode = (name, label, productArea = {}) => {
+      const cleanName = String(name || "unassigned").trim() || "unassigned";
+      const cleanLabel = String(label || name || "Unassigned").trim() || "Unassigned";
 
-      if (!nodesByName.has(cleanLabel)) {
-        nodesByName.set(cleanLabel, {
-          name: cleanLabel,
+      if (!nodesByName.has(cleanName)) {
+        nodesByName.set(cleanName, {
+          name: cleanName,
           label: cleanLabel,
           ...productArea
         });
       } else {
-        const node = nodesByName.get(cleanLabel);
+        const node = nodesByName.get(cleanName);
 
         Object.entries(productArea).forEach(([key, value]) => {
           if (value && !node[key]) {
@@ -6054,45 +6383,54 @@
         });
       }
 
-      return cleanLabel;
+      return cleanName;
     };
 
     const candidates = links
       .map((link) => {
-        const sourceLabel = String(link?.source || "").trim();
-        const targetLabel = String(link?.target || "").trim();
+        const source = String(link?.source || "").trim();
+        const target = String(link?.target || "").trim();
+        const sourceLabel = String(link?.sourceLabel || link?.source_label || nodesByName.get(source)?.label || source).trim();
+        const targetLabel = String(link?.targetLabel || link?.target_label || nodesByName.get(target)?.label || target).trim();
         const value = Number(link?.value) || 0;
 
         return {
           ...link,
-          source: sourceLabel,
-          target: targetLabel,
+          source,
+          target,
           sourceLabel,
           targetLabel,
           value
         };
       })
-      .filter((link) => link.sourceLabel && link.targetLabel && link.value > 0)
+      .filter((link) => link.source && link.target && link.value > 0)
       .sort((a, b) => b.value - a.value);
 
     const adjacency = new Map();
     const normalizedLinks = [];
+    const selectedNodeNames = new Set();
 
     candidates.forEach((link) => {
       if (normalizedLinks.length >= overviewSankeyMaxLinks) {
         return;
       }
 
-      if (wouldCreateSankeyCycle(adjacency, link.sourceLabel, link.targetLabel)) {
+      const addedNodeCount = [link.source, link.target]
+        .filter((name) => !selectedNodeNames.has(name)).length;
+      if (selectedNodeNames.size + addedNodeCount > overviewSankeyMaxNodes) {
         return;
       }
 
-      const source = ensureNode(link.sourceLabel, {
+      if (wouldCreateSankeyCycle(adjacency, link.source, link.target)) {
+        return;
+      }
+
+      const source = ensureNode(link.source, link.sourceLabel, {
         product_area_key: link.source_product_area_key || link.sourceProductAreaKey,
         product_area_name: link.source_product_area_name || link.sourceProductAreaName || link.source_product_area || link.sourceProductArea,
         color: link.source_product_area_color || link.sourceProductAreaColor || link.source_color || link.sourceColor
       });
-      const target = ensureNode(link.targetLabel, {
+      const target = ensureNode(link.target, link.targetLabel, {
         product_area_key: link.target_product_area_key || link.targetProductAreaKey,
         product_area_name: link.target_product_area_name || link.targetProductAreaName || link.target_product_area || link.targetProductArea,
         color: link.target_product_area_color || link.targetProductAreaColor || link.target_color || link.targetColor
@@ -6105,6 +6443,8 @@
         target,
         value
       });
+      selectedNodeNames.add(source);
+      selectedNodeNames.add(target);
 
       if (!adjacency.has(source)) {
         adjacency.set(source, new Set());
@@ -6118,9 +6458,26 @@
       usedNodeNames.add(link.target);
     });
 
+    const usedNodes = Array.from(nodesByName.values()).filter((node) => usedNodeNames.has(node.name));
+    const labels = disambiguatePageLabels(
+      usedNodes,
+      (node) => node.label || node.name,
+      sankeyNodeProductAreaName,
+      (node) => node.product_area_key || node.productAreaKey
+    );
+    const labelByNodeName = new Map();
+    const normalizedNodes = usedNodes.map((node, index) => {
+      labelByNodeName.set(node.name, labels[index]);
+      return { ...node, label: labels[index] };
+    });
+
     return {
-      nodes: Array.from(nodesByName.values()).filter((node) => usedNodeNames.has(node.name)),
-      links: normalizedLinks
+      nodes: normalizedNodes,
+      links: normalizedLinks.map((link) => ({
+        ...link,
+        sourceLabel: labelByNodeName.get(link.source) || link.sourceLabel,
+        targetLabel: labelByNodeName.get(link.target) || link.targetLabel
+      }))
     };
   }
 
@@ -6135,23 +6492,46 @@
         color: productAreaColor(sankeyNodeProductAreaName(node), productAreaExplicitColor(node))
       }
     }));
+    const nodeColorByName = new Map(nodes.map((node) => [node.name, node.itemStyle.color]));
+    const lightLinkColor = (color) => mixHexColors(color, chartTheme.colors.white, 0.65);
+    const LinearGradient = globalScope.echarts?.graphic?.LinearGradient;
+    const links = sankeyData.links.map((link) => {
+      const sourceColor = lightLinkColor(nodeColorByName.get(link.source) || chartTheme.colors.primary);
+      const targetColor = lightLinkColor(nodeColorByName.get(link.target) || chartTheme.colors.primary);
+
+      return {
+        ...link,
+        lineStyle: {
+          ...(link.lineStyle || {}),
+          color: LinearGradient
+            ? new LinearGradient(0, 0, 1, 0, [
+                { offset: 0, color: sourceColor },
+                { offset: 1, color: targetColor }
+              ])
+            : sourceColor
+        }
+      };
+    });
 
     return {
-      tooltip: {
+      tooltip: tooltipUi.echarts({
         trigger: "item",
         formatter: (params) => {
           if (params.dataType === "edge") {
-            return `${escapeHtml(params.data.sourceLabel || params.data.source)} to ${escapeHtml(params.data.targetLabel || params.data.target)}<br />${formatNumber(params.data.value)} transitions`;
+            return tooltipUi.render({
+              title: `${params.data.sourceLabel || params.data.source} to ${params.data.targetLabel || params.data.target}`,
+              rows: [{ label: "Transitions", value: formatNumber(params.data.value) }]
+            });
           }
 
-          return escapeHtml(params.data?.label || params.name);
+          return tooltipUi.render({ title: params.data?.label || params.name, rows: [] });
         }
-      },
+      }),
       series: [
         {
           type: "sankey",
           data: nodes,
-          links: sankeyData.links,
+          links,
           nodeWidth: 14,
           nodeGap: 18,
           draggable: false,
@@ -6166,7 +6546,9 @@
           lineStyle: {
             color: "gradient",
             curveness: 0.52,
-            opacity: 0.28
+            opacity: 1,
+            borderColor: chartTheme.colors.white,
+            borderWidth: 2
           },
           itemStyle: {
             borderColor: chartTheme.colors.white,
@@ -6175,6 +6557,113 @@
         }
       ]
     };
+  }
+
+  function mountTwoWayMovement(data) {
+    const tableBody = document.getElementById("two-way-movement-table-body");
+    if (!tableBody) {
+      return;
+    }
+
+    const sourceRows = Array.isArray(data?.two_way_movement?.rows)
+      ? data.two_way_movement.rows.slice(0, 10)
+      : [];
+    let sortKey = "reciprocal_volume";
+    let descending = true;
+    let tooltipId = 0;
+
+    const strengthFor = (value) => {
+      const roundedPct = Math.round(Number(value) || 0);
+      if (roundedPct >= 70) return { label: "Strong", slug: "strong", roundedPct };
+      if (roundedPct >= 40) return { label: "Moderate", slug: "moderate", roundedPct };
+      return { label: "Mostly one-way", slug: "mostly-one-way", roundedPct };
+    };
+
+    const rowTooltip = (row, id) => `
+      <span id="${id}" class="metric-header-tooltip__content" role="tooltip">
+        ${tooltipUi.render({
+          title: `${row.page_a_name} ↔ ${row.page_b_name}`,
+          sections: [
+            {
+              rows: [
+                { label: `${row.page_a_name} → ${row.page_b_name}`, value: `${formatNumber(row.a_to_b)} transitions` },
+                { label: `${row.page_b_name} → ${row.page_a_name}`, value: `${formatNumber(row.b_to_a)} transitions` }
+              ]
+            },
+            {
+              rows: [
+                { label: "Two-way movement", value: formatNumber(row.reciprocal_volume) },
+                { label: "Total transitions", value: formatNumber(row.total_transitions) },
+                { label: "Reciprocity", value: `${Math.round(Number(row.reciprocity_pct) || 0)}%` },
+                { label: "Sessions", value: formatNumber(row.sessions_count) },
+                { label: "Companies", value: formatNumber(row.companies_count) },
+                { label: "Users", value: formatNumber(row.users_count) }
+              ]
+            }
+          ]
+        })}
+      </span>`;
+
+    const render = () => {
+      const rows = [...sourceRows].sort((left, right) => {
+        const delta = sortKey === "page_pair"
+          ? `${left.page_a_name} ↔ ${left.page_b_name}`.localeCompare(`${right.page_a_name} ↔ ${right.page_b_name}`)
+          : (Number(left[sortKey]) || 0) - (Number(right[sortKey]) || 0);
+        return (descending ? -delta : delta)
+          || String(left.page_a_name || "").localeCompare(String(right.page_a_name || ""));
+      });
+
+      document.querySelectorAll("[data-two-way-movement-sort]").forEach((button) => {
+        const active = button.dataset.twoWayMovementSort === sortKey;
+        button.setAttribute("data-sort-direction", active ? (descending ? "desc" : "asc") : "");
+        button.closest("th")?.setAttribute("aria-sort", active ? (descending ? "descending" : "ascending") : "none");
+      });
+
+      if (!rows.length) {
+        tableBody.innerHTML = `<tr><td colspan="5" class="py-10 text-center text-slate-500"><span class="block font-medium text-slate-700">No strong two-way movement found</span><span class="mt-1 block">Try expanding the date range or switching to all page relationships.</span></td></tr>`;
+        return;
+      }
+
+      const maxMovement = Math.max(...rows.map((row) => Number(row.reciprocal_volume) || 0), 1);
+      tableBody.innerHTML = rows.map((row) => {
+        const forward = Number(row.a_to_b) || 0;
+        const backward = Number(row.b_to_a) || 0;
+        const total = Math.max(Number(row.total_transitions) || forward + backward, 1);
+        const movement = Number(row.reciprocal_volume) || 0;
+        const movementWidth = Math.max(10, movement / maxMovement * 96);
+        const forwardShare = Math.max(0, Math.min(100, forward / total * 100));
+        const reverseShare = 100 - forwardShare;
+        const strength = strengthFor(row.reciprocity_pct);
+        const id = `two-way-movement-row-tooltip-${tooltipId++}`;
+        const pair = `${row.page_a_name} ↔ ${row.page_b_name}`;
+        const ariaLabel = `${pair}. ${row.page_a_name} to ${row.page_b_name}: ${formatNumber(forward)} transitions. ${row.page_b_name} to ${row.page_a_name}: ${formatNumber(backward)} transitions. Two-way movement: ${formatNumber(movement)}. Total transitions: ${formatNumber(total)}. Reciprocity: ${strength.roundedPct}%. Sessions: ${formatNumber(row.sessions_count)}. Companies: ${formatNumber(row.companies_count)}. Users: ${formatNumber(row.users_count)}.`;
+
+        return `
+          <tr class="group align-middle hover:bg-slate-50">
+            <td class="py-2.5 align-middle"><span class="two-way-movement__pair" title="${escapeHtml(pair)}">${escapeHtml(pair)}</span></td>
+            <td class="py-2.5 align-middle">
+              <span class="two-way-movement-cell metric-header-tooltip" tabindex="0" aria-label="${escapeHtml(ariaLabel)}" aria-describedby="${id}">
+                <span class="two-way-movement__track" style="width:${movementWidth}px;flex-basis:${movementWidth}px" aria-hidden="true"><span class="two-way-movement__fill"><span class="two-way-movement__segment two-way-movement__segment--forward" style="width:${forwardShare}%"></span><span class="two-way-movement__segment two-way-movement__segment--reverse" style="width:${reverseShare}%"></span></span></span>
+                <span class="two-way-movement__value">${formatNumber(movement)}</span>
+                ${rowTooltip(row, id)}
+              </span>
+            </td>
+            <td class="py-2.5 align-middle"><span class="inline-flex items-center gap-2 whitespace-nowrap"><span class="two-way-movement__reciprocity-value font-medium text-slate-900">${strength.roundedPct}%</span><span class="two-way-movement__badge" data-strength="${strength.slug}">${strength.label}</span></span></td>
+            <td class="py-2.5 align-middle font-medium text-slate-900">${formatNumber(row.sessions_count)}</td>
+            <td class="py-2.5 align-middle font-medium text-slate-900">${formatNumber(row.companies_count)}</td>
+          </tr>`;
+      }).join("");
+    };
+
+    document.querySelectorAll("[data-two-way-movement-sort]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const nextKey = button.dataset.twoWayMovementSort;
+        descending = nextKey === sortKey ? !descending : nextKey !== "page_pair";
+        sortKey = nextKey;
+        render();
+      });
+    });
+    render();
   }
 
   function initDetailPage() {
@@ -6213,13 +6702,31 @@
 
       notFound?.classList.add("hidden");
       content?.classList.remove("hidden");
-      renderPageDetails(data, loadDetails);
+      renderPageDetails(data);
       mountSplitChangeValueWidthSync();
-      mountFloatingDeltaTooltips();
+      tooltipUi.mountFloatingTooltips?.();
       mountDetailStickyTableHeaders();
     };
 
     loadDetails(getRequestedPeriodDays());
+  }
+
+  if (globalScope.__HymetryExposeTestHooks) {
+    globalScope.HymetryPagesAnalyticsTesting = {
+      bindTopPagesTimeHover,
+      createCompanyEngagementScatterSpec,
+      createDetailPageFlowOption,
+      createKpiPeriodComparisonOption,
+      createKpiTrendOption,
+      createSankeyOption,
+      createTopPagesTimeOption,
+      finiteNumericValues,
+      isKpiPeriodComparison,
+      kpiNoTrendContext,
+      mountTopPagesTimeChart,
+      syncProductAreaPalette,
+      topPagesTimeSeriesRows
+    };
   }
 
   document.addEventListener("DOMContentLoaded", () => {

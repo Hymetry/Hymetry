@@ -6,13 +6,13 @@ from apps.projects.models import Project, ProjectPageNamingState
 from apps.tracker.models import ProjectNormalizationFactor, ProjectPageNamingRunMode, Session
 from apps.tracker.page_naming import run_page_naming_for_project
 from apps.tracker.session_visualizer import SessionVisualizer
+from apps.tracker.visits_retention import prune_expired_recording_visits
 from config.utils import get_django_settings_module
 
 
 @shared_task
 def calculate_bubble_cache():
     return SessionVisualizer.calculate_and_cache_bubbles_for_all_pages()
-
 
 @shared_task
 def calculate_project_normalization_factors():
@@ -32,7 +32,6 @@ def get_project_normalization_factor(project_id):
     factor = ProjectNormalizationFactor.objects.filter(project_id=project_id).first()
     return factor.factor if factor else 1000.0
 
-
 @shared_task
 def run_calculate_bubble_cache():
     result = subprocess.run(
@@ -41,6 +40,14 @@ def run_calculate_bubble_cache():
         text=True,
     )
     return result.stdout if result.returncode == 0 else f'Error {result.returncode}: {result.stderr}'
+
+
+@shared_task
+def prune_expired_recording_visits_task(retention_days=30, batch_size=100):
+    return prune_expired_recording_visits(
+        retention_days=retention_days,
+        batch_size=batch_size,
+    )
 
 
 def _serialize_page_naming_run(run):

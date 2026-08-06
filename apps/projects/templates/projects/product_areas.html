@@ -117,11 +117,36 @@
                   </colgroup>
                   <thead class="border-b border-gray-300 text-gray-700">
                     <tr>
-                      <th class="pt-4 pb-2 pr-6 font-normal">Product area</th>
-                      <th class="pt-4 pb-2 pr-6 font-normal">Page name</th>
-                      <th class="pt-4 pb-2 pr-6 font-normal">Pattern</th>
-                      <th class="pt-4 pb-2 pr-6 font-normal">Examples matched</th>
-                      <th class="pt-4 pb-2 text-right font-normal">Volume, 7d</th>
+                      <th class="pt-4 pb-2 pr-6 font-normal">
+                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="product-areas-tooltip-area">
+                          Product area
+                          <span id="product-areas-tooltip-area" class="metric-header-tooltip__content" role="tooltip">Product area assigned to matching pages</span>
+                        </span>
+                      </th>
+                      <th class="pt-4 pb-2 pr-6 font-normal">
+                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="product-areas-tooltip-page-name">
+                          Page name
+                          <span id="product-areas-tooltip-page-name" class="metric-header-tooltip__content" role="tooltip">Display name used for pages that match this rule</span>
+                        </span>
+                      </th>
+                      <th class="pt-4 pb-2 pr-6 font-normal">
+                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="product-areas-tooltip-pattern">
+                          Pattern
+                          <span id="product-areas-tooltip-pattern" class="metric-header-tooltip__content" role="tooltip">URL pattern used to group tracked pages</span>
+                        </span>
+                      </th>
+                      <th class="pt-4 pb-2 pr-6 font-normal">
+                        <span class="metric-header-tooltip" tabindex="0" aria-describedby="product-areas-tooltip-examples">
+                          Examples matched
+                          <span id="product-areas-tooltip-examples" class="metric-header-tooltip__content" role="tooltip">Recently tracked page URLs that match this rule</span>
+                        </span>
+                      </th>
+                      <th class="pt-4 pb-2 text-right font-normal">
+                        <span class="metric-header-tooltip metric-header-tooltip--end" tabindex="0" aria-describedby="product-areas-tooltip-volume">
+                          Volume, 7d
+                          <span id="product-areas-tooltip-volume" class="metric-header-tooltip__content" role="tooltip">Number of matched events received in the last 7 days</span>
+                        </span>
+                      </th>
                     </tr>
                   </thead>
 

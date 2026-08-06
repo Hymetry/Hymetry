@@ -7,8 +7,15 @@ from django.urls import reverse
 from django.utils import timezone
 from unittest.mock import patch
 
-from apps.pages import services, user_analytics, user_detail_analytics
-from apps.pages.models import PagesDetailCache, PagesOverviewCache, PagesScatterTooltipCache, UsersDetailCache, UsersOverviewCache
+from apps.pages import services, user_analytics, user_detail_analytics, views as pages_views
+from apps.pages.models import (
+    PagesDetailCache,
+    PagesOverviewCache,
+    PagesScatterTooltipCache,
+    ProductArea,
+    UsersDetailCache,
+    UsersOverviewCache,
+)
 from apps.projects.models import (
     Project,
     Workspace,
@@ -74,7 +81,7 @@ class PagesOverviewViewTests(TestCase):
                 'project': {'id': self.project.id, 'name': self.project.name},
                 'period': {'range_key': 'last_30_days'},
                 'freshness': {'generated_at': generated_at.isoformat(), 'is_stale': False},
-                'kpis': [{'label': 'Adopted pages', 'value': '1', 'delta': 'ready', 'delta_value': 1}],
+                'kpis': [{'label': 'Avg daily adopted pages', 'value': '1.0', 'delta': 'ready', 'delta_value': 1}],
                 'change_aware_rows': [],
                 'top_pages_by_visits_over_time': {'series': []},
                 'top_pages_by_engaged_time_over_time': {'series': []},
@@ -86,7 +93,10 @@ class PagesOverviewViewTests(TestCase):
             generated_at=generated_at,
         )
 
-        response = self.client.get(reverse('projects:project_pages', kwargs={'project_id': self.project.id}))
+        response = self.client.get(
+            reverse('projects:project_pages', kwargs={'project_id': self.project.id}),
+            follow=True,
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Page metrics')
@@ -96,6 +106,13 @@ class PagesOverviewViewTests(TestCase):
         self.assertContains(response, 'js/pages/django-pages-data.js')
         self.assertContains(response, 'js/pages/pages-analytics.js')
         self.assertContains(response, 'data-pages-view="overview"')
+        self.assertContains(response, 'data-overview-title-group')
+        self.assertContains(response, 'data-overview-quick-jumper')
+        self.assertContains(response, 'data-overview-filters')
+        self.assertContains(response, 'Find page')
+        self.assertContains(response, 'Search pages')
+        self.assertContains(response, 'css/overview-quick-jumper.css')
+        self.assertContains(response, 'js/shared/overview-quick-jumper.js')
         self.assertContains(response, f'data-project-id="{self.project.id}"')
         self.assertContains(
             response,
@@ -112,7 +129,7 @@ class PagesOverviewViewTests(TestCase):
         self.assertContains(response, 'top-pages-visits-time-chart')
         self.assertContains(response, 'engaged-time-treemap-chart')
         self.assertContains(response, 'company-engagement-page-group-grid')
-        self.assertContains(response, 'Adopted pages')
+        self.assertContains(response, 'Avg daily adopted pages')
         self.assertContains(response, 'pages-period-selector')
         self.assertContains(response, 'href="?range=last_7_days"')
         self.assertContains(response, 'href="?range=last_30_days"')
@@ -154,14 +171,17 @@ class PagesOverviewViewTests(TestCase):
                 'project': {'id': self.project.id, 'name': self.project.name},
                 'period': {'range_key': 'last_30_days'},
                 'freshness': {'generated_at': generated_at.isoformat(), 'is_stale': False},
-                'kpis': [{'label': 'Adopted pages', 'value': '12'}],
+                'kpis': [{'label': 'Avg daily adopted pages', 'value': '12.0'}],
                 'rows': rows,
                 'change_aware_rows': rows,
             },
             generated_at=generated_at,
         )
 
-        response = self.client.get(reverse('projects:project_pages', kwargs={'project_id': self.project.id}))
+        response = self.client.get(
+            reverse('projects:project_pages', kwargs={'project_id': self.project.id}),
+            follow=True,
+        )
         payload = self._embedded_json_payload(response, 'pages-overview-data')
         table_response = self.client.get(
             reverse('projects:project_pages_table_data', kwargs={'project_id': self.project.id}),
@@ -172,11 +192,191 @@ class PagesOverviewViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(payload['change_aware_rows']), 10)
         self.assertEqual(payload['change_aware_rows'][0]['page_name'], 'Page 11')
+        self.assertEqual(len(payload['page_selector_rows']), 12)
+        self.assertNotIn('rows', payload)
+        self.assertNotIn('page_metrics_rows', payload)
+        self.assertNotIn('company_engagement_by_product_area', payload)
+        self.assertNotIn('rows', payload['tableData']['pageMetrics'])
         self.assertEqual(payload['tableData']['pageMetrics']['pagination']['totalRows'], 12)
         self.assertEqual(table_response.status_code, 200)
         self.assertEqual(table_payload['pagination']['page'], 2)
         self.assertEqual(table_payload['pagination']['totalRows'], 12)
         self.assertEqual([row['page_name'] for row in table_payload['rows']], ['Page 01', 'Page 00'])
+
+    def test_overview_projects_only_visible_top_actions_without_mutating_cache(self):
+        generated_at = timezone.now()
+        action_clicks = [1, 9, 3, 7, 5, 11, 0]
+        top_actions_by_page = [
+            {
+                'page_key': f'page-{page_index}',
+                'page_label': f'Page {page_index}',
+                'page_group': 'Core',
+                'product_area_key': 'core',
+                'product_area_name': 'Core',
+                'visits_count': 100 - page_index,
+                'actions': [
+                    {
+                        'element_key': f'Action {clicks}',
+                        'clicks_count': clicks,
+                    }
+                    for clicks in action_clicks
+                ],
+            }
+            for page_index in range(10)
+        ]
+        top_actions_by_page_group = [
+            {
+                'page_group': f'Page {page_index}',
+                'page_name': f'Page {page_index}',
+                'product_area_key': 'core',
+                'product_area_name': 'Core',
+                'page_rule_id': str(page_index),
+                'actions': [
+                    {
+                        'element_key': f'Action {clicks}',
+                        'clicks': clicks,
+                    }
+                    for clicks in action_clicks
+                ],
+            }
+            for page_index in range(10)
+        ]
+        cache = PagesOverviewCache.objects.create(
+            project=self.project,
+            range_key='last_30_days',
+            start_date=generated_at.date(),
+            end_date=generated_at.date(),
+            filters_hash='default',
+            payload_json={
+                'schema_version': services.OVERVIEW_PAYLOAD_SCHEMA_VERSION,
+                'project': {'id': self.project.id, 'name': self.project.name},
+                'period': {'range_key': 'last_30_days'},
+                'freshness': {'generated_at': generated_at.isoformat(), 'is_stale': False},
+                'kpis': [{'label': 'Avg daily adopted pages', 'value': '1.0'}],
+                'rows': [],
+                'change_aware_rows': [],
+                'top_actions_by_page': top_actions_by_page,
+                'top_actions_by_page_group': top_actions_by_page_group,
+                'company_engagement_by_product_area': [
+                    {'product_area_name': f'Area {index}', 'points': []}
+                    for index in range(10)
+                ],
+                'company_engagement_by_page_group': [
+                    {'page_group': f'Page {index}', 'points': []}
+                    for index in range(10)
+                ],
+            },
+            generated_at=generated_at,
+        )
+
+        response = self.client.get(
+            reverse('projects:project_pages', kwargs={'project_id': self.project.id}),
+            follow=True,
+        )
+        payload = self._embedded_json_payload(response, 'pages-overview-data')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('top_actions_by_page', payload)
+        self.assertNotIn('company_engagement_by_product_area', payload)
+        self.assertEqual(len(payload['company_engagement_by_page_group']), 8)
+        self.assertEqual(
+            [group['page_name'] for group in payload['top_actions_by_page_group']],
+            [f'Page {index}' for index in range(8)],
+        )
+        self.assertTrue(
+            all(
+                [action['clicks'] for action in group['actions']]
+                == [11, 9, 7, 5, 3]
+                for group in payload['top_actions_by_page_group']
+            )
+        )
+
+        cache.refresh_from_db()
+        self.assertEqual(len(cache.payload_json['top_actions_by_page']), 10)
+        self.assertEqual(len(cache.payload_json['top_actions_by_page_group']), 10)
+        self.assertEqual(
+            [
+                action['clicks']
+                for action in cache.payload_json['top_actions_by_page_group'][0]['actions']
+            ],
+            action_clicks,
+        )
+
+    def test_overview_projects_only_the_visible_acyclic_sankey(self):
+        nodes = [
+            {'name': f'Node {index}', 'label': f'Node {index}'}
+            for index in range(15)
+        ]
+        links = [
+            {
+                'source': f'Node {index}',
+                'target': f'Node {index + 1}',
+                'value': 100 - index,
+            }
+            for index in range(14)
+        ]
+        links.insert(
+            1,
+            {'source': 'Node 1', 'target': 'Node 0', 'value': 99.5},
+        )
+        links.extend(
+            [
+                {'source': 'Node 0', 'target': 'Node 2', 'value': 90.5},
+                {'source': 'Node 0', 'target': 'Node 3', 'value': 90.4},
+                {'source': 'Node 1', 'target': 'Node 3', 'value': 90.3},
+            ],
+        )
+        sankey = {'nodes': nodes, 'links': links}
+
+        projected = pages_views._project_sankey_for_client(sankey)
+
+        self.assertEqual(len(projected['links']), 12)
+        self.assertEqual(len(projected['nodes']), 10)
+        self.assertNotIn(
+            ('Node 1', 'Node 0'),
+            {
+                (link['source'], link['target'])
+                for link in projected['links']
+            },
+        )
+        self.assertEqual(len(sankey['links']), 18)
+        self.assertEqual(len(sankey['nodes']), 15)
+
+    def test_page_selector_rows_preserve_backend_identity_keys(self):
+        rows = [
+            {
+                'page_rule_id': '101',
+                'page_name': 'Accounts',
+                'page_group': 'Core',
+                'product_area_key': 'core-v2',
+                'page_display_key': 'core-v2::accounts',
+                'companies_count': 10,
+            },
+        ]
+
+        selector_rows = pages_views._page_selector_rows(rows)
+
+        self.assertEqual(
+            selector_rows,
+            [
+                {
+                    'page_rule_id': '101',
+                    'pageRuleId': '101',
+                    'page_name': 'Accounts',
+                    'pageName': 'Accounts',
+                    'displayName': 'Accounts',
+                    'page_group': 'Core',
+                    'productAreaName': 'Core',
+                    'product_area_key': 'core-v2',
+                    'productAreaKey': 'core-v2',
+                    'page_display_key': 'core-v2::accounts',
+                    'pageDisplayKey': 'core-v2::accounts',
+                    'companies_count': 10,
+                    'visits_count': 0,
+                    'engaged_seconds': 0,
+                },
+            ],
+        )
 
     def test_overview_page_metrics_uses_display_rows_before_pagination(self):
         generated_at = timezone.now()
@@ -235,7 +435,10 @@ class PagesOverviewViewTests(TestCase):
             generated_at=generated_at,
         )
 
-        response = self.client.get(reverse('projects:project_pages', kwargs={'project_id': self.project.id}))
+        response = self.client.get(
+            reverse('projects:project_pages', kwargs={'project_id': self.project.id}),
+            follow=True,
+        )
         embedded = self._embedded_json_payload(response, 'pages-overview-data')
         table_response = self.client.get(
             reverse('projects:project_pages_table_data', kwargs={'project_id': self.project.id}),
@@ -258,11 +461,18 @@ class PagesOverviewViewTests(TestCase):
         self.assertEqual(all_companies['visits_count'], 5)
 
     def test_overview_missing_cache_is_fast_empty_state(self):
-        response = self.client.get(reverse('projects:project_pages', kwargs={'project_id': self.project.id}))
+        response = self.client.get(
+            reverse('projects:project_pages', kwargs={'project_id': self.project.id}),
+            follow=True,
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Pages')
-        self.assertContains(response, 'No data were found in the last 30 days.')
+        self.assertContains(response, 'No data were found in the last 30 complete days.')
+        self.assertContains(
+            response,
+            'Recently collected events may take a little time to appear while we prepare your analytics.',
+        )
         self.assertNotContains(response, 'pages-overview-data')
         self.assertNotContains(response, 'js/pages/pages-analytics.js')
         self.assertNotContains(response, 'style=')
@@ -285,7 +495,7 @@ class PagesOverviewViewTests(TestCase):
                 },
                 'period': {'range_key': 'last_30_days'},
                 'freshness': {'generated_at': generated_at.isoformat(), 'is_stale': False},
-                'kpis': [{'label': 'Adopted pages', 'value': '2', 'delta': 'ready', 'delta_value': 1}],
+                'kpis': [{'label': 'Avg daily adopted pages', 'value': '2.0', 'delta': 'ready', 'delta_value': 1}],
                 'rows': [
                     {
                         'page_rule_id': '1',
@@ -293,17 +503,28 @@ class PagesOverviewViewTests(TestCase):
                         'product_area_name': 'Billing',
                         'page_name': 'Invoices',
                         'page_group': 'Billing',
-                        'companies_count': 4,
+                        'companies_count': 5,
+                        'previous_companies_count': 3,
                         'adoption_pct': 40,
                         'users_count': 6,
                         'visits_count': 12,
                         'engaged_seconds': 600,
-                        'companies_change_pct': 100,
+                        'companies_change_pct': 66.7,
                         'trend_values': [1, 2],
                         'trends': {
-                            'companies': [1, 4],
+                            'companies': [1, 5],
                             'adoption': [30, 40],
                             'engaged': [120, 600],
+                        },
+                        'daily_kpi_trends': {
+                            'adoption': {
+                                'current': [20, 40],
+                                'previous': [10, 30],
+                            },
+                            'companies': {
+                                'current': [1, 2],
+                                'previous': [0, 1],
+                            },
                         },
                     },
                     {
@@ -323,6 +544,16 @@ class PagesOverviewViewTests(TestCase):
                             'companies': [6, 8],
                             'adoption': [75, 80],
                             'engaged': [900, 1200],
+                        },
+                        'daily_kpi_trends': {
+                            'adoption': {
+                                'current': [70, 80],
+                                'previous': [60, 70],
+                            },
+                            'companies': {
+                                'current': [3, 4],
+                                'previous': [2, 3],
+                            },
                         },
                     },
                 ],
@@ -333,17 +564,28 @@ class PagesOverviewViewTests(TestCase):
                         'product_area_name': 'Billing',
                         'page_name': 'Invoices',
                         'page_group': 'Billing',
-                        'companies_count': 4,
+                        'companies_count': 5,
+                        'previous_companies_count': 3,
                         'adoption_pct': 40,
                         'users_count': 6,
                         'visits_count': 12,
                         'engaged_seconds': 600,
-                        'companies_change_pct': 100,
+                        'companies_change_pct': 66.7,
                         'trend_values': [1, 2],
                         'trends': {
-                            'companies': [1, 4],
+                            'companies': [1, 5],
                             'adoption': [30, 40],
                             'engaged': [120, 600],
+                        },
+                        'daily_kpi_trends': {
+                            'adoption': {
+                                'current': [20, 40],
+                                'previous': [10, 30],
+                            },
+                            'companies': {
+                                'current': [1, 2],
+                                'previous': [0, 1],
+                            },
                         },
                     },
                     {
@@ -363,6 +605,16 @@ class PagesOverviewViewTests(TestCase):
                             'companies': [6, 8],
                             'adoption': [75, 80],
                             'engaged': [900, 1200],
+                        },
+                        'daily_kpi_trends': {
+                            'adoption': {
+                                'current': [70, 80],
+                                'previous': [60, 70],
+                            },
+                            'companies': {
+                                'current': [3, 4],
+                                'previous': [2, 3],
+                            },
                         },
                     },
                 ],
@@ -401,7 +653,37 @@ class PagesOverviewViewTests(TestCase):
                 'top_pages_by_engaged_time_over_time': {'granularity': 'day', 'labels': [], 'series': []},
                 'engaged_time_treemap': {'total_engaged_seconds': 0, 'nodes': []},
                 'sankey': {'nodes': [], 'links': []},
-                'top_actions_by_page': [],
+                'top_actions_by_page': [
+                    {
+                        'page_key': 'billing::invoices',
+                        'page_label': 'Invoices',
+                        'page_group': 'Billing',
+                        'product_area_key': 'billing',
+                        'product_area_name': 'Billing',
+                        'visits_count': 12,
+                        'actions': [
+                            {
+                                'element_key': f'Billing action {clicks}',
+                                'clicks_count': clicks,
+                            }
+                            for clicks in (1, 6, 2, 5, 3, 4)
+                        ],
+                    },
+                    {
+                        'page_key': 'core::dashboard',
+                        'page_label': 'Dashboard',
+                        'page_group': 'Core',
+                        'product_area_key': 'core',
+                        'product_area_name': 'Core',
+                        'visits_count': 30,
+                        'actions': [
+                            {
+                                'element_key': 'Core action',
+                                'clicks_count': 10,
+                            }
+                        ],
+                    },
+                ],
                 'company_engagement_by_product_area': [],
             },
             generated_at=generated_at,
@@ -410,6 +692,7 @@ class PagesOverviewViewTests(TestCase):
         response = self.client.get(
             reverse('projects:project_pages', kwargs={'project_id': self.project.id}),
             {'product_area': 'billing'},
+            follow=True,
         )
 
         self.assertEqual(response.status_code, 200)
@@ -424,14 +707,38 @@ class PagesOverviewViewTests(TestCase):
         self.assertEqual([row['page_name'] for row in payload['change_aware_rows']], ['Invoices'])
         self.assertEqual([row['product_area_name'] for row in payload['product_area_summary']], ['Billing'])
         self.assertEqual([row['page_name'] for row in payload['top_pages_by_visits_over_time']['series']], ['Invoices'])
-        self.assertEqual(payload['kpis'][0]['value'], '1')
-        self.assertEqual(payload['kpis'][1]['trend_values'], [30.0, 40.0])
-        self.assertEqual(payload['kpis'][2]['trend_values'], [120.0, 600.0])
-        self.assertEqual(payload['kpis'][3]['trend_values'], [1.0, 4.0])
+        self.assertEqual(payload['kpis'][0]['label'], 'Avg daily adopted pages')
+        self.assertEqual(payload['kpis'][0]['value'], '1.0')
+        self.assertEqual(payload['kpis'][0]['trend_values'], [1, 1])
+        self.assertEqual(payload['kpis'][1]['label'], 'Avg daily adoption')
+        self.assertEqual(payload['kpis'][1]['trend_values'], [20.0, 40.0])
+        self.assertEqual(payload['kpis'][2]['delta'], '5m 00s avg/day')
+        self.assertEqual(payload['kpis'][2]['trend_values'], [120.0, 480.0])
+        self.assertEqual(payload['kpis'][3]['trend_values'], [3, 5])
+        self.assertEqual(payload['kpis'][3]['trend_scope'], 'period_comparison')
+        self.assertEqual(
+            payload['kpis'][3]['trend_delta_value'],
+            payload['kpis'][3]['delta_value'],
+        )
+        self.assertNotIn('kpi_daily_rows', payload)
+        self.assertNotIn('daily_kpi_trends', payload['change_aware_rows'][0])
+        self.assertNotIn('top_actions_by_page', payload)
+        self.assertEqual(
+            [group['page_name'] for group in payload['top_actions_by_page_group']],
+            ['Invoices'],
+        )
+        self.assertEqual(
+            [
+                action['clicks']
+                for action in payload['top_actions_by_page_group'][0]['actions']
+            ],
+            [6, 5, 4, 3, 2],
+        )
 
         multi_response = self.client.get(
             reverse('projects:project_pages', kwargs={'project_id': self.project.id}),
             {'product_area': ['billing', 'core']},
+            follow=True,
         )
 
         self.assertEqual(multi_response.status_code, 200)
@@ -461,23 +768,39 @@ class PagesOverviewViewTests(TestCase):
             generated_at=generated_at,
         )
 
-        response = self.client.get(reverse('projects:project_users', kwargs={'project_id': self.project.id}))
+        response = self.client.get(
+            reverse('projects:project_users', kwargs={'project_id': self.project.id}),
+            follow=True,
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Users')
+        self.assertNotContains(
+            response,
+            'User-level adoption, engagement, and product usage across B2B accounts.',
+        )
         self.assertContains(response, 'users-overview-data')
         self.assertContains(response, 'css/users/overview.css')
         self.assertContains(response, 'js/users/django-users-data.js')
         self.assertContains(response, 'js/users/users-analytics.js')
         self.assertContains(response, 'data-users-view="overview"')
+        self.assertContains(response, 'data-overview-title-group')
+        self.assertContains(response, 'data-overview-quick-jumper')
+        self.assertContains(response, 'data-overview-filters')
+        self.assertContains(response, 'Find user')
+        self.assertContains(response, 'Search users')
+        self.assertContains(response, 'css/overview-quick-jumper.css')
+        self.assertContains(response, 'js/shared/overview-quick-jumper.js')
         self.assertContains(response, 'data-user-detail-base-url')
         self.assertContains(response, 'Engagement distribution')
         self.assertContains(response, 'User consistency vs intensity')
         self.assertContains(response, 'Users list')
         self.assertContains(response, 'Return frequency and session depth are calculated from distinct sessions in the selected period.')
+        # The legacy company and feature dropdowns are gone; the control ids
+        # are what says so. "All companies" is no longer evidence either way,
+        # because the Companies scope selector renders it as its own label.
         self.assertNotContains(response, 'users-company-filter')
         self.assertNotContains(response, 'users-feature-filter')
-        self.assertNotContains(response, 'All companies')
         self.assertNotContains(response, 'All pages')
 
     def test_user_detail_uses_cached_detail_payload(self):
@@ -626,7 +949,7 @@ class PagesOverviewViewTests(TestCase):
         self.assertEqual(table_payload['pagination']['totalRows'], 18)
         self.assertEqual([row['pageName'] for row in table_payload['rows']], ['Page 02', 'Page 01', 'Page 00'])
 
-    def test_users_overview_embeds_initial_users_and_defers_full_rows(self):
+    def test_users_overview_embeds_compact_scatter_and_first_table_page(self):
         generated_at = timezone.now()
         users = [
             {
@@ -640,10 +963,27 @@ class PagesOverviewViewTests(TestCase):
                 'engagedSeconds': 120 - index,
                 'visitsCount': 7,
                 'avgVisitSeconds': 17,
-                'pageGroups': [{'name': 'Core product', 'engagedSeconds': 120}],
-                'topFeatures': [{'feature': 'Dashboard', 'engagedSeconds': 120}],
+                'pageGroups': [{
+                    'key': 'core',
+                    'name': 'Core product',
+                    'productArea': 'Core product',
+                    'productAreaId': 'core',
+                    'color': '#4269d0',
+                    'productAreaColor': '#4269d0',
+                    'product_area_color': '#4269d0',
+                    'engagedSeconds': 120,
+                    'visits': 7,
+                    'clicks': 3,
+                }],
+                'topFeatures': [{
+                    'feature': 'Dashboard',
+                    'productArea': 'Core product',
+                    'engagedSeconds': 120,
+                    'visits': 7,
+                    'clicks': 3,
+                }],
             }
-            for index in range(user_analytics.INITIAL_USERS_PAYLOAD_LIMIT + 5)
+            for index in range(user_analytics.SCATTER_VISIBLE_LIMIT + 5)
         ]
         UsersOverviewCache.objects.create(
             project=self.project,
@@ -658,34 +998,95 @@ class PagesOverviewViewTests(TestCase):
                 'kpis': [{'key': 'activeUsers', 'label': 'Active users', 'value': len(users)}],
                 'users': users,
                 'scatter': users[:user_analytics.SCATTER_VISIBLE_LIMIT],
+                'scatterMeta': {
+                    'visibleLimit': user_analytics.SCATTER_VISIBLE_LIMIT,
+                    'totalUsers': len(users),
+                    'shownUsers': user_analytics.SCATTER_VISIBLE_LIMIT,
+                    'isLimited': True,
+                },
             },
             generated_at=generated_at,
         )
 
-        response = self.client.get(reverse('projects:project_users', kwargs={'project_id': self.project.id}))
+        response = self.client.get(
+            reverse('projects:project_users', kwargs={'project_id': self.project.id}),
+            follow=True,
+        )
 
         self.assertEqual(response.status_code, 200)
         payload = self._embedded_json_payload(response, 'users-overview-data')
-        self.assertEqual(len(payload['users']), user_analytics.INITIAL_USERS_PAYLOAD_LIMIT)
-        self.assertTrue(payload['usersDeferred']['isPartial'])
-        self.assertContains(response, 'user-49@example.com')
-        self.assertNotContains(response, 'user-50@example.com')
+        self.assertEqual(len(payload['users']), user_analytics.USERS_TABLE_PAGE_SIZE)
+        self.assertEqual(len(payload['scatter']), user_analytics.SCATTER_VISIBLE_LIMIT)
+        self.assertFalse(payload['usersDeferred']['isPartial'])
+        self.assertEqual(payload['usersDeferred']['initialScatter'], user_analytics.SCATTER_VISIBLE_LIMIT)
+        self.assertEqual(payload['usersDeferred']['totalUsers'], len(users))
+        self.assertEqual(payload['tableData']['users']['pagination']['totalRows'], len(users))
+        self.assertContains(response, 'user-19@example.com')
+        self.assertNotIn('user-20@example.com', [row['email'] for row in payload['users']])
+        self.assertNotIn('email', payload['scatter'][0])
+        self.assertEqual(
+            payload['scatter'][0]['pageGroups'][0],
+            {
+                'name': 'Core product',
+                'color': '#4269d0',
+                'engagedSeconds': 120,
+                'visits': 7,
+                'clicks': 3,
+            },
+        )
         self.assertContains(response, self._project_route('project_users_data'))
+        self.assertEqual(response.context['users_table_url'], self._project_route('project_users_table_data'))
+
+        table_response = self.client.get(
+            reverse('projects:project_users_table_data', kwargs={'project_id': self.project.id}),
+            {
+                'page': 2,
+                'page_size': user_analytics.USERS_TABLE_PAGE_SIZE,
+                'sort': 'engagedSeconds',
+                'direction': 'desc',
+            },
+        )
+        table_payload = table_response.json()
+
+        self.assertEqual(table_response.status_code, 200)
+        self.assertEqual(table_payload['pagination']['page'], 2)
+        self.assertEqual(table_payload['pagination']['totalRows'], len(users))
+        self.assertEqual(table_payload['rows'][0]['email'], 'user-20@example.com')
+        self.assertEqual(table_payload['rows'][-1]['email'], 'user-39@example.com')
+        self.assertEqual(table_payload['filterOptions']['companies'], ['Acme Corp'])
+        self.assertEqual(table_payload['filterOptions']['statuses'], ['Healthy'])
+
+        filtered_response = self.client.get(
+            reverse('projects:project_users_table_data', kwargs={'project_id': self.project.id}),
+            {
+                'q': 'user-304@example.com',
+                'company': 'Acme Corp',
+                'status': 'Healthy',
+            },
+        )
+        self.assertEqual(filtered_response.status_code, 200)
+        self.assertEqual(filtered_response.json()['pagination']['totalRows'], 1)
+        self.assertEqual(filtered_response.json()['rows'][0]['email'], 'user-304@example.com')
 
         data_response = self.client.get(reverse('projects:project_users_data', kwargs={'project_id': self.project.id}))
 
         self.assertEqual(data_response.status_code, 200)
         deferred_payload = data_response.json()
-        self.assertEqual(len(deferred_payload['users']), len(users))
+        self.assertNotIn('users', deferred_payload)
+        self.assertEqual(len(deferred_payload['scatter']), user_analytics.SCATTER_VISIBLE_LIMIT)
+        self.assertNotIn('email', deferred_payload['scatter'][0])
         self.assertFalse(deferred_payload['usersDeferred']['isPartial'])
-        self.assertEqual(deferred_payload['users'][-1]['email'], 'user-54@example.com')
+        self.assertEqual(deferred_payload['usersDeferred']['totalUsers'], len(users))
 
     def test_users_overview_missing_cache_is_fast_empty_state(self):
-        response = self.client.get(reverse('projects:project_users', kwargs={'project_id': self.project.id}))
+        response = self.client.get(
+            reverse('projects:project_users', kwargs={'project_id': self.project.id}),
+            follow=True,
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Users')
-        self.assertContains(response, 'No data were found in the last 30 days.')
+        self.assertContains(response, 'No data were found in the last 30 complete days.')
         self.assertNotContains(response, 'users-overview-data')
         self.assertNotContains(response, 'js/users/users-analytics.js')
 
@@ -693,15 +1094,18 @@ class PagesOverviewViewTests(TestCase):
         COMPANIES_QUEUE_REBUILDS_ON_REQUEST=True,
         USERS_QUEUE_REBUILDS_ON_REQUEST=True,
     )
+    @patch('apps.projects.views.threading.Thread')
     @patch('apps.pages.tasks.build_users_overview_cache_task.apply_async')
     @patch('apps.pages.tasks.build_companies_overview_cache_task.apply_async')
     def test_overview_cache_misses_do_not_queue_request_rebuilds(
         self,
         companies_apply_async,
         users_apply_async,
+        thread,
     ):
         companies_response = self.client.get(
-            reverse('projects:project_companies', kwargs={'project_id': self.project.id})
+            reverse('projects:project_companies', kwargs={'project_id': self.project.id}),
+            follow=True,
         )
         companies_table_response = self.client.get(
             reverse('projects:project_companies_table_data', kwargs={'project_id': self.project.id})
@@ -710,7 +1114,8 @@ class PagesOverviewViewTests(TestCase):
             reverse('projects:project_company_options', kwargs={'project_id': self.project.id})
         )
         users_response = self.client.get(
-            reverse('projects:project_users', kwargs={'project_id': self.project.id})
+            reverse('projects:project_users', kwargs={'project_id': self.project.id}),
+            follow=True,
         )
         users_data_response = self.client.get(
             reverse('projects:project_users_data', kwargs={'project_id': self.project.id})
@@ -727,12 +1132,16 @@ class PagesOverviewViewTests(TestCase):
         self.assertEqual(users_response.status_code, 200)
         self.assertEqual(users_data_response.status_code, 202)
         self.assertFalse(users_data_response.json()['queued'])
-        self.assertEqual(users_options_response.status_code, 202)
-        self.assertFalse(users_options_response.json()['queued'])
+        # The user selector gates only filtered variants: without an active
+        # filter it answers from its own query, which reports an empty project
+        # as an ordinary empty result rather than a pending one.
+        self.assertEqual(users_options_response.status_code, 200)
+        self.assertEqual(users_options_response.json()['results'], [])
+        thread.assert_not_called()
         companies_apply_async.assert_not_called()
         users_apply_async.assert_not_called()
 
-    def test_users_overview_stale_schema_uses_cached_payload(self):
+    def test_users_overview_stale_schema_is_not_served(self):
         generated_at = timezone.now()
         UsersOverviewCache.objects.create(
             project=self.project,
@@ -763,14 +1172,25 @@ class PagesOverviewViewTests(TestCase):
             generated_at=generated_at,
         )
 
-        response = self.client.get(reverse('projects:project_users', kwargs={'project_id': self.project.id}))
+        response = self.client.get(
+            reverse('projects:project_users', kwargs={'project_id': self.project.id}),
+            follow=True,
+        )
 
+        # A payload written by an older builder is not safe to render, so the
+        # page shows its pending state instead of the row it holds. The
+        # Companies surface treats a superseded schema the same way.
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Stale Cached User')
-        self.assertNotContains(response, 'No users found')
+        self.assertNotContains(response, 'Stale Cached User')
 
     def test_detail_page_embeds_cached_payload(self):
         generated_at = timezone.now()
+        ProductArea.objects.create(
+            project=self.project,
+            name='Administration',
+            slug='administration',
+            color='#A1B2C3',
+        )
         PagesOverviewCache.objects.create(
             project=self.project,
             range_key='last_30_days',
@@ -816,7 +1236,12 @@ class PagesOverviewViewTests(TestCase):
             payload_json={
                 'schema_version': services.OVERVIEW_PAYLOAD_SCHEMA_VERSION,
                 'project': {'id': self.project.id, 'name': self.project.name},
-                'page': {'id': '123', 'displayName': 'Billing'},
+                'page': {
+                    'id': '123',
+                    'displayName': 'Billing',
+                    'productAreaId': 'administration',
+                    'productAreaName': 'Administration',
+                },
                 'period': {'range_key': 'last_30_days', 'days': 30},
                 'metrics': [{'key': 'visits', 'label': 'Visits', 'currentValue': 10}],
                 'combinedInteractionClicksMetric': {},
@@ -840,6 +1265,7 @@ class PagesOverviewViewTests(TestCase):
         self.assertContains(response, 'Page metric dynamics')
         self.assertContains(response, 'pages-detail-data')
         self.assertContains(response, 'js/pages/page-details-helpers.js')
+        self.assertContains(response, 'js/shared/product-area-colors.js')
         self.assertContains(response, 'data-pages-view="detail"')
         self.assertContains(response, 'data-page-rule-id="123"')
         self.assertContains(
@@ -855,6 +1281,8 @@ class PagesOverviewViewTests(TestCase):
         self.assertContains(response, '"page_selector_rows":[{')
         self.assertContains(response, '"page_name":"Billing"')
         self.assertContains(response, '"page_name":"Settings"')
+        embedded_payload = self._embedded_json_payload(response, 'pages-detail-data')['payload']
+        self.assertEqual(embedded_payload['page']['productAreaColor'], '#A1B2C3')
 
     def test_detail_page_embeds_first_table_pages_and_table_data_serves_remaining_rows(self):
         generated_at = timezone.now()
@@ -972,7 +1400,10 @@ class PagesOverviewViewTests(TestCase):
             generated_at=generated_at,
         )
 
-        response = self.client.get(reverse('projects:project_pages', kwargs={'project_id': self.project.id}))
+        response = self.client.get(
+            reverse('projects:project_pages', kwargs={'project_id': self.project.id}),
+            follow=True,
+        )
         html = response.content.decode()
 
         self.assertEqual(response.status_code, 200)

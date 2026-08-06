@@ -1,10 +1,14 @@
 (function mountHymetryCompaniesAnalytics(globalScope) {
   const provider = globalScope.HymetryCompaniesDemoData;
+  const analyticsTooltips = globalScope.HymetryAnalyticsTooltips;
+  const metricDynamicsHelpers = globalScope.HymetryMetricDynamics || {};
 
-  if (!provider) {
+  if (!provider || !analyticsTooltips) {
     return;
   }
 
+  const buildStraightTrendLine = metricDynamicsHelpers.buildStraightTrendLine || (() => []);
+  const bindLineTrendHover = metricDynamicsHelpers.bindLineTrendHover || ((chart) => chart);
   const numberFormatter = new Intl.NumberFormat("en-US");
   const averageUsersFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
 
@@ -160,9 +164,64 @@
     lookup[key] = index + 1;
     return lookup;
   }, {});
+  const atRiskPageSize = 20;
+  const atRiskNumericSortKeys = new Set([
+    "riskScore",
+    "activeUsers",
+    "engagedSeconds",
+    "productAreasUsed"
+  ]);
+  const atRiskTextSortKeys = new Set([
+    "name",
+    "suggestedAction"
+  ]);
+  const atRiskDefaultSortDirections = {
+    name: "asc",
+    riskScore: "desc",
+    activeUsers: "desc",
+    engagedSeconds: "desc",
+    productAreasUsed: "desc",
+    suggestedAction: "asc"
+  };
+  const newReactivatedPageSize = 20;
+  const activationStageOrder = { not_activated: 0, partially_activated: 1, activated: 2 };
+  const newReactivatedNumericSortKeys = new Set([
+    "daysSinceStart",
+    "activeUsers",
+    "engagedSeconds",
+    "productAreasUsed"
+  ]);
+  const newReactivatedDefaultSortDirections = {
+    name: "asc",
+    activationStage: "asc",
+    daysSinceStart: "desc",
+    activeUsers: "desc",
+    engagedSeconds: "desc",
+    productAreasUsed: "desc"
+  };
+  const expansionPageSize = 20;
+  const expansionNumericSortKeys = new Set([
+    "potentialScore",
+    "activeUsers",
+    "avgEngagedSecondsPerUser",
+    "interactionPct",
+    "productAreasUsed"
+  ]);
+  const expansionTextSortKeys = new Set(["name", "reason", "suggestedAction"]);
+  const expansionDefaultSortDirections = {
+    name: "asc",
+    potentialScore: "desc",
+    reason: "asc",
+    activeUsers: "desc",
+    avgEngagedSecondsPerUser: "desc",
+    interactionPct: "desc",
+    productAreasUsed: "desc",
+    suggestedAction: "asc"
+  };
   const lineEndLabelSeriesSuffix = " label connector";
+  const lineHoverTrendSeriesSuffix = " hover trend";
   const companySearchDebounceMs = 220;
-  const companySearchRecentStorageKey = "hymetry:recent-companies";
+  const companySearchRecentStorageKey = `hymetry:recent-companies:${document.body?.dataset.projectId || "unknown-project"}`;
 
   let currentData = null;
   let periodChangeTooltipId = 0;
@@ -173,7 +232,6 @@
   let suggestedStepTooltipId = 0;
   let companySearchMounted = false;
   let companySearchDebounceId = 0;
-  let companyTableSortMounted = false;
   let scatterFiltersMounted = false;
   let productAreaColorByName = new Map();
   const productAreaColorResolver = globalScope.HymetryProductAreaColors?.createResolver({
@@ -183,6 +241,27 @@
   const companyTableState = {
     page: 1,
     sortKey: "engagedSeconds",
+    sortDirection: "desc",
+    isLoading: false,
+    loadingToken: 0
+  };
+  const atRiskTableState = {
+    page: 1,
+    sortKey: "riskScore",
+    sortDirection: "desc",
+    isLoading: false,
+    loadingToken: 0
+  };
+  const newReactivatedTableState = {
+    page: 1,
+    sortKey: "activationStage",
+    sortDirection: "asc",
+    isLoading: false,
+    loadingToken: 0
+  };
+  const expansionTableState = {
+    page: 1,
+    sortKey: "potentialScore",
     sortDirection: "desc",
     isLoading: false,
     loadingToken: 0
@@ -548,63 +627,71 @@
     return divisor > 0 ? current / divisor : 0;
   }
 
-  function formatCountMetricValue(value, singular, plural = `${singular}s`) {
-    const rounded = Math.round(Number(value) || 0);
-    const unit = Math.abs(rounded) === 1 ? singular : plural;
-
-    return `${formatNumber(rounded)} ${unit}`;
-  }
-
-  function formatCompanyPeriodMetricValue(value, metricKey) {
+  function formatPeriodMetricValue(value, valueType, fallbackLabel = "") {
     const numericValue = Number(value) || 0;
 
-    switch (metricKey) {
-      case "activeUsers":
-        return formatCountMetricValue(numericValue, "user");
-      case "visits":
-        return formatCountMetricValue(numericValue, "visit");
-      case "engagedSeconds":
-        return formatDurationShort(numericValue);
-      case "interactionPct":
-        return formatPercent(numericValue);
-      default:
-        return formatNumber(numericValue);
+    if (valueType === "percent") {
+      return `${numericValue.toFixed(1)}%`;
     }
+
+    if (valueType === "duration") {
+      return fallbackLabel || formatDurationShort(numericValue);
+    }
+
+    return formatNumber(Math.round(numericValue));
   }
 
-  function buildPeriodChangeTooltip(display, metric) {
-    if (!display || typeof display.currentValue === "undefined" || typeof display.deltaValue === "undefined" || !metric?.key) {
-      return [
-        `Current period: ${display?.valueLabel || ""}`,
-        `Change: ${display?.deltaLabel || ""}`,
-        metric
-      ].filter(Boolean).join("\n");
+  function formatPeriodDelta(deltaValue, unit) {
+    const numericValue = Number(deltaValue) || 0;
+    const prefix = numericValue > 0 ? "+" : "";
+
+    if (unit === "pp") {
+      return `${prefix}${numericValue.toFixed(1)} pp`;
     }
 
-    const currentValue = Number(display.currentValue) || 0;
+    const rounded = Math.round(numericValue * 10) / 10;
+    return `${prefix}${new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(rounded)}%`;
+  }
+
+  function buildPeriodChangeTooltip(display) {
+    const currentLabel = formatPeriodMetricValue(display.currentValue, display.valueType, display.valueLabel);
+
+    if (display.comparisonAvailable === false) {
+      return {
+        rows: [
+          { label: "Current period", value: currentLabel },
+          { label: "Previous period", value: "No data" },
+          { label: "Change", value: "n/a" }
+        ]
+      };
+    }
+
     const deltaValue = Number(display.deltaValue) || 0;
-    const previousValue = previousPeriodValue(currentValue, deltaValue, display.deltaUnit);
+    const previousValue = display.deltaLabel === "New"
+      ? 0
+      : previousPeriodValue(display.currentValue, deltaValue, display.deltaUnit);
+    const previousLabel = formatPeriodMetricValue(previousValue, display.valueType);
+    const isNew = previousValue === 0 && Number(display.currentValue) > 0;
 
-    return [
-      `Current period: ${formatCompanyPeriodMetricValue(currentValue, metric.key)}`,
-      `Previous period: ${formatCompanyPeriodMetricValue(previousValue, metric.key)}`,
-      `Change: ${formatDelta(deltaValue, display.deltaUnit)}`
-    ].join("\n");
+    return {
+      rows: [
+        { label: "Current period", value: currentLabel },
+        { label: "Previous period", value: previousLabel },
+        { label: "Change", value: isNew ? "New" : formatPeriodDelta(deltaValue, display.deltaUnit) }
+      ]
+    };
   }
 
-  function renderPeriodChangeTooltip(display, metric) {
-    const tooltip = buildPeriodChangeTooltip(display, metric);
+  function renderPeriodChangeTooltip(display) {
+    const tooltip = buildPeriodChangeTooltip(display);
     const tooltipId = `companies-period-change-tooltip-${periodChangeTooltipId}`;
 
     periodChangeTooltipId += 1;
 
     return {
       tooltipId,
-      tooltipText: tooltip.replace(/\s+/g, " "),
-      tooltipHtml: tooltip
-        .split("\n")
-        .map((line) => `<span class="pages-change-delta__tooltip-row">${escapeHtml(line)}</span>`)
-        .join("")
+      tooltipText: analyticsTooltips.text(tooltip.rows),
+      tooltipHtml: analyticsTooltips.render({ rows: tooltip.rows })
     };
   }
 
@@ -621,33 +708,45 @@
       case "activeUsers":
         return {
           valueLabel: formatNumber(row.activeUsers),
+          valueType: "count",
           currentValue: row.activeUsers,
           deltaValue: row.activeUsersDeltaPct,
+          deltaLabel: row.activeUsersDeltaLabel,
           deltaUnit: "%",
+          comparisonAvailable: row.comparisonAvailable !== false,
           barValue: (row.activeUsers / Math.max(maxValues.activeUsers, 1)) * 100
         };
       case "visits":
         return {
           valueLabel: formatNumber(row.visits),
+          valueType: "count",
           currentValue: row.visits,
           deltaValue: row.visitsDeltaPct,
+          deltaLabel: row.visitsDeltaLabel,
           deltaUnit: "%",
+          comparisonAvailable: row.comparisonAvailable !== false,
           barValue: (row.visits / Math.max(maxValues.visits, 1)) * 100
         };
       case "engagedSeconds":
         return {
           valueLabel: formatDurationShort(row.engagedSeconds),
+          valueType: "duration",
           currentValue: row.engagedSeconds,
           deltaValue: row.engagedDeltaPct,
+          deltaLabel: row.engagedDeltaLabel,
           deltaUnit: "%",
+          comparisonAvailable: row.comparisonAvailable !== false,
           barValue: (row.engagedSeconds / Math.max(maxValues.engagedSeconds, 1)) * 100
         };
       case "interactionPct":
         return {
           valueLabel: formatPercent(row.interactionPct),
+          valueType: "percent",
           currentValue: row.interactionPct,
           deltaValue: row.interactionDeltaPp,
+          deltaLabel: row.interactionDeltaLabel,
           deltaUnit: "pp",
+          comparisonAvailable: row.comparisonAvailable !== false,
           barValue: row.interactionPct
         };
       default:
@@ -709,7 +808,7 @@
     const trackWidth = direction === "negative" ? 17 : 36;
     const barWidth = roundedDelta === 0 ? 6 : Math.max(4, Math.round((Math.abs(deltaValue) / Math.max(maxAbsDelta, 1)) * trackWidth));
     const formattedDelta = formatDelta(deltaValue, display.deltaUnit);
-    const tooltip = renderPeriodChangeTooltip(display, metric);
+    const tooltip = renderPeriodChangeTooltip(display);
 
     return `
       <div class="pages-change-delta metric-header-tooltip" data-change-direction="${direction}" style="--pages-change-bar-width: ${barWidth}px;" tabindex="0" aria-label="${escapeHtml(`${metric.label}. ${tooltip.tooltipText}`)}" aria-describedby="${tooltip.tooltipId}">
@@ -875,176 +974,6 @@
     splitChangeValueWidthSyncMounted = true;
     globalScope.addEventListener("resize", scheduleSplitChangeValueWidthSync);
     document.fonts?.ready?.then(scheduleSplitChangeValueWidthSync);
-  }
-
-  let floatingDeltaTooltipsMounted = false;
-
-  function mountFloatingDeltaTooltips() {
-    if (floatingDeltaTooltipsMounted || !document.body) {
-      return;
-    }
-
-    floatingDeltaTooltipsMounted = true;
-    document.documentElement.classList.add("metric-floating-tooltips-enabled");
-
-    const floatingTooltip = document.createElement("div");
-    floatingTooltip.className = "metric-header-tooltip__content metric-floating-tooltip";
-    floatingTooltip.dataset.tooltipKind = "delta";
-    floatingTooltip.dataset.visible = "false";
-    floatingTooltip.setAttribute("aria-hidden", "true");
-    floatingTooltip.setAttribute("role", "tooltip");
-    document.body.appendChild(floatingTooltip);
-
-    const viewportPadding = 8;
-    const verticalGap = 8;
-    let activeTrigger = null;
-    let positionAnimationFrame = 0;
-
-    const getTooltipTrigger = (target) => {
-      if (!target || typeof target.closest !== "function") {
-        return null;
-      }
-
-      return target.closest(".pages-change-delta.metric-header-tooltip, .companies-area-mix.metric-header-tooltip, .companies-adoption-cell.metric-header-tooltip, .companies-matrix-heading .metric-header-tooltip, .companies-activation-stage.metric-header-tooltip, .companies-suggested-step.metric-header-tooltip");
-    };
-
-    const setTooltipVisible = (isVisible) => {
-      floatingTooltip.dataset.visible = String(isVisible);
-      floatingTooltip.setAttribute("aria-hidden", String(!isVisible));
-    };
-
-    const hideTooltip = (trigger = activeTrigger) => {
-      if (trigger && activeTrigger && trigger !== activeTrigger) {
-        return;
-      }
-
-      activeTrigger = null;
-      setTooltipVisible(false);
-    };
-
-    const updateTooltipPosition = () => {
-      if (!activeTrigger) {
-        return;
-      }
-
-      if (!activeTrigger.isConnected) {
-        hideTooltip();
-        return;
-      }
-
-      const triggerRect = activeTrigger.getBoundingClientRect();
-      const viewportWidth = document.documentElement.clientWidth || globalScope.innerWidth || 0;
-      const viewportHeight = document.documentElement.clientHeight || globalScope.innerHeight || 0;
-
-      if (
-        triggerRect.bottom < 0 ||
-        triggerRect.top > viewportHeight ||
-        triggerRect.right < 0 ||
-        triggerRect.left > viewportWidth
-      ) {
-        hideTooltip();
-        return;
-      }
-
-      const tooltipRect = floatingTooltip.getBoundingClientRect();
-      const shouldPlaceAbove =
-        triggerRect.bottom + verticalGap + tooltipRect.height > viewportHeight - viewportPadding &&
-        triggerRect.top - verticalGap - tooltipRect.height >= viewportPadding;
-      const desiredLeft = triggerRect.left + triggerRect.width / 2 - tooltipRect.width / 2;
-      const desiredTop = shouldPlaceAbove
-        ? triggerRect.top - verticalGap - tooltipRect.height
-        : triggerRect.bottom + verticalGap;
-      const maxLeft = Math.max(viewportPadding, viewportWidth - tooltipRect.width - viewportPadding);
-      const maxTop = Math.max(viewportPadding, viewportHeight - tooltipRect.height - viewportPadding);
-      const left = Math.min(Math.max(desiredLeft, viewportPadding), maxLeft);
-      const top = Math.min(Math.max(desiredTop, viewportPadding), maxTop);
-
-      floatingTooltip.dataset.placement = shouldPlaceAbove ? "top" : "bottom";
-      floatingTooltip.style.left = `${Math.round(left)}px`;
-      floatingTooltip.style.top = `${Math.round(top)}px`;
-    };
-
-    const schedulePositionUpdate = () => {
-      if (!activeTrigger || positionAnimationFrame) {
-        return;
-      }
-
-      positionAnimationFrame = globalScope.requestAnimationFrame(() => {
-        positionAnimationFrame = 0;
-        updateTooltipPosition();
-      });
-    };
-
-    const showTooltip = (trigger) => {
-      const sourceTooltip = trigger.querySelector(".metric-header-tooltip__content");
-
-      if (!sourceTooltip) {
-        return;
-      }
-
-      activeTrigger = trigger;
-      floatingTooltip.innerHTML = sourceTooltip.innerHTML;
-      floatingTooltip.dataset.tooltipKind = trigger.dataset.tooltipKind || (trigger.closest(".companies-matrix-heading") ? "matrix-heading" : "delta");
-      const areaTooltipLabelWidth = trigger.style.getPropertyValue("--area-tooltip-label-width");
-      if (areaTooltipLabelWidth) {
-        floatingTooltip.style.setProperty("--area-tooltip-label-width", areaTooltipLabelWidth);
-      } else {
-        floatingTooltip.style.removeProperty("--area-tooltip-label-width");
-      }
-      floatingTooltip.style.left = "0px";
-      floatingTooltip.style.top = "0px";
-      setTooltipVisible(false);
-      updateTooltipPosition();
-      setTooltipVisible(true);
-    };
-
-    document.addEventListener("pointerover", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-
-      if (!trigger || trigger === activeTrigger) {
-        return;
-      }
-
-      showTooltip(trigger);
-    });
-
-    document.addEventListener("pointerout", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-      const relatedTarget = event.relatedTarget;
-
-      if (!trigger || (relatedTarget && trigger.contains(relatedTarget))) {
-        return;
-      }
-
-      hideTooltip(trigger);
-    });
-
-    document.addEventListener("focusin", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-
-      if (trigger) {
-        showTooltip(trigger);
-      }
-    });
-
-    document.addEventListener("focusout", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-      const relatedTarget = event.relatedTarget;
-
-      if (!trigger || (relatedTarget && trigger.contains(relatedTarget))) {
-        return;
-      }
-
-      hideTooltip(trigger);
-    });
-
-    document.addEventListener("scroll", schedulePositionUpdate, true);
-    globalScope.addEventListener("resize", schedulePositionUpdate);
-    globalScope.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        hideTooltip();
-      }
-    });
   }
 
   function statusBadge(status) {
@@ -1283,16 +1212,6 @@
     return Math.max(percentile((rows || []).map(productAreaUsageTotal), 0.95), 1);
   }
 
-  function productAreaTooltipLabelWidthCh(usageItems) {
-    const maxLabelLength = (usageItems || []).reduce((max, item) => {
-      const label = String(item?.productArea || "Unknown");
-
-      return Math.max(max, label.length);
-    }, 0);
-
-    return Math.min(Math.max(maxLabelLength + 1, 14), 28);
-  }
-
   function productAreaUsageCell(row, scaleMax) {
     const usageItems = productAreaUsageItems(row);
     const totalUsageSeconds = usageItems.reduce((sum, item) => sum + item.engagedSeconds, 0);
@@ -1300,34 +1219,27 @@
     const barWidthPct = totalUsageSeconds ? Math.min((totalUsageSeconds / safeScaleMax) * 100, 100) : 0;
     const name = row.name || row.companyName || "Company";
     const tooltipId = `companies-area-mix-tooltip-${productAreaMixTooltipId}`;
-    const maxAreaEngagedSeconds = Math.max(...usageItems.map((item) => Number(item.engagedSeconds) || 0), 1);
-    const areaLabelWidthCh = productAreaTooltipLabelWidthCh(usageItems);
 
     productAreaMixTooltipId += 1;
 
-    const tooltipRows = usageItems
-      .map((item) => {
-        const area = item.productArea || "Unknown";
-        const share = totalUsageSeconds ? (item.engagedSeconds / totalUsageSeconds) * 100 : 0;
-        const visits = Math.max(0, Math.round(Number(item.visits) || 0));
-        const engagedBarWidth = item.engagedSeconds > 0
-          ? Math.max(4, Math.round((item.engagedSeconds / maxAreaEngagedSeconds) * 56))
-          : 0;
+    const tooltipRows = usageItems.map((item) => {
+      const area = item.productArea || "Unknown";
+      const share = totalUsageSeconds ? (item.engagedSeconds / totalUsageSeconds) * 100 : 0;
+      const visits = Math.max(0, Math.round(Number(item.visits) || 0));
 
-        return `
-          <span class="companies-area-mix-tooltip__row companies-area-mix-tooltip__row--usage" style="--area-color:${productAreaColor(area)}; --area-engaged-width:${engagedBarWidth}px;">
-            <span class="companies-area-mix-tooltip__dot"></span>
-            <span class="companies-area-mix-tooltip__label">${escapeHtml(area)}</span>
-            <span class="companies-area-mix-tooltip__metric companies-area-mix-tooltip__metric--engaged">
-              <span class="companies-area-mix-tooltip__engaged-bar" aria-hidden="true"></span>
-              <span>${escapeHtml(formatDurationShort(item.engagedSeconds))}</span>
-            </span>
-            <span class="companies-area-mix-tooltip__metric">${formatPercent(share)}</span>
-            <span class="companies-area-mix-tooltip__metric">${formatNumber(visits)} ${visits === 1 ? "visit" : "visits"}</span>
-          </span>
-        `;
-      })
-      .join("");
+      return {
+        label: area,
+        value: `${formatDurationShort(item.engagedSeconds)} · ${formatPercent(share)} · ${formatNumber(visits)} ${visits === 1 ? "visit" : "visits"}`,
+        marker: productAreaColor(area)
+      };
+    });
+    const summaryRows = [
+      { label: "Total", value: formatDurationShort(totalUsageSeconds) },
+      { label: "Areas used", value: formatNumber(usageItems.length) }
+    ];
+    const renderedTooltipRows = tooltipRows.length
+      ? tooltipRows
+      : [{ label: "Usage", value: "No usage" }];
     const segments = usageItems
       .map((item) => {
         const area = item.productArea || "Unknown";
@@ -1336,21 +1248,16 @@
         return `<span class="companies-area-mix__segment" style="--area-color:${productAreaColor(area)}; flex: 0 0 ${percent}%"></span>`;
       })
       .join("");
-    const ariaLabel = `${name} area usage. ${usageItems
-      .map((item) => `${item.productArea} ${formatDurationShort(item.engagedSeconds)} ${formatPercent(totalUsageSeconds ? (item.engagedSeconds / totalUsageSeconds) * 100 : 0)}`)
-      .join(", ")}. Total ${formatDurationShort(totalUsageSeconds)}. Areas used ${usageItems.length}.`;
+    const ariaLabel = `${name}. ${analyticsTooltips.text(renderedTooltipRows.concat(summaryRows))}`;
+    const tooltipHtml = analyticsTooltips.render({
+      title: name,
+      sections: [{ rows: renderedTooltipRows }, { rows: summaryRows }]
+    });
 
     return `
-      <div class="companies-area-mix companies-area-usage metric-header-tooltip" data-tooltip-kind="area-mix" data-has-usage="${totalUsageSeconds > 0}" style="--area-usage-width:${barWidthPct}%; --area-tooltip-label-width:${areaLabelWidthCh}ch;" tabindex="0" aria-label="${escapeHtml(ariaLabel)}" aria-describedby="${tooltipId}">
+      <div class="companies-area-mix companies-area-usage metric-header-tooltip" data-tooltip-kind="area-mix" data-has-usage="${totalUsageSeconds > 0}" style="--area-usage-width:${barWidthPct}%;" tabindex="0" aria-label="${escapeHtml(ariaLabel)}" aria-describedby="${tooltipId}">
         <span class="companies-area-usage__bar">${segments}</span>
-        <span id="${tooltipId}" class="metric-header-tooltip__content" role="tooltip">
-          <span class="companies-area-mix-tooltip__title">${escapeHtml(name)}</span>
-          ${tooltipRows || `<span class="companies-area-mix-tooltip__row"><span></span><span class="companies-area-mix-tooltip__label">No usage</span><span class="companies-area-mix-tooltip__value">0m</span></span>`}
-          <span class="companies-area-mix-tooltip__summary">
-            <span class="companies-area-mix-tooltip__summary-row"><span>Total</span><strong>${escapeHtml(formatDurationShort(totalUsageSeconds))}</strong></span>
-            <span class="companies-area-mix-tooltip__summary-row"><span>Areas used</span><strong>${formatNumber(usageItems.length)}</strong></span>
-          </span>
-        </span>
+        <span id="${tooltipId}" class="metric-header-tooltip__content" role="tooltip">${tooltipHtml}</span>
       </div>
     `;
   }
@@ -1366,7 +1273,6 @@
     const totalUsers = userHealthSegments.reduce((sum, [key]) => sum + Math.max(0, Math.round(Number(mix[key]) || 0)), 0);
     const denominator = totalUsers || Math.max(0, Math.round(Number(row.activeUsers) || 0));
     const tooltipId = `companies-user-health-tooltip-${userHealthMixTooltipId}`;
-    const maxHealthUsers = Math.max(...userHealthSegments.map(([key]) => Math.max(0, Math.round(Number(mix[key]) || 0))), 1);
 
     userHealthMixTooltipId += 1;
 
@@ -1374,27 +1280,21 @@
       return `<span class="text-sm text-slate-400">No active users</span>`;
     }
 
-    const tooltipRows = userHealthSegments
-      .map(([key, label]) => {
-        const count = Math.max(0, Math.round(Number(mix[key]) || 0));
-        const percent = denominator ? count / denominator * 100 : 0;
-        const userBarWidth = count > 0
-          ? Math.max(4, Math.round((count / maxHealthUsers) * 56))
-          : 0;
+    const tooltipRows = userHealthSegments.map(([key, label]) => {
+      const count = Math.max(0, Math.round(Number(mix[key]) || 0));
+      const percent = denominator ? count / denominator * 100 : 0;
 
-        return `
-          <span class="companies-area-mix-tooltip__row companies-area-mix-tooltip__row--user-health" style="--area-color:${userHealthColor(key)}; --user-health-width:${userBarWidth}px;">
-            <span class="companies-area-mix-tooltip__dot"></span>
-            <span class="companies-area-mix-tooltip__label">${escapeHtml(label)}</span>
-            <span class="companies-area-mix-tooltip__metric companies-area-mix-tooltip__metric--users">
-              <span class="companies-area-mix-tooltip__user-bar" aria-hidden="true"></span>
-              <span>${formatUserCount(count)}</span>
-            </span>
-            <span class="companies-area-mix-tooltip__metric">${formatPercent(percent)}</span>
-          </span>
-        `;
-      })
-      .join("");
+      return {
+        label,
+        value: `${formatUserCount(count)} · ${formatPercent(percent)}`,
+        marker: userHealthColor(key)
+      };
+    });
+    const summaryRows = [
+      { label: "Active users", value: formatNumber(row.activeUsers) },
+      { label: "Top user share", value: formatPercent(row.topUserSharePct) },
+      { label: "Median features / user", value: formatNumber(row.medianFeaturesPerUser) }
+    ];
     const segments = userHealthSegments
       .map(([key]) => {
         const count = Math.max(0, Math.round(Number(mix[key]) || 0));
@@ -1408,22 +1308,16 @@
       })
       .join("");
     const companyName = row.name || row.companyName || "Company";
-    const ariaLabel = `${companyName} user health. ${userHealthSegments
-      .map(([key, label]) => `${label} ${formatUserCount(mix[key])} ${formatPercent(denominator ? (Number(mix[key]) || 0) / denominator * 100 : 0)}`)
-      .join(", ")}.`;
+    const ariaLabel = `${companyName}. ${analyticsTooltips.text(tooltipRows.concat(summaryRows))}`;
+    const tooltipHtml = analyticsTooltips.render({
+      title: companyName,
+      sections: [{ rows: tooltipRows }, { rows: summaryRows }]
+    });
 
     return `
       <div class="companies-area-mix companies-user-health-mix metric-header-tooltip" data-tooltip-kind="area-mix" tabindex="0" aria-label="${escapeHtml(ariaLabel)}" aria-describedby="${tooltipId}">
         ${segments}
-        <span id="${tooltipId}" class="metric-header-tooltip__content" role="tooltip">
-          <span class="companies-area-mix-tooltip__title">${escapeHtml(companyName)}</span>
-          ${tooltipRows}
-          <span class="companies-area-mix-tooltip__summary">
-            <span class="companies-area-mix-tooltip__summary-row"><span>Active users</span><strong>${formatNumber(row.activeUsers)}</strong></span>
-            <span class="companies-area-mix-tooltip__summary-row"><span>Top user share</span><strong>${formatPercent(row.topUserSharePct)}</strong></span>
-            <span class="companies-area-mix-tooltip__summary-row"><span>Median features / user</span><strong>${formatNumber(row.medianFeaturesPerUser)}</strong></span>
-          </span>
-        </span>
+        <span id="${tooltipId}" class="metric-header-tooltip__content" role="tooltip">${tooltipHtml}</span>
       </div>
     `;
   }
@@ -1442,20 +1336,12 @@
     const companyName = row.companyName || row.name || row.companyId || row.id || "Unknown company";
     const href = companyDetailHref(row);
 
+    if (!href) {
+      return `<span class="whitespace-nowrap font-medium text-slate-800">${escapeHtml(companyName)}</span>`;
+    }
     return `
       <a href="${escapeHtml(href)}" class="whitespace-nowrap font-medium text-sky-800 underline-offset-2 hover:underline">${escapeHtml(companyName)}</a>
     `;
-  }
-
-  function sortNewReactivatedRows(rows) {
-    const stageScore = { not_activated: 0, partially_activated: 1, activated: 2 };
-
-    return rows.slice().sort((a, b) =>
-      stageScore[a.activationStatus] - stageScore[b.activationStatus] ||
-      b.daysSinceStart - a.daysSinceStart ||
-      b.activeUsers - a.activeUsers ||
-      b.engagedSeconds - a.engagedSeconds
-    );
   }
 
   function adoptionCellRelativeActivityPct(cell, maxEngagedSeconds) {
@@ -1498,36 +1384,25 @@
 
     adoptionCellTooltipId += 1;
 
-    if (!cell.used) {
-      const tooltipHtml = `
-        <span class="companies-adoption-cell-tooltip__title">${escapeHtml(row.companyName)}</span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Product area</span><strong>${escapeHtml(cell.productArea)}</strong></span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Relative activity</span><strong>${escapeHtml(relativeActivityLabel)}</strong></span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Usage intensity</span><strong>${escapeHtml(usageLabel)}</strong></span>
-      `;
+    const rows = [
+      { label: "Product area", value: cell.productArea },
+      { label: "Relative activity", value: relativeActivityLabel },
+      { label: "Usage intensity", value: usageLabel }
+    ];
 
-      return {
-        tooltipId,
-        tooltipText: `${row.companyName}. ${cell.productArea}. Not used yet. Relative activity ${relativeActivityLabel}. ${usageLabel}.`,
-        tooltipHtml
-      };
+    if (cell.used) {
+      rows.push(
+        { label: "Engaged time", value: formatDurationShort(cell.engagedSeconds) },
+        { label: "Visits", value: formatNumber(cell.visits) },
+        { label: "Active users", value: formatNumber(cell.activeUsers) },
+        { label: "Pages/features", value: formatNumber(cell.pagesUsed) }
+      );
     }
-
-    const tooltipHtml = `
-      <span class="companies-adoption-cell-tooltip__title">${escapeHtml(row.companyName)}</span>
-      <span class="companies-adoption-cell-tooltip__row"><span>Product area</span><strong>${escapeHtml(cell.productArea)}</strong></span>
-      <span class="companies-adoption-cell-tooltip__row"><span>Relative activity</span><strong>${escapeHtml(relativeActivityLabel)}</strong></span>
-      <span class="companies-adoption-cell-tooltip__row"><span>Usage intensity</span><strong>${escapeHtml(usageLabel)}</strong></span>
-      <span class="companies-adoption-cell-tooltip__row"><span>Engaged time</span><strong>${escapeHtml(formatDurationShort(cell.engagedSeconds))}</strong></span>
-      <span class="companies-adoption-cell-tooltip__row"><span>Visits</span><strong>${formatNumber(cell.visits)}</strong></span>
-      <span class="companies-adoption-cell-tooltip__row"><span>Active users</span><strong>${formatNumber(cell.activeUsers)}</strong></span>
-      <span class="companies-adoption-cell-tooltip__row"><span>Pages/features</span><strong>${formatNumber(cell.pagesUsed)}</strong></span>
-    `;
 
     return {
       tooltipId,
-      tooltipText: `${row.companyName}. ${cell.productArea}. Used during selected period. Relative activity ${relativeActivityLabel}. ${usageLabel}. Engaged time ${formatDurationShort(cell.engagedSeconds)}.`,
-      tooltipHtml
+      tooltipText: `${row.companyName}. ${analyticsTooltips.text(rows)}`,
+      tooltipHtml: analyticsTooltips.render({ title: row.companyName, rows })
     };
   }
 
@@ -1688,6 +1563,7 @@
       const fragment = template.content.cloneNode(true);
       const labelElement = fragment.querySelector("[data-pages-kpi-label]");
       const valueElement = fragment.querySelector("[data-pages-kpi-value]");
+      const secondaryElement = fragment.querySelector("[data-pages-kpi-secondary]");
       const deltaElement = fragment.querySelector("[data-pages-kpi-delta]");
       const trendElement = fragment.querySelector("[data-pages-kpi-trend]");
 
@@ -1699,13 +1575,19 @@
         valueElement.textContent = kpi.value;
       }
 
+      if (secondaryElement) {
+        secondaryElement.textContent = kpi.secondary || "";
+        secondaryElement.hidden = !kpi.secondary;
+      }
+
       if (deltaElement) {
-        deltaElement.textContent = kpi.secondary || kpi.delta || "";
+        deltaElement.textContent = kpi.delta || "";
         deltaElement.setAttribute("data-delta-direction", kpi.deltaType || "neutral");
       }
 
       if (trendElement) {
         trendElement.setAttribute("data-company-kpi-index", String(index));
+        trendElement.hidden = !kpi?.sparkline?.length;
       }
 
       grid.appendChild(fragment);
@@ -1719,7 +1601,16 @@
         return;
       }
 
-      mountChart(element, createKpiTrendOption(kpi.sparkline, element, kpi.deltaType, kpi.sparklineLabels));
+      mountChart(element, createKpiTrendOption(
+        kpi.sparkline,
+        element,
+        kpi.deltaType,
+        kpi.sparklineLabels,
+        kpi.sparklineLabel || kpi.label,
+        kpi.sparklineValueType,
+        kpi.sparklineScope,
+        kpi.sparklineRender
+      ));
     });
   }
 
@@ -1738,19 +1629,83 @@
     return Array.from({ length: count }, (_, index) => source[index] || String(index + 1));
   }
 
-  function createKpiTrendOption(values, scopeElement, deltaType, labels = []) {
-    const lineColor = deltaType === "negative" ? tailwindColor("red-600") : tailwindColor("blue-400");
-    const fillColor = deltaType === "negative" ? tailwindAlpha("red-600", 0.08) : tailwindColor("blue-50");
+  // "columns" reads each point as an independent daily count; "step" holds a
+  // level between dates, which is what an end-of-day state looks like. Whether
+  // the line is curved stays a question about the scope, not the render mode:
+  // a daily observation is a real point and must not be smoothed away.
+  function kpiTrendSeries(series, render, { lineColor, fillColor, smooth }) {
+    if (render === "columns") {
+      return {
+        type: "bar",
+        data: series,
+        itemStyle: {
+          color: lineColor,
+          borderRadius: [2, 2, 0, 0]
+        }
+      };
+    }
+
+    return {
+      type: "line",
+      data: series,
+      step: render === "step" ? "end" : false,
+      smooth: render === "step" ? false : smooth,
+      symbol: "none",
+      lineStyle: {
+        color: lineColor,
+        width: 2
+      },
+      ...(render === "area" ? { areaStyle: { color: fillColor } } : {})
+    };
+  }
+
+  function createKpiTrendOption(
+    values,
+    scopeElement,
+    deltaType,
+    labels = [],
+    metricLabel = "Value",
+    valueType = "number",
+    trendScope = "period_to_date",
+    render = ""
+  ) {
+    const lineColor = tailwindColor("blue-400");
+    const fillColor = tailwindColor("blue-50");
     const series = values.map((value) => Number(value) || 0);
     const trendLabels = alignKpiTrendLabels(labels, series.length);
+    // A filled line stays the default. Only the cards that asked for a
+    // different reading declare one, so the rest are untouched.
+    const seriesRender = render || "area";
 
     return {
       animation: false,
-      tooltip: {
+      tooltip: analyticsTooltips.echarts({
         trigger: "axis",
-        confine: true,
-        valueFormatter: (value) => formatNumber(value)
-      },
+        appendTo: "body",
+        confine: false,
+        formatter: (params) => {
+          const item = (Array.isArray(params) ? params : [params])[0];
+
+          if (!item) {
+            return "";
+          }
+
+          const dateLabel = item.axisValueLabel || item.axisValue || "";
+          const title = trendScope === "daily"
+            ? dateLabel
+            : `${trendScope === "as_of" ? "As of" : "Through"} ${dateLabel}`.trim();
+
+          return analyticsTooltips.render({
+            title,
+            rows: [{
+              label: metricLabel,
+              value: valueType === "areas"
+                ? `${formatAverageUsers(item.value)} areas`
+                : formatNumber(item.value)
+            }]
+          });
+        }
+      }),
       grid: {
         left: 0,
         right: 0,
@@ -1760,27 +1715,28 @@
       xAxis: {
         type: "category",
         show: false,
-        boundaryGap: false,
+        boundaryGap: seriesRender === "columns",
         data: trendLabels.length ? trendLabels : series.map((_, index) => index + 1)
       },
       yAxis: {
         type: "value",
         show: false,
-        min: "dataMin",
+        // Columns are read against zero; a level or a curve is read against the
+        // rest of its own series.
+        min: seriesRender === "columns" ? 0 : "dataMin",
         max: compactAxisMax(series)
       },
       series: [
         {
-          type: "line",
-          data: series,
-          smooth: true,
-          symbol: "none",
-          lineStyle: {
-            color: lineColor,
-            width: 2
-          },
-          areaStyle: {
-            color: fillColor
+          ...kpiTrendSeries(series, seriesRender, {
+            lineColor,
+            fillColor,
+            smooth: !["daily", "as_of"].includes(trendScope)
+          }),
+          // Hovering a sparkline shows its tooltip without restyling the mark,
+          // whichever shape the card chose.
+          emphasis: {
+            disabled: true
           }
         }
       ]
@@ -1793,23 +1749,23 @@
 
     return {
       animation: false,
-      tooltip: {
+      tooltip: analyticsTooltips.echarts({
         trigger: "item",
         confine: true,
         formatter: (params) => {
           const item = rows[params.seriesIndex] || {};
           const meta = getCompanyStatusMeta(item.status);
 
-          return `
-            <div>
-              <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(item.label)}</div>
-              <div>Companies: <strong>${formatNumber(item.count)}</strong></div>
-              <div>Share: <strong>${item.pct}%</strong></div>
-              <div style="margin-top:6px;color:${chartTheme.colors.mutedText};max-width:240px;">${escapeHtml(meta.definition || "")}</div>
-            </div>
-          `;
+          return analyticsTooltips.render({
+            title: item.label,
+            rows: [
+              { label: "Companies", value: formatNumber(item.count) },
+              { label: "Share", value: `${item.pct}%` },
+              { label: "Definition", value: meta.definition || "—" }
+            ]
+          });
         }
-      },
+      }),
       legend: {
         show: false
       },
@@ -2183,49 +2139,22 @@
 
     return {
       animation: false,
-      tooltip: {
+      tooltip: analyticsTooltips.echarts({
         trigger: "item",
         confine: true,
-        backgroundColor: chartTheme.colors.white,
-        borderColor: tailwindColor("slate-200"),
-        borderWidth: 1,
-        padding: [8, 12],
-        textStyle: {
-          color: chartTheme.colors.text,
-          fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
-          fontSize: 12
-        },
-        extraCssText: [
-          "border-radius:6px",
-          "box-shadow:0 4px 6px -1px rgba(15,23,42,0.10),0 2px 4px -1px rgba(15,23,42,0.06)"
-        ].join(";"),
         formatter: (params) => {
           const item = params.data || {};
 
-          return `
-            <table style="border-collapse:collapse;margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:12px;line-height:1.35;">
-              <tbody>
-                <tr>
-                  <td style="padding:2px 6px 2px 0;text-align:right;color:${chartTheme.colors.mutedText};white-space:nowrap;">Status</td>
-                  <td style="padding:2px 0;color:${chartTheme.colors.text};font-weight:500;">${escapeHtml(item.label || "")}</td>
-                </tr>
-                <tr>
-                  <td style="padding:2px 6px 2px 0;text-align:right;color:${chartTheme.colors.mutedText};white-space:nowrap;">Companies</td>
-                  <td style="padding:2px 0;color:${chartTheme.colors.text};font-weight:600;">${formatNumber(item.count || 0)}</td>
-                </tr>
-                <tr>
-                  <td style="padding:2px 6px 2px 0;text-align:right;color:${chartTheme.colors.mutedText};white-space:nowrap;">Share</td>
-                  <td style="padding:2px 0;color:${chartTheme.colors.text};font-weight:600;">${escapeHtml(item.pctLabel || "0%")}</td>
-                </tr>
-                <tr>
-                  <td style="padding:2px 6px 2px 0;text-align:right;color:${chartTheme.colors.mutedText};white-space:nowrap;vertical-align:top;">Definition</td>
-                  <td style="padding:2px 0;color:${chartTheme.colors.text};max-width:260px;white-space:normal;">${escapeHtml(item.definition || "")}</td>
-                </tr>
-              </tbody>
-            </table>
-          `;
+          return analyticsTooltips.render({
+            title: item.label,
+            rows: [
+              { label: "Companies", value: formatNumber(item.count || 0) },
+              { label: "Share", value: item.pctLabel || "0%" },
+              { label: "Definition", value: item.definition || "—" }
+            ]
+          });
         }
-      },
+      }),
       grid: {
         left: 0,
         right: 0,
@@ -2323,10 +2252,6 @@
     mountChart(element, createHealthDistributionEchartsOption(data));
   }
 
-  function companyTableSortDirection(sortKey) {
-    return companyTableDefaultSortDirections[sortKey] || "desc";
-  }
-
   function compareCompaniesByCurrentSort(a, b) {
     const sortKey = companyTableState.sortKey;
     const direction = companyTableState.sortDirection === "asc" ? 1 : -1;
@@ -2349,18 +2274,60 @@
     return (data.companies || []).slice().sort(compareCompaniesByCurrentSort);
   }
 
-  function topCompanyPageCount(rows) {
-    return tablePageCount(currentData, "companies", rows, topCompaniesPageSize);
+  function compareAtRiskByCurrentSort(a, b) {
+    const sortKey = atRiskTableState.sortKey;
+    const direction = atRiskTableState.sortDirection === "asc" ? 1 : -1;
+    let comparison = 0;
+
+    if (atRiskTextSortKeys.has(sortKey)) {
+      comparison = String(a[sortKey] || "").localeCompare(String(b[sortKey] || ""));
+    } else if (atRiskNumericSortKeys.has(sortKey)) {
+      comparison = (Number(a[sortKey]) || 0) - (Number(b[sortKey]) || 0);
+    }
+
+    return comparison * direction || String(a.name || "").localeCompare(String(b.name || ""));
   }
 
-  function updateCompanySortButtons() {
-    document.querySelectorAll("[data-company-sort]").forEach((button) => {
-      const isActive = button.getAttribute("data-company-sort") === companyTableState.sortKey;
+  function atRiskTableRows(data) {
+    return (data.atRiskCompanies || []).slice().sort(compareAtRiskByCurrentSort);
+  }
 
-      button.setAttribute("data-sort-direction", isActive ? companyTableState.sortDirection : "");
-      button.setAttribute("aria-pressed", String(isActive));
-    });
-    mountCompaniesTableStickyHeader();
+  function compareNewReactivatedByCurrentSort(a, b) {
+    const sortKey = newReactivatedTableState.sortKey;
+    const direction = newReactivatedTableState.sortDirection === "asc" ? 1 : -1;
+    let comparison = 0;
+
+    if (sortKey === "name") {
+      comparison = String(a.name || "").localeCompare(String(b.name || ""));
+    } else if (sortKey === "activationStage") {
+      comparison = (activationStageOrder[a.activationStage] ?? 0) - (activationStageOrder[b.activationStage] ?? 0);
+    } else if (newReactivatedNumericSortKeys.has(sortKey)) {
+      comparison = (Number(a[sortKey]) || 0) - (Number(b[sortKey]) || 0);
+    }
+
+    return comparison * direction || String(a.name || "").localeCompare(String(b.name || ""));
+  }
+
+  function newReactivatedTableRows(data) {
+    return (data.newReactivatedCompanies || []).slice().sort(compareNewReactivatedByCurrentSort);
+  }
+
+  function compareExpansionByCurrentSort(a, b) {
+    const sortKey = expansionTableState.sortKey;
+    const direction = expansionTableState.sortDirection === "asc" ? 1 : -1;
+    let comparison = 0;
+
+    if (expansionTextSortKeys.has(sortKey)) {
+      comparison = String(a[sortKey] || "").localeCompare(String(b[sortKey] || ""));
+    } else if (expansionNumericSortKeys.has(sortKey)) {
+      comparison = (Number(a[sortKey]) || 0) - (Number(b[sortKey]) || 0);
+    }
+
+    return comparison * direction || String(a.name || "").localeCompare(String(b.name || ""));
+  }
+
+  function expansionTableRows(data) {
+    return (data.expansionOpportunities || []).slice().sort(compareExpansionByCurrentSort);
   }
 
   function companyPaginationIcon(direction) {
@@ -2379,238 +2346,410 @@
     `;
   }
 
-  function renderCompaniesPagination(totalPages) {
-    const container = document.querySelector("[data-companies-pagination]");
+  /**
+   * Shared paging and sorting behaviour for one overview table.
+   *
+   * Both overview tables page the same way: a server page when the provider can
+   * fetch one, an in-memory slice otherwise, with the same loading overlay,
+   * header scroll-back, and stale-response guard around either path.
+   */
+  function createTablePaginationController(config) {
+    const {
+      state,
+      pageSize,
+      tableKey,
+      rowKey,
+      scrollSelector,
+      loadingSelector,
+      paginationSelector,
+      pageActionAttribute,
+      sortAttribute,
+      defaultSortKey,
+      defaultSortDirections,
+      sortedRows,
+      render,
+      requestRows,
+      afterSortButtonsUpdate
+    } = config;
 
-    if (!container) {
-      return;
+    let sortMounted = false;
+
+    function pageCount(rows) {
+      return tablePageCount(currentData, tableKey, rows, pageSize);
     }
 
-    if (totalPages <= 1) {
-      container.hidden = true;
-      container.innerHTML = "";
-      return;
+    function currentPageCount() {
+      return pageCount(currentData ? sortedRows(currentData) : []);
     }
 
-    const currentPage = Math.min(totalPages, Math.max(1, companyTableState.page));
-    const isBusy = companyTableState.isLoading;
-    const disabledAttr = isBusy ? " disabled" : "";
+    function tableHead() {
+      return document.querySelector(`${scrollSelector} thead`);
+    }
 
-    container.hidden = false;
-    container.innerHTML = `
-      ${
-        currentPage > 2
-          ? `<button type="button" class="font-medium text-sky-700 hover:text-sky-800" data-companies-page-action="first"${disabledAttr}>Go to first page</button>`
-          : `<span aria-hidden="true"></span>`
+    function stickyHeaderOffset() {
+      return document.querySelector("body > nav")?.getBoundingClientRect().height || 48;
+    }
+
+    function isHeaderVisible() {
+      const head = tableHead();
+
+      if (!head) {
+        return true;
       }
-      <div class="flex items-center justify-between gap-6 sm:justify-end">
-        ${
-          currentPage > 1
-            ? `<button type="button" class="inline-flex h-8 w-8 items-center justify-center text-sky-700 hover:text-sky-800" data-companies-page-action="previous" aria-label="Back to previous page"${disabledAttr}>${companyPaginationIcon("previous")}</button>`
-            : `<span class="invisible h-8 w-8" aria-hidden="true"></span>`
-        }
-        <span class="text-slate-700">Page ${currentPage}/${totalPages}</span>
-        ${
-          currentPage < totalPages
-            ? `<button type="button" class="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-transparent px-4 py-3 font-medium text-sky-700 duration-150 hover:bg-slate-100" data-companies-page-action="next"${disabledAttr}>Continue to next page ${companyPaginationIcon("next")}</button>`
-            : ""
-        }
-      </div>
-    `;
 
-    container.querySelectorAll("[data-companies-page-action]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const action = button.getAttribute("data-companies-page-action");
-        const targetPage =
-          action === "first"
-            ? 1
-            : action === "previous"
-              ? Math.max(1, companyTableState.page - 1)
-              : Math.min(totalPages, companyTableState.page + 1);
+      const rect = head.getBoundingClientRect();
 
-        requestCompanyTablePage(targetPage);
-      });
-    });
-  }
-
-  function setCompanyTableLoading(isLoading) {
-    const overlay = document.querySelector("[data-companies-table-loading]");
-    const tableShell = document.querySelector("[data-companies-table-scroll]");
-    const requestFrame = globalScope.requestAnimationFrame || ((callback) => globalScope.setTimeout(callback, 0));
-
-    tableShell?.setAttribute("aria-busy", String(isLoading));
-
-    if (!overlay) {
-      return;
+      return rect.top >= stickyHeaderOffset() && rect.bottom <= globalScope.innerHeight;
     }
 
-    if (isLoading) {
-      overlay.hidden = false;
-      requestFrame(() => {
-        overlay.dataset.visible = "true";
-      });
-      return;
-    }
+    function scrollHeaderIntoView() {
+      const head = tableHead();
 
-    overlay.dataset.visible = "false";
-    globalScope.setTimeout(() => {
-      if (overlay.dataset.visible !== "true") {
-        overlay.hidden = true;
+      if (!head) {
+        return;
       }
-    }, 240);
-  }
 
-  function isCompanyTableHeaderVisible() {
-    const tableHead = document.querySelector("[data-companies-table-scroll] thead");
+      globalScope.scrollTo({
+        top: Math.max(0, globalScope.scrollY + head.getBoundingClientRect().top - stickyHeaderOffset() - 12),
+        behavior: "smooth"
+      });
+    }
 
-    if (!tableHead) {
+    function setLoading(isLoading) {
+      const overlay = document.querySelector(loadingSelector);
+      const requestFrame = globalScope.requestAnimationFrame || ((callback) => globalScope.setTimeout(callback, 0));
+
+      document.querySelector(scrollSelector)?.setAttribute("aria-busy", String(isLoading));
+
+      if (!overlay) {
+        return;
+      }
+
+      if (isLoading) {
+        overlay.hidden = false;
+        requestFrame(() => {
+          overlay.dataset.visible = "true";
+        });
+        return;
+      }
+
+      overlay.dataset.visible = "false";
+      globalScope.setTimeout(() => {
+        if (overlay.dataset.visible !== "true") {
+          overlay.hidden = true;
+        }
+      }, 240);
+    }
+
+    function updateSortButtons() {
+      document.querySelectorAll(`[${sortAttribute}]`).forEach((button) => {
+        const isActive = button.getAttribute(sortAttribute) === state.sortKey;
+
+        button.setAttribute("data-sort-direction", isActive ? state.sortDirection : "");
+        button.setAttribute("aria-pressed", String(isActive));
+      });
+
+      afterSortButtonsUpdate?.();
+    }
+
+    function renderPagination(totalPages) {
+      const container = document.querySelector(paginationSelector);
+
+      if (!container) {
+        return;
+      }
+
+      if (totalPages <= 1) {
+        container.hidden = true;
+        container.innerHTML = "";
+        return;
+      }
+
+      const currentPage = Math.min(totalPages, Math.max(1, state.page));
+      const disabledAttr = state.isLoading ? " disabled" : "";
+
+      container.hidden = false;
+      container.innerHTML = `
+        ${
+          currentPage > 2
+            ? `<button type="button" class="font-medium text-sky-700 hover:text-sky-800" ${pageActionAttribute}="first"${disabledAttr}>Go to first page</button>`
+            : `<span aria-hidden="true"></span>`
+        }
+        <div class="flex items-center justify-between gap-6 sm:justify-end">
+          ${
+            currentPage > 1
+              ? `<button type="button" class="inline-flex h-8 w-8 items-center justify-center text-sky-700 hover:text-sky-800" ${pageActionAttribute}="previous" aria-label="Back to previous page"${disabledAttr}>${companyPaginationIcon("previous")}</button>`
+              : `<span class="invisible h-8 w-8" aria-hidden="true"></span>`
+          }
+          <span class="text-slate-700">Page ${currentPage}/${totalPages}</span>
+          ${
+            currentPage < totalPages
+              ? `<button type="button" class="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-transparent px-4 py-3 font-medium text-sky-700 duration-150 hover:bg-slate-100" ${pageActionAttribute}="next"${disabledAttr}>Continue to next page ${companyPaginationIcon("next")}</button>`
+              : ""
+          }
+        </div>
+      `;
+
+      container.querySelectorAll(`[${pageActionAttribute}]`).forEach((button) => {
+        button.addEventListener("click", () => {
+          const action = button.getAttribute(pageActionAttribute);
+          const targetPage =
+            action === "first"
+              ? 1
+              : action === "previous"
+                ? Math.max(1, state.page - 1)
+                : Math.min(totalPages, state.page + 1);
+
+          requestPage(targetPage);
+        });
+      });
+    }
+
+    function beginLoading() {
+      state.isLoading = true;
+      state.loadingToken += 1;
+
+      setLoading(true);
+      renderPagination(currentPageCount());
+
+      if (!isHeaderVisible()) {
+        scrollHeaderIntoView();
+      }
+
+      return state.loadingToken;
+    }
+
+    function finishLoading() {
+      state.isLoading = false;
+      setLoading(false);
+      renderPagination(currentPageCount());
+    }
+
+    function simulateLoad(onComplete) {
+      if (state.isLoading) {
+        return;
+      }
+
+      const token = beginLoading();
+
+      globalScope.setTimeout(() => {
+        if (token !== state.loadingToken) {
+          return;
+        }
+
+        onComplete();
+        finishLoading();
+      }, 350);
+    }
+
+    function loadServerPage(targetPage) {
+      if (!currentData || state.isLoading) {
+        return false;
+      }
+
+      const request = requestRows(targetPage);
+
+      if (!request) {
+        return false;
+      }
+
+      const token = beginLoading();
+
+      request.then((payload) => {
+        if (token !== state.loadingToken) {
+          return;
+        }
+
+        if (applyTablePayload(currentData, tableKey, rowKey, payload, state)) {
+          render(currentData);
+        }
+      }).finally(() => {
+        if (token !== state.loadingToken) {
+          return;
+        }
+
+        finishLoading();
+      });
+
       return true;
     }
 
-    const stickyTop = document.querySelector("body > nav")?.getBoundingClientRect().height || 48;
-    const rect = tableHead.getBoundingClientRect();
-
-    return rect.top >= stickyTop && rect.bottom <= globalScope.innerHeight;
-  }
-
-  function scrollCompanyTableHeaderIntoView() {
-    const tableHead = document.querySelector("[data-companies-table-scroll] thead");
-
-    if (!tableHead) {
-      return;
-    }
-
-    const stickyTop = document.querySelector("body > nav")?.getBoundingClientRect().height || 48;
-    const targetTop = Math.max(0, globalScope.scrollY + tableHead.getBoundingClientRect().top - stickyTop - 12);
-
-    globalScope.scrollTo({
-      top: targetTop,
-      behavior: "smooth"
-    });
-  }
-
-  function simulateCompanyTableLoad(onComplete) {
-    if (companyTableState.isLoading) {
-      return;
-    }
-
-    companyTableState.isLoading = true;
-    companyTableState.loadingToken += 1;
-
-    const token = companyTableState.loadingToken;
-    const rows = currentData ? topCompanyRows(currentData) : [];
-
-    setCompanyTableLoading(true);
-    renderCompaniesPagination(topCompanyPageCount(rows));
-
-    if (!isCompanyTableHeaderVisible()) {
-      scrollCompanyTableHeaderIntoView();
-    }
-
-    globalScope.setTimeout(() => {
-      if (token !== companyTableState.loadingToken) {
+    function requestPage(targetPage) {
+      if (!currentData || state.isLoading || targetPage === state.page) {
         return;
       }
 
-      onComplete();
-      companyTableState.isLoading = false;
-      setCompanyTableLoading(false);
-      renderCompaniesPagination(topCompanyPageCount(currentData ? topCompanyRows(currentData) : []));
-    }, 350);
-  }
-
-  function loadCompanyTablePage(targetPage) {
-    if (typeof provider.loadCompaniesTable !== "function" || !currentData || companyTableState.isLoading) {
-      return false;
-    }
-
-    companyTableState.isLoading = true;
-    companyTableState.loadingToken += 1;
-
-    const token = companyTableState.loadingToken;
-
-    setCompanyTableLoading(true);
-    renderCompaniesPagination(topCompanyPageCount(currentData ? topCompanyRows(currentData) : []));
-
-    if (!isCompanyTableHeaderVisible()) {
-      scrollCompanyTableHeaderIntoView();
-    }
-
-    provider.loadCompaniesTable({
-      page: targetPage,
-      page_size: topCompaniesPageSize,
-      sort: companyTableState.sortKey,
-      direction: companyTableState.sortDirection,
-      period: currentData.period || provider.DEFAULT_PERIOD
-    }).then((payload) => {
-      if (token !== companyTableState.loadingToken) {
+      if (loadServerPage(targetPage)) {
         return;
       }
 
-      if (applyTablePayload(currentData, "companies", "companies", payload, companyTableState)) {
-        renderCompaniesTable(currentData);
-      }
-    }).finally(() => {
-      if (token !== companyTableState.loadingToken) {
+      simulateLoad(() => {
+        state.page = targetPage;
+        render(currentData);
+      });
+    }
+
+    function mountSort() {
+      if (sortMounted) {
         return;
       }
 
-      companyTableState.isLoading = false;
-      setCompanyTableLoading(false);
-      renderCompaniesPagination(topCompanyPageCount(currentData ? topCompanyRows(currentData) : []));
-    });
+      sortMounted = true;
 
-    return true;
+      document.querySelectorAll(`[${sortAttribute}]`).forEach((button) => {
+        button.addEventListener("click", () => {
+          const sortKey = button.getAttribute(sortAttribute) || defaultSortKey;
+
+          if (!currentData || state.isLoading) {
+            return;
+          }
+
+          if (state.sortKey === sortKey) {
+            state.sortDirection = state.sortDirection === "asc" ? "desc" : "asc";
+          } else {
+            state.sortKey = sortKey;
+            state.sortDirection = defaultSortDirections[sortKey] || "desc";
+          }
+
+          state.page = 1;
+          updateSortButtons();
+          if (loadServerPage(1)) {
+            return;
+          }
+
+          simulateLoad(() => {
+            render(currentData);
+          });
+        });
+      });
+    }
+
+    return { pageCount, renderPagination, updateSortButtons, mountSort };
   }
 
-  function requestCompanyTablePage(targetPage) {
-    if (!currentData || companyTableState.isLoading || targetPage === companyTableState.page) {
-      return;
-    }
+  const companyTableController = createTablePaginationController({
+    state: companyTableState,
+    pageSize: topCompaniesPageSize,
+    tableKey: "companies",
+    rowKey: "companies",
+    scrollSelector: "[data-companies-table-scroll]",
+    loadingSelector: "[data-companies-table-loading]",
+    paginationSelector: "[data-companies-pagination]",
+    pageActionAttribute: "data-companies-page-action",
+    sortAttribute: "data-company-sort",
+    defaultSortKey: "engagedSeconds",
+    defaultSortDirections: companyTableDefaultSortDirections,
+    sortedRows: topCompanyRows,
+    render: (data) => renderCompaniesTable(data),
+    requestRows: (targetPage) => (
+      typeof provider.loadCompaniesTable === "function"
+        ? provider.loadCompaniesTable({
+            page: targetPage,
+            page_size: topCompaniesPageSize,
+            sort: companyTableState.sortKey,
+            direction: companyTableState.sortDirection,
+            period: currentData.period || provider.DEFAULT_PERIOD
+          })
+        : null
+    ),
+    afterSortButtonsUpdate: () => mountCompaniesTableStickyHeader()
+  });
 
-    if (loadCompanyTablePage(targetPage)) {
-      return;
-    }
+  const atRiskTableController = createTablePaginationController({
+    state: atRiskTableState,
+    pageSize: atRiskPageSize,
+    tableKey: "atRisk",
+    rowKey: "atRiskCompanies",
+    scrollSelector: "[data-at-risk-table-scroll]",
+    loadingSelector: "[data-at-risk-table-loading]",
+    paginationSelector: "[data-at-risk-pagination]",
+    pageActionAttribute: "data-at-risk-page-action",
+    sortAttribute: "data-at-risk-sort",
+    defaultSortKey: "riskScore",
+    defaultSortDirections: atRiskDefaultSortDirections,
+    sortedRows: atRiskTableRows,
+    render: (data) => renderAtRiskTable(data),
+    requestRows: (targetPage) => (
+      typeof provider.loadAtRiskTable === "function"
+        ? provider.loadAtRiskTable({
+            page: targetPage,
+            page_size: atRiskPageSize,
+            sort: atRiskTableState.sortKey,
+            direction: atRiskTableState.sortDirection,
+            period: currentData.period || provider.DEFAULT_PERIOD
+          })
+        : null
+    )
+  });
 
-    simulateCompanyTableLoad(() => {
-      companyTableState.page = targetPage;
-      renderCompaniesTable(currentData);
-    });
+  const newReactivatedTableController = createTablePaginationController({
+    state: newReactivatedTableState,
+    pageSize: newReactivatedPageSize,
+    tableKey: "newReactivated",
+    rowKey: "newReactivatedCompanies",
+    scrollSelector: "[data-new-reactivated-table-scroll]",
+    loadingSelector: "[data-new-reactivated-table-loading]",
+    paginationSelector: "[data-new-reactivated-pagination]",
+    pageActionAttribute: "data-new-reactivated-page-action",
+    sortAttribute: "data-new-reactivated-sort",
+    defaultSortKey: "activationStage",
+    defaultSortDirections: newReactivatedDefaultSortDirections,
+    sortedRows: newReactivatedTableRows,
+    render: (data) => renderNewReactivatedTable(data),
+    requestRows: (targetPage) => (
+      typeof provider.loadNewReactivatedTable === "function"
+        ? provider.loadNewReactivatedTable({
+            page: targetPage,
+            page_size: newReactivatedPageSize,
+            sort: newReactivatedTableState.sortKey,
+            direction: newReactivatedTableState.sortDirection,
+            period: currentData.period || provider.DEFAULT_PERIOD
+          })
+        : null
+    )
+  });
+
+  const expansionTableController = createTablePaginationController({
+    state: expansionTableState,
+    pageSize: expansionPageSize,
+    tableKey: "expansion",
+    rowKey: "expansionOpportunities",
+    scrollSelector: "[data-expansion-table-scroll]",
+    loadingSelector: "[data-expansion-table-loading]",
+    paginationSelector: "[data-expansion-pagination]",
+    pageActionAttribute: "data-expansion-page-action",
+    sortAttribute: "data-expansion-sort",
+    defaultSortKey: "potentialScore",
+    defaultSortDirections: expansionDefaultSortDirections,
+    sortedRows: expansionTableRows,
+    render: (data) => renderExpansionTable(data),
+    requestRows: (targetPage) => (
+      typeof provider.loadExpansionTable === "function"
+        ? provider.loadExpansionTable({
+            page: targetPage,
+            page_size: expansionPageSize,
+            sort: expansionTableState.sortKey,
+            direction: expansionTableState.sortDirection,
+            period: currentData.period || provider.DEFAULT_PERIOD
+          })
+        : null
+    )
+  });
+
+  function topCompanyPageCount(rows) {
+    return companyTableController.pageCount(rows);
+  }
+
+  function updateCompanySortButtons() {
+    companyTableController.updateSortButtons();
+  }
+
+  function renderCompaniesPagination(totalPages) {
+    companyTableController.renderPagination(totalPages);
   }
 
   function mountCompanyTableSort() {
-    if (companyTableSortMounted) {
-      return;
-    }
-
-    companyTableSortMounted = true;
-
-    document.querySelectorAll("[data-company-sort]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const sortKey = button.getAttribute("data-company-sort") || "engagedSeconds";
-
-        if (!currentData || companyTableState.isLoading) {
-          return;
-        }
-
-        if (companyTableState.sortKey === sortKey) {
-          companyTableState.sortDirection = companyTableState.sortDirection === "asc" ? "desc" : "asc";
-        } else {
-          companyTableState.sortKey = sortKey;
-          companyTableState.sortDirection = companyTableSortDirection(sortKey);
-        }
-
-        companyTableState.page = 1;
-        updateCompanySortButtons();
-        if (loadCompanyTablePage(1)) {
-          return;
-        }
-
-        simulateCompanyTableLoad(() => {
-          renderCompaniesTable(currentData);
-        });
-      });
-    });
+    companyTableController.mountSort();
   }
 
   function renderCompaniesTable(data) {
@@ -2641,11 +2780,14 @@
     tbody.innerHTML = rows
       .map((row) => {
         const href = companyDetailHref(row);
+        const companyCell = href
+          ? `<a class="text-sky-800 hover:text-sky-900" href="${escapeHtml(href)}">${escapeHtml(row.name)}</a>`
+          : `<span class="text-slate-800">${escapeHtml(row.name)}</span>`;
 
         return `
-        <tr class="group cursor-pointer hover:bg-slate-50" data-company-detail-href="${escapeHtml(href)}" tabindex="0">
+        <tr class="group${href ? " cursor-pointer" : ""} hover:bg-slate-50"${href ? ` data-company-detail-href="${escapeHtml(href)}" tabindex="0"` : ""}>
           <td class="sticky left-0 z-[1] bg-white py-3.5 pl-0 pr-6 align-middle font-medium text-slate-900 group-hover:bg-slate-50">
-            <a class="text-sky-800 hover:text-sky-900" href="${escapeHtml(href)}">${escapeHtml(row.name)}</a>
+            ${companyCell}
           </td>
           <td class="py-3.5 pr-6 align-middle">${statusBadge(row.status)}</td>
           ${renderCompanySplitMetricChangeGroup(row, companyTableSplitMetrics[0], changeScaleByMetric.activeUsers, maxValues)}
@@ -2692,14 +2834,21 @@
       return;
     }
 
-    const rows = data.newReactivatedCompanies || [];
+    const allRows = newReactivatedTableRows(data);
+    const totalPages = newReactivatedTableController.pageCount(allRows);
 
-    if (!rows.length) {
+    newReactivatedTableState.page = Math.min(totalPages, Math.max(1, newReactivatedTableState.page));
+    newReactivatedTableController.updateSortButtons();
+    newReactivatedTableController.renderPagination(totalPages);
+
+    if (!allRows.length) {
       tbody.innerHTML = `<tr><td colspan="6" class="px-6 py-10 text-center text-slate-500">No new or reactivated companies in this period.</td></tr>`;
+      newReactivatedTableController.renderPagination(1);
       return;
     }
 
-    const sortedRows = sortNewReactivatedRows(rows);
+    const rows = tableRowsForRender(data, "newReactivated", allRows, newReactivatedTableState, newReactivatedPageSize);
+    const sortedRows = rows;
     const maxMatrixEngaged = Math.max(
       ...rows.flatMap((row) => (row.productAreaAdoption || []).map((cell) => cell.engagedSeconds || 0)),
       1
@@ -2717,7 +2866,7 @@
       .map((row) => `
         <tr class="hover:bg-slate-50">
           <td class="py-3.5 pl-0 pr-6">${cohortCompanyCell(row)}</td>
-          <td class="py-3.5 pr-6">${activationBadge(row.activationStatus)}</td>
+          <td class="py-3.5 pr-6">${activationBadge(row.activationStage)}</td>
           <td class="py-3.5 pr-6 whitespace-nowrap text-slate-700">${escapeHtml(formatRelativeDays(row.daysSinceStart))}</td>
           ${newReactivatedMetricBarCell(row, metrics.activeUsers, metricMaxValues.activeUsers)}
           ${newReactivatedMetricBarCell(row, metrics.engagedSeconds, metricMaxValues.engagedSeconds)}
@@ -2855,7 +3004,9 @@
         name: `${row.name}${lineEndLabelSeriesSuffix}`,
         type: "line",
         animation: false,
-        silent: true,
+        silent: false,
+        triggerLineEvent: true,
+        cursor: "default",
         showSymbol: false,
         connectNulls: false,
         data: connectorData,
@@ -2887,6 +3038,51 @@
     });
   }
 
+  function currentStraightTrendLineStyle(color) {
+    return {
+      color,
+      type: [6, 4],
+      opacity: 0.58,
+      width: 2
+    };
+  }
+
+  function createLineHoverTrendSeries(seriesRows, xAxisLabels, selectedPeriodDays) {
+    return seriesRows.map((row) => {
+      const color = productAreaColor(row.name);
+      const trendValues = buildStraightTrendLine(row.values, selectedPeriodDays);
+      const visibleLineStyle = currentStraightTrendLineStyle(color);
+
+      return {
+        name: `${row.name}${lineHoverTrendSeriesSuffix}`,
+        type: "line",
+        animation: false,
+        silent: true,
+        smooth: false,
+        symbol: "none",
+        data: trendValues.length
+          ? trendValues.concat(null)
+          : Array.from({ length: xAxisLabels.length }, () => null),
+        tooltip: {
+          show: false
+        },
+        lineStyle: {
+          ...visibleLineStyle,
+          opacity: 0
+        },
+        emphasis: {
+          lineStyle: visibleLineStyle
+        },
+        blur: {
+          lineStyle: {
+            opacity: 0
+          }
+        },
+        z: 4
+      };
+    });
+  }
+
   function createProductAreaAdoptionOption(points) {
     const areas = Array.from(new Set(points.map((point) => point.productArea)));
     const dates = Array.from(new Set(points.map((point) => point.date)));
@@ -2904,29 +3100,34 @@
       return {
         name: row.name,
         type: "line",
+        cursor: "default",
+        triggerLineEvent: true,
         smooth: true,
         showSymbol: false,
         symbol: "circle",
         symbolSize: 5,
         data: row.values.concat(null),
         lineStyle: { color, width: 2.5 },
-        emphasis: { focus: "series" }
+        emphasis: { focus: "series" },
+        z: 5
       };
     });
     const connectorSeries = createLineEndLabelConnectorSeries(seriesRows, xAxisLabels, valueExtent, {
       labelWidth: 116,
       plotHeight: 296
     });
+    const trendSeries = createLineHoverTrendSeries(seriesRows, xAxisLabels, dates.length);
 
     return {
       color: chartTheme.series,
       animation: false,
-      tooltip: {
+      tooltip: analyticsTooltips.echarts({
         trigger: "axis",
         confine: true,
         formatter: (params) => {
           const items = (Array.isArray(params) ? params : [params]).filter((item) =>
             !String(item.seriesName || "").endsWith(lineEndLabelSeriesSuffix) &&
+            !String(item.seriesName || "").endsWith(lineHoverTrendSeriesSuffix) &&
             item.axisValue !== labelSpacerCategory &&
             item.value !== null &&
             item.value !== undefined
@@ -2937,21 +3138,19 @@
             return "";
           }
 
-          const rows = items
-            .map((item) => {
-              const point = pointLookup.get(`${item.seriesName}|${date}`);
-              return `
-                <div style="display:flex;gap:16px;justify-content:space-between;min-width:220px;">
-                  <span>${item.marker}${escapeHtml(item.seriesName)}</span>
-                  <strong>${formatPercent(point?.adoptionPct ?? item.value)}</strong>
-                </div>
-              `;
-            })
-            .join("");
+          const rows = items.map((item) => {
+            const point = pointLookup.get(`${item.seriesName}|${date}`);
 
-          return `<div><div style="font-weight:600;margin-bottom:6px;">${escapeHtml(formatDateShort(date))}</div>${rows}</div>`;
+            return {
+              label: item.seriesName,
+              value: formatPercent(point?.adoptionPct ?? item.value),
+              marker: productAreaColor(item.seriesName)
+            };
+          });
+
+          return analyticsTooltips.render({ title: formatDateShort(date), rows });
         }
-      },
+      }),
       grid: {
         left: 48,
         right: 136,
@@ -2981,7 +3180,7 @@
         },
         splitLine: { show: false }
       },
-      series: lineSeries.concat(connectorSeries)
+      series: lineSeries.concat(connectorSeries, trendSeries)
     };
   }
 
@@ -3002,29 +3201,34 @@
       return {
         name: row.name,
         type: "line",
+        cursor: "default",
+        triggerLineEvent: true,
         smooth: true,
         showSymbol: false,
         symbol: "circle",
         symbolSize: 5,
         data: row.values.concat(null),
         lineStyle: { color, width: 2.5 },
-        emphasis: { focus: "series" }
+        emphasis: { focus: "series" },
+        z: 5
       };
     });
     const connectorSeries = createLineEndLabelConnectorSeries(seriesRows, xAxisLabels, valueExtent, {
       labelWidth: 116,
       plotHeight: 296
     });
+    const trendSeries = createLineHoverTrendSeries(seriesRows, xAxisLabels, days.length);
 
     return {
       color: chartTheme.series,
       animation: false,
-      tooltip: {
+      tooltip: analyticsTooltips.echarts({
         trigger: "axis",
         confine: true,
         formatter: (params) => {
           const items = (Array.isArray(params) ? params : [params]).filter((item) =>
             !String(item.seriesName || "").endsWith(lineEndLabelSeriesSuffix) &&
+            !String(item.seriesName || "").endsWith(lineHoverTrendSeriesSuffix) &&
             item.axisValue !== labelSpacerCategory &&
             item.value !== null &&
             item.value !== undefined
@@ -3035,21 +3239,19 @@
             return "";
           }
 
-          const rows = items
-            .map((item) => {
-              const point = pointLookup.get(`${item.seriesName}|${day}`);
-              return `
-                <div style="display:flex;gap:16px;justify-content:space-between;min-width:220px;">
-                  <span>${item.marker}${escapeHtml(item.seriesName)}</span>
-                  <strong>${formatPercent(point?.adoptionPct ?? item.value)}</strong>
-                </div>
-              `;
-            })
-            .join("");
+          const rows = items.map((item) => {
+            const point = pointLookup.get(`${item.seriesName}|${day}`);
 
-          return `<div><div style="font-weight:600;margin-bottom:6px;">Day ${day}</div>${rows}</div>`;
+            return {
+              label: item.seriesName,
+              value: formatPercent(point?.adoptionPct ?? item.value),
+              marker: productAreaColor(item.seriesName)
+            };
+          });
+
+          return analyticsTooltips.render({ title: `Day ${day}`, rows });
         }
-      },
+      }),
       grid: {
         left: 48,
         right: 136,
@@ -3078,12 +3280,25 @@
         },
         splitLine: { show: false }
       },
-      series: lineSeries.concat(connectorSeries)
+      series: lineSeries.concat(connectorSeries, trendSeries)
     };
   }
 
+  function mountLineHoverTrendChart(element, option, lineSeriesCount) {
+    const chart = mountChart(element, option);
+
+    return bindLineTrendHover(chart, lineSeriesCount, element);
+  }
+
   function renderProductAreaAdoptionCharts(data) {
-    mountChart(document.getElementById("product-area-adoption-chart"), createProductAreaAdoptionOption(data.productAreaAdoption || []));
+    const adoptionPoints = data.productAreaAdoption || [];
+    const adoptionSeriesCount = new Set(adoptionPoints.map((point) => point.productArea)).size;
+
+    mountLineHoverTrendChart(
+      document.getElementById("product-area-adoption-chart"),
+      createProductAreaAdoptionOption(adoptionPoints),
+      adoptionSeriesCount
+    );
 
     const rampElement = document.getElementById("new-company-adoption-ramp-chart");
 
@@ -3092,7 +3307,13 @@
       return;
     }
 
-    mountChart(rampElement, createAdoptionRampOption(data.newCompanyAdoptionRamp));
+    const rampSeriesCount = new Set(data.newCompanyAdoptionRamp.map((point) => point.productArea)).size;
+
+    mountLineHoverTrendChart(
+      rampElement,
+      createAdoptionRampOption(data.newCompanyAdoptionRamp),
+      rampSeriesCount
+    );
   }
 
   function median(values) {
@@ -3451,7 +3672,7 @@
         {
           orient: "left",
           scale: "yScale",
-          title: "Avg engaged / user",
+          title: "Avg engaged time / user",
           grid: false,
           tickCount: 6,
           titleAngle: 0,
@@ -3521,7 +3742,7 @@
               shape: { value: "circle" },
               tooltip: {
                 signal:
-                  "{'Company': datum.companyName, 'Status': datum.statusLabel, 'Avg active users': datum.scatterActiveUsersLabel, 'Avg engaged / user': datum.avgEngagedLabel, 'Total engaged': datum.engagedLabel, 'Visits': datum.visitsLabel, 'Product areas used': datum.productAreasLabel, 'Last seen': datum.lastSeen}"
+                  "{'title': datum.companyName, 'Avg active users': datum.scatterActiveUsersLabel, 'Avg engaged time / user': datum.avgEngagedLabel, 'Total engaged time': datum.engagedLabel, 'Visits': datum.visitsLabel, 'Status': datum.statusLabel, 'Product areas used': datum.productAreasLabel, 'Last seen': datum.lastSeen}"
               }
             },
             update: {
@@ -3670,13 +3891,20 @@
       return;
     }
 
-    const rows = data.atRiskCompanies || [];
+    const sortedRows = atRiskTableRows(data);
+    const totalPages = atRiskTableController.pageCount(sortedRows);
 
-    if (!rows.length) {
+    atRiskTableState.page = Math.min(totalPages, Math.max(1, atRiskTableState.page));
+    atRiskTableController.updateSortButtons();
+    atRiskTableController.renderPagination(totalPages);
+
+    if (!sortedRows.length) {
       tbody.innerHTML = `<tr><td colspan="6" class="px-6 py-10 text-center text-slate-500">No at-risk companies detected.</td></tr>`;
+      atRiskTableController.renderPagination(1);
       return;
     }
 
+    const rows = tableRowsForRender(data, "atRisk", sortedRows, atRiskTableState, atRiskPageSize);
     const maxValues = {
       activeUsers: Math.max(...rows.map((row) => row.activeUsers || 0), 1),
       visits: 1,
@@ -3711,13 +3939,20 @@
       return;
     }
 
-    const rows = data.expansionOpportunities || [];
+    const allRows = expansionTableRows(data);
+    const totalPages = expansionTableController.pageCount(allRows);
 
-    if (!rows.length) {
+    expansionTableState.page = Math.min(totalPages, Math.max(1, expansionTableState.page));
+    expansionTableController.updateSortButtons();
+    expansionTableController.renderPagination(totalPages);
+
+    if (!allRows.length) {
       tbody.innerHTML = `<tr><td colspan="8" class="px-6 py-10 text-center text-slate-500">No expansion opportunities detected.</td></tr>`;
+      expansionTableController.renderPagination(1);
       return;
     }
 
+    const rows = tableRowsForRender(data, "expansion", allRows, expansionTableState, expansionPageSize);
     const maxMatrixEngaged = Math.max(
       ...rows.flatMap((row) => (row.productAreaAdoption || []).map((cell) => cell.engagedSeconds || 0)),
       1
@@ -3811,7 +4046,15 @@
     try {
       globalScope.localStorage?.setItem(
         companySearchRecentStorageKey,
-        JSON.stringify(companies.map(normalizeCompanySearchCompany).filter((company) => company.id).slice(0, 8))
+        JSON.stringify(companies
+          .map(normalizeCompanySearchCompany)
+          .filter((company) => company.id)
+          .slice(0, 8)
+          .map((company) => ({
+            id: company.id,
+            name: company.name,
+            domain: company.domain
+          })))
       );
     } catch {
       // localStorage may be unavailable in private or embedded browsing contexts.
@@ -3830,18 +4073,21 @@
   }
 
   function companyDetailHref(company) {
-    const params = new URLSearchParams();
     const detailBaseUrl = document.body?.dataset.companyDetailBaseUrl || "";
     const companyId = String(company?.id || company?.companyId || company?.company_id || "").trim();
 
-    params.set("company_id", companyId);
-    params.set("period", currentData?.period || getRequestedPeriod());
-
+    if (!companyId) {
+      return "";
+    }
     if (detailBaseUrl) {
-      return `${detailBaseUrl}${detailBaseUrl.includes("?") ? "&" : "?"}${params.toString()}`;
+      const companyUrl = new URL(detailBaseUrl, globalScope.location.origin);
+      companyUrl.pathname = companyUrl.pathname.replace(/detail(?=\/|$)/, encodeURIComponent(companyId));
+      companyUrl.searchParams.delete("company_id");
+      companyUrl.searchParams.set("period", currentData?.period || getRequestedPeriod());
+      return `${companyUrl.pathname}${companyUrl.search}`;
     }
 
-    return `detail.html?${params.toString()}`;
+    return `detail.html?company_id=${encodeURIComponent(companyId)}&period=${encodeURIComponent(currentData?.period || getRequestedPeriod())}`;
   }
 
   function companySearchMetadata(company) {
@@ -3855,6 +4101,23 @@
     return metadata.join(" \u00b7 ");
   }
 
+  function dedupeCompanySearchResults(companies) {
+    const seen = new Set();
+
+    return companies.filter((company) => {
+      const domain = normalizeCompanySearchValue(company?.domain);
+      const name = normalizeCompanySearchValue(company?.name || company?.companyName);
+      const key = domain ? `domain:${domain}` : `name:${name}`;
+
+      if (!name || seen.has(key)) {
+        return false;
+      }
+
+      seen.add(key);
+      return true;
+    });
+  }
+
   function getInitialCompanySearchResults() {
     const companies = currentData?.companies || [];
     const companiesById = new Map(companies.map((company) => [company.id, company]));
@@ -3864,33 +4127,41 @@
       .filter(Boolean);
     const fallbackCompanies = companies
       .slice()
-      .sort((a, b) => (a.lastSeenDays || 0) - (b.lastSeenDays || 0) || (b.activeUsers || 0) - (a.activeUsers || 0))
+      .sort((a, b) => a.name.localeCompare(b.name))
       .filter((company) => !recentCompanyIds.includes(company.id));
 
-    return [...recentCompanies, ...fallbackCompanies].slice(0, 8);
+    return dedupeCompanySearchResults([...recentCompanies, ...fallbackCompanies]).slice(0, 8);
   }
 
   function getCompanySearchMatches(query) {
     const normalizedQuery = normalizeCompanySearchValue(query);
 
     if (companySearchUsesRemote() && !normalizedQuery) {
-      return readRecentCompanies().slice(0, 8);
+      const recentCompanies = dedupeCompanySearchResults(readRecentCompanies());
+      return (recentCompanies.length
+        ? recentCompanies
+        : (companySearchState.remoteQuery === normalizedQuery
+          ? dedupeCompanySearchResults(companySearchState.remoteResults)
+          : [])
+      ).slice(0, 8);
     }
 
     if (companySearchUsesRemote()) {
-      return companySearchState.remoteQuery === normalizedQuery ? companySearchState.remoteResults : [];
+      return companySearchState.remoteQuery === normalizedQuery
+        ? dedupeCompanySearchResults(companySearchState.remoteResults).slice(0, 8)
+        : [];
     }
 
     if (normalizedQuery.length < 1) {
       return getInitialCompanySearchResults();
     }
 
-    return (currentData?.companies || [])
+    return dedupeCompanySearchResults((currentData?.companies || [])
       .filter((company) => {
         const searchableText = `${company.name || ""} ${company.domain || ""}`.toLowerCase();
 
         return searchableText.includes(normalizedQuery);
-      })
+      }))
       .slice(0, 8);
   }
 
@@ -4022,7 +4293,8 @@
 
     const normalizedQuery = normalizeCompanySearchValue(query);
     const usesRemote = companySearchUsesRemote();
-    const shouldFetchRemote = usesRemote && Boolean(normalizedQuery) && companySearchState.remoteQuery !== normalizedQuery;
+    const shouldLoadFallback = usesRemote && !normalizedQuery && !readRecentCompanies().length;
+    const shouldFetchRemote = usesRemote && (Boolean(normalizedQuery) || shouldLoadFallback) && companySearchState.remoteQuery !== normalizedQuery;
     companySearchState.query = query;
 
     if (shouldFetchRemote) {
@@ -4043,7 +4315,8 @@
 
     provider.searchCompanies(query, {
       period: currentData?.period || getRequestedPeriod(),
-      limit: 20
+      limit: 20,
+      alphabetical: shouldLoadFallback
     })
       .then((remoteCompanies) => {
         if (
@@ -4110,6 +4383,8 @@
 
     companySearchMounted = true;
 
+    root.addEventListener("overview-quick-jumper:close", closeCompanySearchDropdown);
+
     input.addEventListener("input", () => {
       scheduleCompanySearchUpdate(input.value);
     });
@@ -4167,42 +4442,6 @@
     });
   }
 
-  function renderPeriodSelector(data) {
-    const container = document.getElementById("companies-period-selector");
-
-    if (!container) {
-      return;
-    }
-
-    container.innerHTML = provider.PERIOD_OPTIONS
-      .map((days) => {
-        const period = `${days}d`;
-        const isActive = period === data.period;
-
-        return `
-          <button
-            type="button"
-            data-company-period="${period}"
-            aria-pressed="${String(isActive)}"
-            class="px-3 py-1.5 text-sm font-medium duration-150 ${isActive ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"}">
-            ${period}
-          </button>
-        `;
-      })
-      .join("");
-
-    container.querySelectorAll("[data-company-period]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const period = provider.coercePeriodKey(button.getAttribute("data-company-period"));
-        const params = new URLSearchParams(globalScope.location.search);
-
-        params.set("period", period);
-        globalScope.history?.replaceState({}, "", `${globalScope.location.pathname}?${params.toString()}`);
-        loadPeriod(period);
-      });
-    });
-  }
-
   function renderAll(data) {
     currentData = data;
     syncProductAreaPalette(data);
@@ -4213,7 +4452,6 @@
     activationStageTooltipId = 0;
     suggestedStepTooltipId = 0;
 
-    renderPeriodSelector(data);
     mountCompanySearch();
     refreshCompanySearchResults();
     renderKpiCards(data);
@@ -4229,6 +4467,9 @@
   function loadPeriod(period) {
     const data = provider.getCompaniesDemoData(period);
     companyTableState.page = 1;
+    atRiskTableState.page = 1;
+    newReactivatedTableState.page = 1;
+    expansionTableState.page = 1;
     renderAll(data);
   }
 
@@ -4243,9 +4484,20 @@
     }
 
     mountSplitChangeValueWidthSync();
-    mountFloatingDeltaTooltips();
     mountCompanyTableSort();
+    atRiskTableController.mountSort();
+    newReactivatedTableController.mountSort();
+    expansionTableController.mountSort();
     loadPeriod(getRequestedPeriod());
+  }
+
+  if (globalScope.__HymetryExposeTestHooks) {
+    globalScope.HymetryCompaniesAnalyticsTesting = {
+      createAdoptionRampOption,
+      createKpiTrendOption,
+      createProductAreaAdoptionOption,
+      mountLineHoverTrendChart
+    };
   }
 
   document.addEventListener("DOMContentLoaded", initCompaniesPage);

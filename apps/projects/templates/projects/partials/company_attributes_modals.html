@@ -1,0 +1,98 @@
+<div class="company-attributes-modal" data-attributes-manager hidden>
+  <div class="company-attributes-modal-overlay" aria-hidden="true"></div>
+  <section
+    class="manage-attributes-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="manage-attributes-title"
+    tabindex="-1"
+    data-attributes-manager-dialog>
+    <header class="manage-attributes-header">
+      <h2 id="manage-attributes-title" class="manage-attributes-title">Manage attributes</h2>
+      <div class="manage-attributes-header-actions">
+        <button type="button" class="manage-attributes-close" aria-label="Close" data-attributes-manager-close>
+          <svg xmlns="http://www.w3.org/2000/svg" height="22" viewBox="0 -960 960 960" width="22" fill="currentColor" aria-hidden="true">
+            <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="manage-attributes-body">
+      <aside class="attributes-list-pane" aria-label="Attributes">
+        <div class="attributes-list" data-attributes-list></div>
+        <p class="attributes-reorder-status" data-reorder-status aria-live="polite"></p>
+      </aside>
+
+      <div class="attributes-editor">
+        <div class="attributes-editor-body" data-attribute-editor></div>
+        <footer class="attributes-editor-footer" data-manager-footer>
+          <button type="button" class="attributes-footer-add" data-add-attribute>
+            <svg xmlns="http://www.w3.org/2000/svg" height="22" viewBox="0 -960 960 960" width="22" fill="currentColor" aria-hidden="true">
+              <path d="M440-440H200v-80h240v-240h80v240h240v80H520v240h-80v-240Z" />
+            </svg>
+            Add attribute
+          </button>
+          <div class="attributes-footer-actions">
+            <p class="attributes-save-error" data-attributes-save-error role="alert" hidden></p>
+            <button type="button" class="attributes-button attributes-button-secondary" data-attributes-manager-cancel>Cancel</button>
+            <button type="button" class="attributes-button attributes-button-primary" data-attributes-save>Save</button>
+          </div>
+        </footer>
+      </div>
+    </div>
+  </section>
+
+  <div class="attributes-color-menu" data-option-color-menu hidden>
+    <div class="attributes-color-grid" role="menu" aria-label="Option color presets" data-option-color-grid></div>
+  </div>
+</div>
+
+<div class="company-attributes-modal" data-company-values-modal hidden>
+  <div class="company-attributes-modal-overlay" aria-hidden="true"></div>
+  <section
+    class="company-values-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="company-values-title"
+    tabindex="-1"
+    data-company-values-dialog>
+    <header class="manage-attributes-header">
+      <h2 id="company-values-title" class="manage-attributes-title" data-company-values-title>Company attributes</h2>
+      <div class="manage-attributes-header-actions">
+        <button type="button" class="manage-attributes-close" aria-label="Close" data-company-values-close>
+          <svg xmlns="http://www.w3.org/2000/svg" height="22" viewBox="0 -960 960 960" width="22" fill="currentColor" aria-hidden="true">
+            <path d="m329.08-286.54-42.54-42.54L437.46-480 286.54-629.92l42.54-42.54L480-521.54l149.92-150.92 42.54 42.54L521.54-480l150.92 150.92-42.54 42.54L480-437.46 329.08-286.54Z" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="company-values-body">
+      <form class="company-values-form" data-company-values-form novalidate></form>
+    </div>
+
+    <footer class="company-values-footer">
+      <p class="attributes-save-error" data-company-values-save-error role="alert" hidden></p>
+      <button type="button" class="attributes-button attributes-button-secondary" data-company-values-cancel>Cancel</button>
+      <button type="button" class="attributes-button attributes-button-primary" data-company-values-save>Save</button>
+    </footer>
+  </section>
+</div>
+
+<div class="company-attributes-modal attributes-discard-modal" data-attributes-discard-modal hidden>
+  <div class="company-attributes-modal-overlay" aria-hidden="true"></div>
+  <section
+    class="attributes-discard-dialog"
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="attributes-discard-title"
+    tabindex="-1"
+    data-attributes-discard-dialog>
+    <h2 id="attributes-discard-title" class="attributes-discard-title">Discard unsaved changes?</h2>
+    <div class="attributes-discard-actions">
+      <button type="button" class="attributes-button attributes-button-secondary" data-attributes-keep-editing>Keep editing</button>
+      <button type="button" class="attributes-button attributes-button-primary" data-attributes-discard-changes>Discard changes</button>
+    </div>
+  </section>
+</div>

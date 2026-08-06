@@ -1,6 +1,7 @@
 import json
+import threading
 from collections import defaultdict
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo, available_timezones
 
 from django.conf import settings
@@ -13,14 +14,21 @@ from django.http import Http404
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Count, Max, Sum
-from django.http import JsonResponse
+from django.http import HttpRequest, JsonResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.safestring import mark_safe
 from django.views.decorators.http import require_http_methods, require_POST
 
-from apps.pages import company_analytics, company_detail_analytics, services as pages_services, user_analytics, user_detail_analytics
+from apps.pages import (
+    company_analytics,
+    company_detail_analytics,
+    filtered_overview,
+    services as pages_services,
+    user_analytics,
+    user_detail_analytics,
+)
 from apps.pages.table_pagination import paginate_cached_rows
 from apps.pages.tasks import (
     build_company_detail_cache_task,
@@ -29,6 +37,17 @@ from apps.pages.tasks import (
 from apps.pages.models import RawPageDailyMetric
 from apps.tracker.models import AnalyticsEvent, Event, ProjectPageRule
 from apps.users.forms import ProjectForm
+from . import analytics_filter_state
+from .company_attribute_filter_support import (
+    build_company_attribute_filter_context,
+    canonical_company_scope_redirect,
+)
+from .company_attribute_filters import parse_company_attribute_filters
+from .company_segments import (
+    company_segment_urls,
+    demo_company_segment_urls,
+    resolve_company_scope,
+)
 from .demo import DEMO_PROJECT_DISPLAY_NAME, ensure_project_writable, get_demo_project
 from .access import (
     active_workspace_memberships,
@@ -73,6 +92,7 @@ from .services import (
     rename_workspace,
 )
 from .statuses import (
+    project_effective_status,
     project_status_badge_class,
     project_status_label,
 )
@@ -83,7 +103,7 @@ from .ai_credentials import (
     validate_workspace_openai_key,
 )
 from .domain_utils import normalize_allowed_domains, normalize_workspace_website_url
-from .url_helpers import project_route, workspace_route
+from .url_helpers import preserved_period_query_suffix, project_route, workspace_route
 from .utils import (
     TRACKING_MODE_ANALYTICS_AND_RECORDING,
     TRACKING_MODE_ANALYTICS_ONLY,
@@ -119,10 +139,10 @@ PRODUCT_AREAS_PER_PAGE = 10
 PRODUCT_AREA_EXAMPLES_PER_RULE = 3
 PRODUCT_AREA_EXAMPLE_FALLBACK_SCAN_LIMIT = 200
 COMPANIES_RANGE_OPTIONS = (
-    ('last_7_days', 'Last 7 days'),
-    ('last_30_days', 'Last 30 days'),
-    ('last_90_days', 'Last 90 days'),
-    ('last_180_days', 'Last 180 days'),
+    ('last_7_days', 'Last 7 complete days'),
+    ('last_30_days', 'Last 30 complete days'),
+    ('last_90_days', 'Last 90 complete days'),
+    ('last_180_days', 'Last 180 complete days'),
 )
 COMPANIES_SUPPORTED_RANGES = {key for key, _ in COMPANIES_RANGE_OPTIONS}
 COMPANIES_PERIOD_RANGE_KEYS = {
@@ -133,6 +153,9 @@ COMPANIES_PERIOD_RANGE_KEYS = {
 }
 COMPANIES_RANGE_DAYS = {range_key: days for days, range_key in COMPANIES_PERIOD_RANGE_KEYS.items()}
 COMPANIES_TABLE_PAGE_SIZE = 20
+COMPANIES_AT_RISK_TABLE_PAGE_SIZE = 20
+COMPANIES_NEW_REACTIVATED_TABLE_PAGE_SIZE = 20
+COMPANIES_EXPANSION_TABLE_PAGE_SIZE = 20
 COMPANY_DETAIL_TOP_PAGES_TABLE_PAGE_SIZE = 15
 COMPANY_DETAIL_USERS_TABLE_PAGE_SIZE = 20
 USER_DETAIL_PAGES_TABLE_PAGE_SIZE = 15
@@ -146,6 +169,42 @@ COMPANIES_TABLE_SORT_GETTERS = {
     'engagedSeconds': lambda row: row.get('engagedSeconds') or 0,
     'avgEngagedSecondsPerUser': lambda row: row.get('avgEngagedSecondsPerUser') or 0,
     'interactionPct': lambda row: row.get('interactionPct') or 0,
+}
+
+COMPANIES_AT_RISK_TABLE_SORT_GETTERS = {
+    'name': lambda row: row.get('name') or row.get('companyName') or '',
+    # The rendered "Risk reason" column orders by severity, not by reason text:
+    # the badge is only the first of several reasons the score already weighs.
+    'riskScore': lambda row: row.get('riskScore') or 0,
+    'activeUsers': lambda row: row.get('activeUsers') or 0,
+    'engagedSeconds': lambda row: row.get('engagedSeconds') or 0,
+    'productAreasUsed': lambda row: row.get('productAreasUsed') or 0,
+    # The browser only recomputes this when the stored value is blank or one of
+    # the retired wordings, and a payload old enough to hold one of those fails
+    # the schema check before it can render. What is stored is what is shown.
+    'suggestedAction': lambda row: row.get('suggestedAction') or '',
+}
+
+COMPANIES_NEW_REACTIVATED_TABLE_SORT_GETTERS = {
+    'name': lambda row: row.get('name') or row.get('companyName') or '',
+    # Ordered by progress, not by the label's spelling.
+    'activationStage': lambda row: company_analytics.ACTIVATION_STAGE_ORDER.get(row.get('activationStage'), 0),
+    'daysSinceStart': lambda row: row.get('daysSinceStart') or 0,
+    'activeUsers': lambda row: row.get('activeUsers') or 0,
+    'engagedSeconds': lambda row: row.get('engagedSeconds') or 0,
+    'productAreasUsed': lambda row: row.get('productAreasUsed') or 0,
+}
+
+COMPANIES_EXPANSION_TABLE_SORT_GETTERS = {
+    'name': lambda row: row.get('name') or row.get('companyName') or '',
+    # The badge shows a band; the score behind it is what orders the rows.
+    'potentialScore': lambda row: row.get('potentialScore') or 0,
+    'reason': lambda row: row.get('reason') or '',
+    'activeUsers': lambda row: row.get('activeUsers') or 0,
+    'avgEngagedSecondsPerUser': lambda row: row.get('avgEngagedSecondsPerUser') or 0,
+    'interactionPct': lambda row: row.get('interactionPct') or 0,
+    'productAreasUsed': lambda row: row.get('productAreasUsed') or 0,
+    'suggestedAction': lambda row: row.get('suggestedAction') or '',
 }
 
 COMPANY_DETAIL_TOP_PAGES_SORT_GETTERS = {
@@ -341,10 +400,25 @@ def _pending_table_response(table_name, page_size, queued=False, status=202):
     )
 
 
+def _table_request_for(request, table_name):
+    """
+    Scope paging parameters to the table that asked for them.
+
+    The Companies overview embeds the first page of two independent tables in
+    one document, so an unscoped `page` or `sort` would move both at once. Only
+    the table named in the request keeps the parameters; the other one renders
+    its defaults.
+    """
+
+    if (request.GET.get('table') or 'companies') == table_name:
+        return request
+    return HttpRequest()
+
+
 def _companies_table_payload(payload, request):
     return paginate_cached_rows(
         payload.get('companies') or [],
-        request,
+        _table_request_for(request, 'companies'),
         default_page_size=COMPANIES_TABLE_PAGE_SIZE,
         default_sort_key='engagedSeconds',
         default_sort_direction='desc',
@@ -353,11 +427,176 @@ def _companies_table_payload(payload, request):
     )
 
 
+def _companies_at_risk_table_payload(payload, request):
+    return paginate_cached_rows(
+        payload.get('atRiskCompanies') or [],
+        _table_request_for(request, 'atRisk'),
+        default_page_size=COMPANIES_AT_RISK_TABLE_PAGE_SIZE,
+        default_sort_key='riskScore',
+        default_sort_direction='desc',
+        sort_getters=COMPANIES_AT_RISK_TABLE_SORT_GETTERS,
+        fallback_getter=lambda row: row.get('name') or row.get('companyName') or '',
+    )
+
+
+def _companies_new_reactivated_table_payload(payload, request):
+    return paginate_cached_rows(
+        payload.get('newReactivatedCompanies') or [],
+        _table_request_for(request, 'newReactivated'),
+        default_page_size=COMPANIES_NEW_REACTIVATED_TABLE_PAGE_SIZE,
+        default_sort_key='activationStage',
+        default_sort_direction='asc',
+        sort_getters=COMPANIES_NEW_REACTIVATED_TABLE_SORT_GETTERS,
+        fallback_getter=lambda row: row.get('name') or row.get('companyName') or '',
+    )
+
+
+def _companies_expansion_table_payload(payload, request):
+    return paginate_cached_rows(
+        payload.get('expansionOpportunities') or [],
+        _table_request_for(request, 'expansion'),
+        default_page_size=COMPANIES_EXPANSION_TABLE_PAGE_SIZE,
+        default_sort_key='potentialScore',
+        default_sort_direction='desc',
+        sort_getters=COMPANIES_EXPANSION_TABLE_SORT_GETTERS,
+        fallback_getter=lambda row: row.get('name') or row.get('companyName') or '',
+    )
+
+
+COMPANIES_OVERVIEW_TABLE_PAYLOADS = {
+    'companies': (_companies_table_payload, COMPANIES_TABLE_PAGE_SIZE),
+    'atRisk': (_companies_at_risk_table_payload, COMPANIES_AT_RISK_TABLE_PAGE_SIZE),
+    'newReactivated': (_companies_new_reactivated_table_payload, COMPANIES_NEW_REACTIVATED_TABLE_PAGE_SIZE),
+    'expansion': (_companies_expansion_table_payload, COMPANIES_EXPANSION_TABLE_PAGE_SIZE),
+}
+
+
+def _users_table_identified_only(request):
+    value = request.GET.get('identified')
+    if value is None:
+        return True
+    return str(value).strip().lower() not in {'0', 'false', 'no', 'off', 'all', 'any'}
+
+
+_VARIANT_STATUS_FETCHERS = {
+    filtered_overview.PAGES: (
+        lambda: pages_services.get_cached_overview_metadata,
+        lambda: pages_services.is_current_overview_payload_schema,
+    ),
+    filtered_overview.COMPANIES: (
+        lambda: company_analytics.get_cached_companies_overview_metadata,
+        lambda: company_analytics.is_current_companies_payload_schema,
+    ),
+    filtered_overview.USERS: (
+        lambda: user_analytics.get_cached_users_overview_metadata,
+        lambda: user_analytics.is_current_users_payload_schema,
+    ),
+}
+
+
+def _variant_status_response(request, project):
+    """
+    Report whether one filter variant is ready to render.
+
+    The preparing state polls this instead of asking the user to refresh. It
+    reads only variant metadata, so polling stays cheap no matter how large the
+    payload being built is.
+    """
+
+    surface = str(request.GET.get('surface') or '').strip()
+    if surface not in _VARIANT_STATUS_FETCHERS:
+        return JsonResponse({'error': 'Unknown surface'}, status=400)
+
+    range_key = _companies_range_key(request)
+    state = parse_company_attribute_filters(project, request.GET)
+    fetch_factory, schema_factory = _VARIANT_STATUS_FETCHERS[surface]
+    cache, queued = filtered_overview.read_variant(
+        surface,
+        project,
+        range_key,
+        state,
+        fetch=fetch_factory(),
+        schema_is_current=schema_factory(),
+    )
+    return JsonResponse(
+        {'surface': surface, 'range_key': range_key, 'ready': cache is not None, 'queued': queued},
+        json_dumps_params={'separators': (',', ':')},
+    )
+
+
+@login_required
+@require_project_member
+@require_http_methods(["GET"])
+def project_analytics_variant_status(request, project_id):
+    project = get_accessible_project_or_404(request.user, project_id)
+    return _variant_status_response(request, project)
+
+
+@require_http_methods(["GET"])
+def demo_analytics_variant_status(request):
+    return _variant_status_response(request, get_demo_project())
+
+
+def _users_overview_table_payload(project, request, *, range_key=None, filters_hash=None):
+    state = parse_company_attribute_filters(project, request.GET)
+
+    return user_analytics.get_cached_users_overview_table_page(
+        project.id,
+        range_key=range_key or _companies_range_key(request),
+        filters_hash=filters_hash or state.filters_hash,
+        page=request.GET.get('page', 1),
+        page_size=request.GET.get('page_size') or request.GET.get('pageSize') or user_analytics.USERS_TABLE_PAGE_SIZE,
+        sort_key=request.GET.get('sort') or user_analytics.USERS_TABLE_DEFAULT_SORT_KEY,
+        sort_direction=request.GET.get('direction') or user_analytics.USERS_TABLE_DEFAULT_SORT_DIRECTION,
+        company=request.GET.get('company'),
+        status=request.GET.get('status'),
+        query=request.GET.get('q'),
+        role=request.GET.get('role'),
+        identified_only=_users_table_identified_only(request),
+        feature=request.GET.get('feature'),
+    )
+
+
+def _company_attribute_filter_context(project, scope, *, surface, is_demo_view):
+    preview_url = (
+        reverse('demo_company_attribute_filter_preview')
+        if is_demo_view
+        else project_route(project, 'project_company_attribute_filter_preview')
+    )
+    return build_company_attribute_filter_context(
+        project,
+        scope.state,
+        surface=surface,
+        preview_url=preview_url,
+        scope=scope,
+        segment_urls=(
+            demo_company_segment_urls()
+            if is_demo_view
+            else company_segment_urls(project)
+        ),
+    )
+
+
+def _company_attribute_filter_query_suffix(scope):
+    query = urlencode(scope.canonical_pairs)
+    return f'&{query}' if query else ''
+
+
 def _with_companies_overview_table_payload(payload, request):
     table_payload = _companies_table_payload(payload, request)
+    at_risk_payload = _companies_at_risk_table_payload(payload, request)
+    new_reactivated_payload = _companies_new_reactivated_table_payload(payload, request)
+    expansion_payload = _companies_expansion_table_payload(payload, request)
     client_payload = {**(payload or {})}
     client_payload['companies'] = table_payload['rows']
-    client_payload.setdefault('tableData', {})['companies'] = table_payload
+    client_payload['atRiskCompanies'] = at_risk_payload['rows']
+    client_payload['newReactivatedCompanies'] = new_reactivated_payload['rows']
+    client_payload['expansionOpportunities'] = expansion_payload['rows']
+    table_data = client_payload.setdefault('tableData', {})
+    table_data['companies'] = table_payload
+    table_data['atRisk'] = at_risk_payload
+    table_data['newReactivated'] = new_reactivated_payload
+    table_data['expansion'] = expansion_payload
     return client_payload
 
 
@@ -460,7 +699,6 @@ def _with_user_detail_table_payloads(payload, request):
     return client_payload
 
 
-@login_required
 @require_http_methods(["GET"])
 def project_list(request):
     """View for the modern all projects page"""
@@ -520,13 +758,34 @@ def project_list(request):
 
 def render_project_companies(request, project, *, is_demo_view=False):
     range_key = _companies_range_key(request)
-    cache = company_analytics.get_cached_companies_overview_payload(project.id, range_key=range_key)
+    company_scope = resolve_company_scope(request, project, is_demo_view=is_demo_view)
+    company_attribute_filter_state = company_scope.state
+    canonical_redirect = canonical_company_scope_redirect(request, company_scope)
+    if canonical_redirect is not None:
+        return canonical_redirect
+    restored = analytics_filter_state.restore_redirect(
+        request,
+        project,
+        analytics_filter_state.COMPANIES_OVERVIEW,
+        is_demo_view=is_demo_view,
+    )
+    if restored is not None:
+        return restored
+
+    cache, queued = filtered_overview.read_variant(
+        filtered_overview.COMPANIES,
+        project,
+        range_key,
+        company_attribute_filter_state,
+        fetch=company_analytics.get_cached_companies_overview_payload,
+        schema_is_current=company_analytics.is_current_companies_payload_schema,
+    )
     payload = {}
     full_payload = {}
     payload_script_text = None
     cache_status = 'ready'
 
-    if cache and company_analytics.is_current_companies_payload_schema(cache.get('schema_version')):
+    if cache:
         if cache.get('is_stale'):
             cache_status = 'stale'
         full_payload = cache.get('payload_json') or {}
@@ -536,7 +795,7 @@ def render_project_companies(request, project, *, is_demo_view=False):
         full_payload = company_analytics.empty_companies_overview_payload(project, range_key)
         payload = _with_companies_overview_table_payload(full_payload, request)
         payload_script_text = mark_safe(pages_services.to_json_script_text(payload))
-        cache_status = 'missing' if not cache else 'stale_schema'
+        cache_status = 'preparing' if company_attribute_filter_state.active else 'missing'
 
     detail_base_url = reverse('demo_company_detail', kwargs={'company_id': 'detail'}) if is_demo_view else project_route(
         project,
@@ -545,6 +804,14 @@ def render_project_companies(request, project, *, is_demo_view=False):
     )
     company_options_url = reverse('demo_company_options') if is_demo_view else project_route(project, 'project_company_options')
     table_url = reverse('demo_companies_table_data') if is_demo_view else project_route(project, 'project_companies_table_data')
+    analytics_filter_state.remember(
+        request,
+        project,
+        analytics_filter_state.COMPANIES_OVERVIEW,
+        scope=company_scope,
+        page_values={'range': range_key},
+        is_demo_view=is_demo_view,
+    )
 
     return render(
         request,
@@ -556,14 +823,31 @@ def render_project_companies(request, project, *, is_demo_view=False):
             'companies_range_key': range_key,
             'companies_range_options': COMPANIES_RANGE_OPTIONS,
             'companies_cache_status': cache_status,
+            'companies_variant_queued': queued,
             'companies_detail_base_url': detail_base_url,
             'companies_options_url': company_options_url,
             'companies_table_url': table_url,
+            'company_attribute_filter_query_suffix': _company_attribute_filter_query_suffix(
+                company_scope,
+            ),
             'analytics_is_empty': is_companies_overview_empty(full_payload),
+            'analytics_is_preparing': cache_status == 'preparing',
+            'analytics_surface': 'companies',
+            'analytics_variant_status_url': (
+                reverse('demo_analytics_variant_status')
+                if is_demo_view
+                else project_route(project, 'project_analytics_variant_status')
+            ),
             'analytics_empty_period_days': COMPANIES_RANGE_DAYS.get(range_key, 30),
             'is_demo_view': is_demo_view,
             'demo_project_id': project.id if is_demo_view else None,
             'demo_project_display_name': DEMO_PROJECT_DISPLAY_NAME,
+            **_company_attribute_filter_context(
+                project,
+                company_scope,
+                surface='companies',
+                is_demo_view=is_demo_view,
+            ),
         },
     )
 
@@ -580,12 +864,24 @@ def demo_project_companies(request):
 
 
 def _companies_table_response(request, project):
+    table_name = request.GET.get('table') or 'companies'
+    if table_name not in COMPANIES_OVERVIEW_TABLE_PAYLOADS:
+        return JsonResponse({'error': 'Unknown table'}, status=400)
+    build_payload, page_size = COMPANIES_OVERVIEW_TABLE_PAYLOADS[table_name]
     range_key = _companies_range_key(request)
-    cache = company_analytics.get_cached_companies_overview_payload(project.id, range_key=range_key)
-    if not cache or not company_analytics.is_current_companies_payload_schema(cache.get('schema_version')):
-        return _pending_table_response('companies', COMPANIES_TABLE_PAGE_SIZE)
-    table_payload = _companies_table_payload(cache.get('payload_json') or {}, request)
-    return JsonResponse({'table': 'companies', **table_payload}, json_dumps_params={'separators': (',', ':')})
+    company_attribute_filter_state = parse_company_attribute_filters(project, request.GET)
+    cache, queued = filtered_overview.read_variant(
+        filtered_overview.COMPANIES,
+        project,
+        range_key,
+        company_attribute_filter_state,
+        fetch=company_analytics.get_cached_companies_overview_payload,
+        schema_is_current=company_analytics.is_current_companies_payload_schema,
+    )
+    if not cache:
+        return _pending_table_response(table_name, page_size, queued=queued)
+    table_payload = build_payload(cache.get('payload_json') or {}, request)
+    return JsonResponse({'table': table_name, **table_payload}, json_dumps_params={'separators': (',', ':')})
 
 
 @login_required
@@ -603,27 +899,57 @@ def demo_project_companies_table_data(request):
 
 def render_project_users(request, project, *, is_demo_view=False):
     range_key = _companies_range_key(request)
-    cache = user_analytics.get_cached_users_overview_payload(project.id, range_key=range_key)
+    company_scope = resolve_company_scope(request, project, is_demo_view=is_demo_view)
+    company_attribute_filter_state = company_scope.state
+    canonical_redirect = canonical_company_scope_redirect(request, company_scope)
+    if canonical_redirect is not None:
+        return canonical_redirect
+    restored = analytics_filter_state.restore_redirect(
+        request,
+        project,
+        analytics_filter_state.USERS_OVERVIEW,
+        is_demo_view=is_demo_view,
+    )
+    if restored is not None:
+        return restored
+
+    cache, queued = filtered_overview.read_variant(
+        filtered_overview.USERS,
+        project,
+        range_key,
+        company_attribute_filter_state,
+        fetch=user_analytics.get_cached_users_overview_client_payload,
+        schema_is_current=user_analytics.is_current_users_payload_schema,
+    )
     payload = {}
     full_payload = {}
     payload_script_text = None
     cache_status = 'ready'
 
     if cache:
-        is_current_schema = user_analytics.is_current_users_payload_schema(cache.get('schema_version'))
-        if cache.get('is_stale') or not is_current_schema:
-            cache_status = 'stale' if is_current_schema else 'stale_schema'
+        if cache.get('is_stale'):
+            cache_status = 'stale'
         full_payload = cache.get('payload_json') or {}
-        payload = user_analytics.initial_users_overview_payload(full_payload)
+        table_payload = user_analytics.get_cached_users_overview_table_page(
+            project.id,
+            range_key=range_key,
+            filters_hash=company_attribute_filter_state.filters_hash,
+            page=1,
+            page_size=user_analytics.USERS_TABLE_PAGE_SIZE,
+            sort_key=user_analytics.USERS_TABLE_DEFAULT_SORT_KEY,
+            sort_direction=user_analytics.USERS_TABLE_DEFAULT_SORT_DIRECTION,
+        )
+        payload = user_analytics.initial_users_overview_payload(full_payload, table_payload=table_payload)
         payload_script_text = mark_safe(pages_services.to_json_script_text(payload))
     else:
         payload = user_analytics.empty_users_overview_payload(project, range_key)
         full_payload = payload
         payload_script_text = mark_safe(pages_services.to_json_script_text(payload))
-        cache_status = 'missing'
+        cache_status = 'preparing' if company_attribute_filter_state.active else 'missing'
 
     data_base_url = reverse('demo_users_data') if is_demo_view else project_route(project, 'project_users_data')
-    data_url = f"{data_base_url}?{urlencode({'range': range_key})}"
+    data_query = [('range', range_key), *company_attribute_filter_state.canonical_pairs]
+    data_url = f"{data_base_url}?{urlencode(data_query)}"
     detail_base_url = reverse('demo_user_detail', kwargs={'user_id': 'detail'}) if is_demo_view else project_route(
         project,
         'project_user_detail',
@@ -635,6 +961,15 @@ def render_project_users(request, project, *, is_demo_view=False):
         company_id='detail',
     )
     user_options_url = reverse('demo_user_options') if is_demo_view else project_route(project, 'project_user_options')
+    table_url = reverse('demo_users_table_data') if is_demo_view else project_route(project, 'project_users_table_data')
+    analytics_filter_state.remember(
+        request,
+        project,
+        analytics_filter_state.USERS_OVERVIEW,
+        scope=company_scope,
+        page_values={'range': range_key},
+        is_demo_view=is_demo_view,
+    )
 
     return render(
         request,
@@ -646,16 +981,34 @@ def render_project_users(request, project, *, is_demo_view=False):
             'users_range_key': range_key,
             'users_range_options': COMPANIES_RANGE_OPTIONS,
             'users_cache_status': cache_status,
+            'users_variant_queued': queued,
             'users_data_url': data_url,
             'users_detail_base_url': detail_base_url,
             'company_detail_base_url': company_detail_base_url,
             'users_options_url': user_options_url,
+            'users_table_url': table_url,
+            'company_attribute_filter_query_suffix': _company_attribute_filter_query_suffix(
+                company_scope,
+            ),
             'users_initial_limit': user_analytics.INITIAL_USERS_PAYLOAD_LIMIT,
             'analytics_is_empty': is_users_overview_empty(full_payload),
+            'analytics_is_preparing': cache_status == 'preparing',
+            'analytics_surface': 'users',
+            'analytics_variant_status_url': (
+                reverse('demo_analytics_variant_status')
+                if is_demo_view
+                else project_route(project, 'project_analytics_variant_status')
+            ),
             'analytics_empty_period_days': COMPANIES_RANGE_DAYS.get(range_key, 30),
             'is_demo_view': is_demo_view,
             'demo_project_id': project.id if is_demo_view else None,
             'demo_project_display_name': DEMO_PROJECT_DISPLAY_NAME,
+            **_company_attribute_filter_context(
+                project,
+                company_scope,
+                surface='users',
+                is_demo_view=is_demo_view,
+            ),
         },
     )
 
@@ -669,6 +1022,49 @@ def project_users(request, project_id):
 
 def demo_project_users(request):
     return render_project_users(request, get_demo_project(), is_demo_view=True)
+
+
+def _users_overview_table_response(request, project):
+    range_key = _companies_range_key(request)
+    company_attribute_filter_state = parse_company_attribute_filters(project, request.GET)
+    ready, queued = filtered_overview.gate_filtered_variant(
+        filtered_overview.USERS,
+        project,
+        range_key,
+        company_attribute_filter_state,
+        fetch=user_analytics.get_cached_users_overview_metadata,
+        schema_is_current=user_analytics.is_current_users_payload_schema,
+    )
+    if not ready:
+        return _pending_table_response(
+            'users',
+            user_analytics.USERS_TABLE_PAGE_SIZE,
+            queued=queued,
+        )
+    table_payload = _users_overview_table_payload(project, request, range_key=range_key)
+    if table_payload is None:
+        return _pending_table_response(
+            'users',
+            user_analytics.USERS_TABLE_PAGE_SIZE,
+            queued=queued,
+        )
+    return JsonResponse(
+        {'table': 'users', **table_payload},
+        json_dumps_params={'separators': (',', ':')},
+    )
+
+
+@login_required
+@require_project_member
+@require_http_methods(["GET"])
+def project_users_table_data(request, project_id):
+    project = get_accessible_project_or_404(request.user, project_id)
+    return _users_overview_table_response(request, project)
+
+
+@require_http_methods(["GET"])
+def demo_project_users_table_data(request):
+    return _users_overview_table_response(request, get_demo_project())
 
 
 def _user_detail_payload_bundle(project, user_id, range_key, *, is_demo_view=False):
@@ -751,6 +1147,31 @@ def _user_detail_client_payload(payload, request):
     return client_payload
 
 
+def _first_project_user_id(project, range_key):
+    cache = user_analytics.get_cached_users_overview_payload(project.id, range_key=range_key)
+    if not cache or not user_analytics.is_current_users_payload_schema(cache.get('schema_version')):
+        return ''
+    rows, _ = _user_selector_rows(
+        (cache.get('payload_json') or {}).get('users') or [],
+        '',
+        1,
+        alphabetical=True,
+    )
+    return rows[0]['id'] if rows else ''
+
+
+def _detail_fallback_url(base_url, fallback_id, request):
+    target = str(base_url or '').replace('detail', quote(str(fallback_id), safe=''), 1)
+    query = request.GET.copy()
+    query.pop('user_id', None)
+    query.pop('company_id', None)
+    return f'{target}?{query.urlencode()}' if query else target
+
+
+def _is_detail_route_placeholder(value):
+    return str(value or '').strip().lower() in {'detail', 'detail.html'}
+
+
 def render_project_user_detail(request, project, user_id, *, is_demo_view=False):
     range_key = _companies_range_key(request)
     requested_user_id = request.GET.get('user_id') or user_id
@@ -763,6 +1184,11 @@ def render_project_user_detail(request, project, user_id, *, is_demo_view=False)
         range_key,
         is_demo_view=is_demo_view,
     )
+    if bundle.get('status') == 'not_found':
+        fallback_user_id = _first_project_user_id(project, range_key)
+        if fallback_user_id and fallback_user_id != requested_user_id:
+            return redirect(_detail_fallback_url(bundle.get('detailBaseUrl'), fallback_user_id, request))
+
     client_payload = _user_detail_client_payload(bundle.get('payload'), request)
     analytics_is_empty = bundle.get('status') == 'ready' and is_user_detail_empty(bundle.get('payload'))
 
@@ -784,6 +1210,7 @@ def render_project_user_detail(request, project, user_id, *, is_demo_view=False)
             ),
             'users_range_key': range_key,
             'users_range_options': COMPANIES_RANGE_OPTIONS,
+            'users_period_query_suffix': preserved_period_query_suffix(request),
             'analytics_is_empty': analytics_is_empty,
             'analytics_empty_period_days': COMPANIES_RANGE_DAYS.get(range_key, 30),
             'is_demo_view': is_demo_view,
@@ -833,7 +1260,15 @@ def demo_project_user_detail_table_data(request, user_id):
 
 def _users_overview_data_response(request, project):
     range_key = _companies_range_key(request)
-    cache = user_analytics.get_cached_users_overview_payload(project.id, range_key=range_key)
+    company_attribute_filter_state = parse_company_attribute_filters(project, request.GET)
+    cache, queued = filtered_overview.read_variant(
+        filtered_overview.USERS,
+        project,
+        range_key,
+        company_attribute_filter_state,
+        fetch=user_analytics.get_cached_users_overview_client_payload,
+        schema_is_current=user_analytics.is_current_users_payload_schema,
+    )
 
     if cache:
         return JsonResponse(
@@ -844,7 +1279,7 @@ def _users_overview_data_response(request, project):
     return JsonResponse(
         {
             'pending': True,
-            'queued': False,
+            'queued': queued,
             'range_key': range_key,
             'users': [],
             'scatter': [],
@@ -897,7 +1332,7 @@ def _selector_matches(query, *values):
     return normalized_query in _selector_text(' '.join(str(value or '') for value in values))
 
 
-def _user_selector_rows(users, query, limit):
+def _user_selector_rows(users, query, limit, *, alphabetical=False):
     rows = []
     for row in users or []:
         user_id = str(row.get('id') or row.get('userId') or '').strip()
@@ -927,7 +1362,9 @@ def _user_selector_rows(users, query, limit):
             'lastActive': row.get('lastActive') or row.get('lastActiveAt') or '',
             'lastActiveSort': row.get('lastActiveSort') or 0,
         })
-    if query:
+    if alphabetical:
+        rows.sort(key=lambda item: (_selector_text(item.get('name')), item.get('id')))
+    elif query:
         rows.sort(key=lambda item: (_selector_text(item.get('companyName')), _selector_text(item.get('name')), item.get('id')))
     else:
         rows.sort(key=lambda item: (
@@ -943,10 +1380,31 @@ def _users_options_response(request, project):
     range_key = _companies_range_key(request)
     query = _selector_query(request)
     limit = _selector_limit(request)
-    cache = user_analytics.get_cached_users_overview_payload(project.id, range_key=range_key)
+    alphabetical = request.GET.get('sort') == 'alphabetical'
+    company_attribute_filter_state = parse_company_attribute_filters(project, request.GET)
+    ready, queued = filtered_overview.gate_filtered_variant(
+        filtered_overview.USERS,
+        project,
+        range_key,
+        company_attribute_filter_state,
+        fetch=user_analytics.get_cached_users_overview_metadata,
+        schema_is_current=user_analytics.is_current_users_payload_schema,
+    )
+    selector = (
+        user_analytics.get_cached_users_overview_selector_rows(
+            project.id,
+            range_key=range_key,
+            filters_hash=company_attribute_filter_state.filters_hash,
+            query=query,
+            limit=limit,
+            alphabetical=alphabetical,
+        )
+        if ready
+        else None
+    )
 
-    if cache and user_analytics.is_current_users_payload_schema(cache.get('schema_version')):
-        rows, total = _user_selector_rows((cache.get('payload_json') or {}).get('users') or [], query, limit)
+    if selector is not None:
+        rows, total = selector
         return JsonResponse(
             {
                 'query': query,
@@ -962,7 +1420,7 @@ def _users_options_response(request, project):
     return JsonResponse(
         {
             'pending': True,
-            'queued': False,
+            'queued': queued,
             'query': query,
             'range_key': range_key,
             'results': [],
@@ -1092,8 +1550,8 @@ def _company_detail_client_bundle(bundle, request):
 def render_project_company_detail(request, project, company_id, *, is_demo_view=False):
     range_key = _companies_range_key(request)
     requested_company_id = request.GET.get('company_id') or company_id
-    if requested_company_id in {'detail', 'detail.html'}:
-        requested_company_id = request.GET.get('company_id') or ''
+    if _is_detail_route_placeholder(requested_company_id):
+        requested_company_id = ''
 
     payload_bundle = _company_detail_payload_bundle(
         project,
@@ -1101,6 +1559,19 @@ def render_project_company_detail(request, project, company_id, *, is_demo_view=
         range_key,
         is_demo_view=is_demo_view,
     )
+    if payload_bundle.get('status') == 'not_found':
+        alphabetical_companies = sorted(
+            payload_bundle.get('companies') or [],
+            key=lambda row: (_selector_text(row.get('name') or row.get('companyName')), str(row.get('id') or '')),
+        )
+        fallback_company_id = str(alphabetical_companies[0].get('id') or '') if alphabetical_companies else ''
+        if fallback_company_id and fallback_company_id != requested_company_id:
+            return redirect(_detail_fallback_url(
+                payload_bundle['urls']['companyDetailBaseUrl'],
+                fallback_company_id,
+                request,
+            ))
+
     client_payload_bundle = _company_detail_client_bundle(payload_bundle, request)
     overview_url = payload_bundle['urls']['companiesOverviewUrl']
     analytics_is_empty = payload_bundle.get('status') == 'ready' and is_company_detail_empty(payload_bundle.get('payload'))
@@ -1120,6 +1591,7 @@ def render_project_company_detail(request, project, company_id, *, is_demo_view=
             'company_detail_payload_json': mark_safe(pages_services.to_json_script_text(client_payload_bundle)),
             'companies_range_key': range_key,
             'companies_range_options': COMPANIES_RANGE_OPTIONS,
+            'companies_period_query_suffix': preserved_period_query_suffix(request),
             'companies_overview_url': overview_url,
             'company_detail_base_url': payload_bundle['urls']['companyDetailBaseUrl'],
             'user_detail_base_url': payload_bundle['urls']['userDetailBaseUrl'],
@@ -1177,13 +1649,13 @@ def demo_project_company_detail_table_data(request, company_id):
     return _company_detail_table_response(request, get_demo_project(), company_id)
 
 
-def _company_selector_rows(rows, query, limit):
+def _company_selector_rows(rows, query, limit, *, alphabetical=False):
     filtered = []
     for row in rows or []:
         if not _selector_matches(query, row.get('name'), row.get('companyName'), row.get('domain'), row.get('status'), row.get('id')):
             continue
         filtered.append(row)
-    if query:
+    if query or alphabetical:
         filtered.sort(key=lambda item: (_selector_text(item.get('name') or item.get('companyName')), item.get('id')))
     else:
         filtered.sort(key=lambda item: (
@@ -1199,11 +1671,20 @@ def _company_options_response(request, project):
     range_key = _companies_range_key(request)
     query = _selector_query(request)
     limit = _selector_limit(request)
-    cache = company_analytics.get_cached_companies_overview_payload(project.id, range_key=range_key)
+    alphabetical = request.GET.get('sort') == 'alphabetical'
+    company_attribute_filter_state = parse_company_attribute_filters(project, request.GET)
+    cache, queued = filtered_overview.read_variant(
+        filtered_overview.COMPANIES,
+        project,
+        range_key,
+        company_attribute_filter_state,
+        fetch=company_analytics.get_cached_companies_overview_payload,
+        schema_is_current=company_analytics.is_current_companies_payload_schema,
+    )
 
-    if cache and company_analytics.is_current_companies_payload_schema(cache.get('schema_version')):
+    if cache:
         rows = _company_detail_selector_rows((cache.get('payload_json') or {}).get('companies') or [])
-        results, total = _company_selector_rows(rows, query, limit)
+        results, total = _company_selector_rows(rows, query, limit, alphabetical=alphabetical)
         return JsonResponse(
             {
                 'query': query,
@@ -1219,7 +1700,7 @@ def _company_options_response(request, project):
     return JsonResponse(
         {
             'pending': True,
-            'queued': False,
+            'queued': queued,
             'query': query,
             'range_key': range_key,
             'results': [],
@@ -2142,7 +2623,7 @@ def project_settings(request, project_id):
             .values_list('name', flat=True)
         )),
         'project_status_label': project_status_label(project),
-        'project_status_class': project_status_badge_class(project),
+        'project_status_key': project_effective_status(project),
     }
 
     return render(request, 'projects/project_settings.html', context)

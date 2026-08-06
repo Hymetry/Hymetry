@@ -1,0 +1,11 @@
+{% comment %}
+  The one warning glyph for a company segment that needs review. Kept as its own
+  include so changing the mark is a single edit; the client-rendered popover and
+  manage rows draw the same path from `ICONS.warning` in
+  static/js/shared/company-segments.js.
+{% endcomment %}
+<span class="{{ company_segment_warning_icon_class|default:'company-segment-review-banner__icon' }}" aria-hidden="true">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor">
+    <path d="m40-120 440-760 440 760H40Zm104-60h672L480-760 144-180Zm340.18-57q12.82 0 21.32-8.68 8.5-8.67 8.5-21.5 0-12.82-8.68-21.32-8.67-8.5-21.5-8.5-12.82 0-21.32 8.68-8.5 8.67-8.5 21.5 0 12.82 8.68 21.32 8.67 8.5 21.5 8.5Zm-30.18-118h60v-200h-60v200Z" />
+  </svg>
+</span>

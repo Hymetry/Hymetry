@@ -1,0 +1,125 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  django:
+    name: Django suite (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: hymetry
+          POSTGRES_USER: hymetry
+          POSTGRES_PASSWORD: hymetry
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://hymetry:hymetry@127.0.0.1:5432/hymetry
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/0
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/0
+      REDIS_URL: redis://127.0.0.1:6379/1
+      SECRET_KEY: github-actions-test-secret-key
+      DEBUG: 'False'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the Django test suite
+        run: python manage.py test --settings=config.settings.dev
+
+  static-checks:
+    name: Undefined names
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pyflakes
+        run: pip install pyflakes==3.4.0
+
+      - name: Fail on undefined names
+        run: |
+          pyflakes apps config > pyflakes.txt || true
+          if grep -E "undefined name '" pyflakes.txt; then
+            echo "::error::pyflakes found undefined names (see above)."
+            exit 1
+          fi
+          echo "No undefined names in apps/ or config/."
+
+  frontend:
+    name: Frontend contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            frontend/tailwind/package-lock.json
+            frontend/tracker_script/package-lock.json
+
+      - name: Run standalone frontend contracts
+        run: |
+          status=0
+          for test in frontend/tests/*.test.cjs; do
+            if node "$test"; then
+              echo "PASS $test"
+            else
+              echo "::error file=$test::contract failed"
+              status=1
+            fi
+          done
+          exit "$status"
+
+      - name: Test and build the tracker
+        run: |
+          npm --prefix frontend/tracker_script ci
+          npm --prefix frontend/tracker_script test
+
+      - name: Build Tailwind and run the CSS contract
+        run: bash frontend/tailwind/run.sh

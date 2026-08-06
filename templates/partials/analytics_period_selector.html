@@ -1,3 +1,8 @@
+{% comment %}
+  Each range is a link so it can be middle-clicked, opened in a new tab, and
+  copied. The label stays compact; the full wording carries the "complete days"
+  meaning for anyone hovering or using a screen reader.
+{% endcomment %}
 <nav
   {% if analytics_period_selector_id %}id="{{ analytics_period_selector_id }}"{% endif %}
   class="{{ analytics_period_selector_class|default:'inline-flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white' }}"
@@ -6,6 +11,8 @@
     <a
       href="?range={{ range_key }}{% if analytics_query_suffix %}{{ analytics_query_suffix }}{% endif %}"
       class="px-3 py-1.5 text-sm font-medium duration-150 {% if analytics_range_key == range_key %}bg-slate-900 text-white{% else %}bg-white text-slate-700 hover:bg-slate-50{% endif %}"
+      title="{{ range_label }}, ending yesterday. Today is excluded so the period stays comparable."
+      aria-label="{{ range_label }}"
       {% if analytics_range_key == range_key %}aria-current="page"{% endif %}>
       {% if range_key == 'last_7_days' %}7d{% elif range_key == 'last_30_days' %}30d{% elif range_key == 'last_90_days' %}90d{% elif range_key == 'last_180_days' %}180d{% else %}{{ range_label }}{% endif %}
     </a>

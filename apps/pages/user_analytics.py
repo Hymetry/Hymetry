@@ -1,7 +1,9 @@
 import hashlib
 import json
 from collections import Counter, defaultdict
+from datetime import timedelta
 
+from django.db import transaction
 from django.db.models import Count, Max, Min, Q, Sum
 from django.utils import timezone as django_timezone
 
@@ -13,17 +15,78 @@ from apps.pages.product_area_colors import (
     product_area_color_from_lookup,
     resolve_product_area_colors,
 )
+from apps.projects.company_attribute_filters import (
+    company_attribute_filter_scope,
+    current_company_attribute_filter_state,
+    narrow_queryset_to_current_company_filters,
+)
 from apps.projects.models import Project
 from apps.tracker.models import ProjectPageRule
 
 
-USERS_PAYLOAD_SCHEMA_VERSION = 10
+# 16: The power and low-engagement cards became share cards, and the status mix
+# carries the previous period's own distribution instead of a daily timeline.
+USERS_PAYLOAD_SCHEMA_VERSION = 16
 SCATTER_VISIBLE_LIMIT = 300
-INITIAL_USERS_PAYLOAD_LIMIT = 50
+USERS_TABLE_PAGE_SIZE = 20
+INITIAL_USERS_PAYLOAD_LIMIT = USERS_TABLE_PAGE_SIZE
+USERS_TABLE_MAX_PAGE_SIZE = 100
+USERS_TABLE_DEFAULT_SORT_KEY = 'engagedSeconds'
+USERS_TABLE_DEFAULT_SORT_DIRECTION = 'desc'
+
+INITIAL_SCATTER_USER_FIELDS = (
+    'id',
+    'name',
+    'company',
+    'status',
+    'identified',
+    'visitsCount',
+    'sessionsCount',
+    'sessionsCountEstimated',
+    'estimatedSessionsCount',
+    'engagedSeconds',
+    'previousEngagedSeconds',
+    'activityDropSeconds',
+    'companySharePct',
+    'topFeature',
+)
+
+
+def _apply_current_company_attribute_filters(queryset):
+    return narrow_queryset_to_current_company_filters(queryset)
+
+
+def _users_table_numeric_sort_expression(field):
+    return (
+        f"CASE WHEN jsonb_typeof(user_row -> '{field}') = 'number' "
+        f"THEN (user_row ->> '{field}')::numeric ELSE 0 END"
+    )
+
+
+USERS_TABLE_SORT_EXPRESSIONS = {
+    'name': "LOWER(COALESCE(user_row ->> 'name', ''))",
+    'company': "LOWER(COALESCE(user_row ->> 'company', ''))",
+    'status': """
+        CASE COALESCE(user_row ->> 'status', '')
+            WHEN 'Power' THEN 0
+            WHEN 'Healthy' THEN 1
+            WHEN 'Light' THEN 2
+            WHEN 'Passive' THEN 3
+            WHEN 'Dropped' THEN 4
+            ELSE 99
+        END
+    """,
+    'companySharePct': _users_table_numeric_sort_expression('companySharePct'),
+    'engagedSeconds': _users_table_numeric_sort_expression('engagedSeconds'),
+    'visitsCount': _users_table_numeric_sort_expression('visitsCount'),
+    'avgVisitSeconds': _users_table_numeric_sort_expression('avgVisitSeconds'),
+    'avgSessionSeconds': _users_table_numeric_sort_expression('avgSessionSeconds'),
+    'lastActiveSort': _users_table_numeric_sort_expression('lastActiveSort'),
+}
 
 
 def _base_user_queryset(project_id, start_date, end_date):
-    return (
+    return _apply_current_company_attribute_filters(
         PageUserDailyMetric.objects
         .filter(project_id=project_id, date__gte=start_date, date__lte=end_date)
         .exclude(user_id__isnull=True)
@@ -41,14 +104,15 @@ def _period_key_days(range_key):
 
 
 def _format_duration(seconds):
-    seconds = max(0, int(seconds or 0))
+    seconds = max(0, services._round_integer_for_display(seconds))
     if seconds < 60:
         return f'{seconds}s'
     hours = seconds // 3600
-    minutes = round((seconds % 3600) / 60)
+    minutes = (seconds % 3600) // 60
     if hours:
         return f'{hours}h {minutes}m' if minutes else f'{hours}h'
-    return f'{minutes}m'
+    remaining_seconds = seconds % 60
+    return f'{minutes}m {remaining_seconds:02d}s'
 
 
 def _stable_random_score(value, salt):
@@ -67,14 +131,6 @@ def _random_scatter_sample(users, limit, salt):
             user.get('id') or user.get('email') or user.get('name') or '',
         ),
     )[:limit]
-
-
-def _weekly_scaled_threshold(base_value, period_days):
-    return services.weekly_scaled_threshold(base_value, period_days)
-
-
-def _active_days_threshold(period_days, share):
-    return services.active_days_threshold(period_days, share)
 
 
 def _passive_visits_threshold(period_days):
@@ -102,12 +158,24 @@ def _format_date(value):
     return value.isoformat() if value else ''
 
 
-def _relative_date_label(value, end_date):
+def _relative_date_label(value, end_date, *, today=None):
+    """
+    Age of a date as a reader would say it, measured from the actual today.
+
+    Analytical windows end on the last complete day, so the window end is
+    yesterday and measuring from it would label yesterday "Today" and shift
+    every other answer by a day. Callers that know the project's today pass it;
+    otherwise it is derived from the window, which is exact for every range key.
+    """
+
     if not value:
         return '-'
-    days = max(0, (end_date - value).days)
+    reference = today or (end_date + timedelta(days=1))
+    days = max(0, (reference - value).days)
     if days <= 0:
         return 'Today'
+    if days == 1:
+        return 'Yesterday'
     return f'{days}d ago'
 
 
@@ -122,11 +190,43 @@ def _delta_pct_value(current, previous):
     return delta.get('value') if isinstance(delta, dict) and delta.get('value') is not None else 0
 
 
+def _pp_delta_payload(current, previous, *, lower_is_better=False):
+    """
+    Compare two percentages in points rather than as a percentage of each other.
+
+    A share card moving from 4% to 8% has doubled, but "+4 pp" is the reading
+    that survives being put next to the other share card.
+    """
+
+    value = round(services._to_float(current) - services._to_float(previous), 1)
+    return {
+        'value': value,
+        'label': services._format_signed_decimal(value, ' pp', 1),
+        'direction': services._direction(-value if lower_is_better else value, 1),
+    }
+
+
+def _daily_share_series(numerators, denominators):
+    """
+    Divide two daily counts, leaving days with no denominator undefined.
+
+    A day nobody was active on has no share to report; a zero would read as
+    "nobody qualified" and drag the shape of the line down with it.
+    """
+
+    return [
+        services._pct(numerator, denominator) if denominator else None
+        for numerator, denominator in zip(numerators or [], denominators or [])
+    ]
+
+
 def _delta_payload(current, previous, *, lower_is_better=False):
     delta = services._delta_pct(current, previous)
     value = delta.get('value') if isinstance(delta, dict) else 0
-    if lower_is_better and value is not None:
-        if value <= -5:
+    if lower_is_better:
+        if value is None:
+            delta['direction'] = 'negative' if current > previous else 'neutral'
+        elif value <= -5:
             delta['direction'] = 'positive'
         elif value >= 5:
             delta['direction'] = 'negative'
@@ -179,12 +279,13 @@ def _user_period_active(row):
 
 def _visit_queryset(project, start_date, end_date):
     start_ts, end_ts = services._utc_bounds_for_local_dates(start_date, end_date, project.timezone)
-    return (
+    queryset = (
         PageVisit.objects
         .filter(project=project, visit_start_ts__gte=start_ts, visit_start_ts__lt=end_ts)
         .exclude(user_id__isnull=True)
         .exclude(user_id='')
     )
+    return narrow_queryset_to_current_company_filters(queryset)
 
 
 def _visit_identity(project, start_date, end_date):
@@ -252,19 +353,24 @@ def _product_area_short_label(name, short_name=''):
     return full_name[:7] if len(full_name) <= 8 else f'{full_name[:6]}.'
 
 
-def _product_area_options(project_id, start_date, end_date, *, limit=9):
-    rows = (
-        PageDailyMetric.objects
-        .filter(project_id=project_id, date__gte=start_date, date__lte=end_date)
-        .values('product_area_key')
-        .annotate(
-            product_area_name=Max('product_area_name'),
-            product_area_short_name=Max('product_area__short_name'),
-            product_area_color=Max('product_area__color'),
-            engaged_seconds=Sum('engaged_seconds'),
+def _product_area_options(project, start_date, end_date, *, limit=9):
+    project_id = project.id
+    state = current_company_attribute_filter_state()
+    if state is None or not state.active:
+        rows = (
+            PageDailyMetric.objects
+            .filter(project_id=project_id, date__gte=start_date, date__lte=end_date)
+            .values('product_area_key')
+            .annotate(
+                product_area_name=Max('product_area_name'),
+                product_area_short_name=Max('product_area__short_name'),
+                product_area_color=Max('product_area__color'),
+                engaged_seconds=Sum('engaged_seconds'),
+            )
+            .order_by('-engaged_seconds', 'product_area_name')
         )
-        .order_by('-engaged_seconds', 'product_area_name')
-    )
+    else:
+        rows = []
     options = []
     seen = set()
     for row in rows:
@@ -288,7 +394,7 @@ def _product_area_options(project_id, start_date, end_date, *, limit=9):
             )
         return resolved[:limit]
 
-    fallback_rows = (
+    fallback_rows = list(
         _base_user_queryset(project_id, start_date, end_date)
         .values('product_area_key')
         .annotate(
@@ -298,6 +404,12 @@ def _product_area_options(project_id, start_date, end_date, *, limit=9):
             engaged_seconds=Sum('engaged_seconds'),
         )
         .order_by('-engaged_seconds', 'product_area_name')
+    )
+    fallback_rows.sort(
+        key=lambda row: (
+            -int(row.get('engaged_seconds') or 0),
+            row.get('product_area_name') or '',
+        ),
     )
     for row in fallback_rows:
         name = row.get('product_area_name') or row.get('product_area_key') or 'Unassigned'
@@ -415,19 +527,17 @@ def _feature_usage_by_user(project_id, start_date, end_date):
     return features, page_features, feature_product_areas
 
 
-def _status_for_user(row, previous=None, *, period_days=30):
+def _status_for_user(row, previous=None, *, period_days=30, power_thresholds=None):
     visits = int(row.get('visits') or 0)
     engaged = int(row.get('engaged_seconds') or 0)
     areas = int(row.get('product_areas_used') or 0)
     clicks = int(row.get('click_count') or 0)
     active_days = int(row.get('active_days') or 0)
     interaction = clicks / max(visits, 1)
-    power_thresholds = services.power_user_thresholds(period_days)
-    healthy_visits = _weekly_scaled_threshold(3, period_days)
-    healthy_engaged = _weekly_scaled_threshold(300, period_days)
-    healthy_active_days = _active_days_threshold(period_days, 0.10)
+    power_thresholds = power_thresholds or services.power_user_thresholds(period_days)
+    healthy_thresholds = services.healthy_user_thresholds(period_days)
     passive_visits = _passive_visits_threshold(period_days)
-    passive_engaged = _weekly_scaled_threshold(60, period_days)
+    passive_engaged = services.PASSIVE_USER_ENGAGED_SECONDS
 
     if visits <= 0 and engaged <= 0:
         return 'Passive'
@@ -439,7 +549,12 @@ def _status_for_user(row, previous=None, *, period_days=30):
         and interaction >= power_thresholds['interaction']
     ):
         return 'Power'
-    if visits >= healthy_visits and engaged >= healthy_engaged and areas >= 1 and active_days >= healthy_active_days:
+    if (
+        visits >= healthy_thresholds['visits']
+        and engaged >= healthy_thresholds['engaged_seconds']
+        and areas >= healthy_thresholds['product_areas']
+        and active_days >= healthy_thresholds['active_days']
+    ):
         return 'Healthy'
     if visits <= passive_visits or engaged < passive_engaged or interaction < 0.2:
         return 'Passive'
@@ -453,22 +568,32 @@ def _low_engagement(row):
     return visits <= 2 or engaged < 60 or clicks <= 0
 
 
-def _daily_series(project_id, start_date, end_date, *, dropped_count=0):
+def _daily_series(
+    project,
+    start_date,
+    end_date,
+    *,
+    company_ids=None,
+):
+    project_id = project.id
     days = list(services._date_range(start_date, end_date))
     labels = [day.isoformat() for day in days]
     by_day = {
         day: {
-            'active': 0,
-            'engaged': 0,
-            'power': 0,
-            'low': 0,
-            'statuses': Counter({'Dropped': dropped_count}) if dropped_count else Counter(),
+            'daily_active': 0,
+            'daily_engaged': 0,
+            'daily_power': 0,
+            'daily_low': 0,
         }
         for day in days
     }
     daily_user_metrics = {}
+    qs = _base_user_queryset(project_id, start_date, end_date)
+    if company_ids is not None:
+        qs = qs.filter(company_id__in=company_ids)
+
     area_rows = (
-        _base_user_queryset(project_id, start_date, end_date)
+        qs
         .values('date', 'user_id', 'product_area_key')
         .annotate(
             visits=Sum('visits_count'),
@@ -498,7 +623,7 @@ def _daily_series(project_id, start_date, end_date, *, dropped_count=0):
         user_metric['engaged_seconds'] += int(row.get('engaged_seconds') or 0)
         user_metric['click_count'] += int(row.get('click_count') or 0)
 
-        if visits > 0 and row.get('product_area_key'):
+        if visits > 0 and row.get('product_area_key') is not None:
             user_metric['product_areas'].add(row.get('product_area_key'))
 
     daily_rows_by_day = defaultdict(list)
@@ -510,74 +635,54 @@ def _daily_series(project_id, start_date, end_date, *, dropped_count=0):
             'click_count': user_metric['click_count'],
             'product_areas_used': len(user_metric['product_areas']),
             'product_area_keys': user_metric['product_areas'],
-            'active_days': 1 if _user_period_active(user_metric) else 0,
+            # The period headline counts active dates from prepared visits.
+            # Keep the prefix series on that exact definition as well.
+            'active_days': 1 if user_metric['visits'] > 0 else 0,
         }
         daily_rows_by_day[user_metric['date']].append(daily_row)
 
-    cumulative = {}
     for day in days:
         metric = by_day[day]
-        for daily_row in daily_rows_by_day.get(day, []):
-            user_id = daily_row['user_id']
-            cumulative_row = cumulative.setdefault(user_id, {
-                'visits': 0,
-                'engaged_seconds': 0,
-                'click_count': 0,
-                'product_areas': set(),
-                'active_days': 0,
-            })
-
-            cumulative_row['visits'] += daily_row['visits']
-            cumulative_row['engaged_seconds'] += daily_row['engaged_seconds']
-            cumulative_row['click_count'] += daily_row['click_count']
-            cumulative_row['product_areas'].update(daily_row['product_area_keys'])
-            cumulative_row['active_days'] += daily_row['active_days']
-
-            metric['active'] += 1
-            metric['engaged'] += int(daily_row.get('engaged_seconds') or 0)
-            status = _status_for_user(daily_row, period_days=1)
-            if status == 'Power':
-                metric['power'] += 1
+        active_daily_rows = [
+            daily_row
+            for daily_row in daily_rows_by_day.get(day, [])
+            if _user_period_active(daily_row)
+        ]
+        daily_power_thresholds = services.power_user_thresholds(
+            1,
+            active_daily_rows,
+        )
+        for daily_row in active_daily_rows:
+            metric['daily_active'] += 1
+            metric['daily_engaged'] += int(daily_row.get('engaged_seconds') or 0)
+            if _status_for_user(
+                daily_row,
+                period_days=1,
+                power_thresholds=daily_power_thresholds,
+            ) == 'Power':
+                metric['daily_power'] += 1
             if _low_engagement(daily_row):
-                metric['low'] += 1
-
-        elapsed_days = (day - start_date).days + 1
-        statuses = Counter({'Dropped': dropped_count}) if dropped_count else Counter()
-        for cumulative_row in cumulative.values():
-            status = _status_for_user(
-                {
-                    'visits': cumulative_row['visits'],
-                    'engaged_seconds': cumulative_row['engaged_seconds'],
-                    'click_count': cumulative_row['click_count'],
-                    'product_areas_used': len(cumulative_row['product_areas']),
-                    'active_days': cumulative_row['active_days'],
-                },
-                period_days=elapsed_days,
-            )
-            statuses[status] += 1
-        metric['statuses'] = statuses
+                metric['daily_low'] += 1
 
     return {
         'labels': labels,
-        'activeUsers': [by_day[day]['active'] for day in days],
+        'activeUsers': [by_day[day]['daily_active'] for day in days],
         'engagedPerUser': [
-            round(by_day[day]['engaged'] / by_day[day]['active']) if by_day[day]['active'] else 0
+            round(by_day[day]['daily_engaged'] / by_day[day]['daily_active'])
+            if by_day[day]['daily_active']
+            else None
             for day in days
         ],
-        'powerUsers': [by_day[day]['power'] for day in days],
-        'lowEngagementUsers': [by_day[day]['low'] for day in days],
-        'statusMixByDate': [
-            {
-                'date': day.isoformat(),
-                'power': by_day[day]['statuses'].get('Power', 0),
-                'healthy': by_day[day]['statuses'].get('Healthy', 0),
-                'light': by_day[day]['statuses'].get('Light', 0),
-                'passive': by_day[day]['statuses'].get('Passive', 0),
-                'dropped': by_day[day]['statuses'].get('Dropped', 0),
-            }
-            for day in days
-        ],
+        'powerUsers': [by_day[day]['daily_power'] for day in days],
+        'lowEngagementUsers': [by_day[day]['daily_low'] for day in days],
     }
+
+
+def _average_daily_count(values):
+    values = [max(0, int(value or 0)) for value in (values or [])]
+    if not values:
+        return 0
+    return round(sum(values) / len(values), 2)
 
 
 def _engagement_buckets(users):
@@ -612,8 +717,44 @@ def _status_distribution(users):
     ]
 
 
+def _period_status_rows(period_metrics, baseline_metrics, *, period_days, power_thresholds):
+    """
+    Classify one period's users against the period that came before it.
+
+    The status-mix card shows two periods side by side, and each bar has to be
+    judged against its own baseline or the comparison is not like for like: the
+    selected period against the previous one, the previous one against the
+    period before that. Users seen only in the baseline have dropped out.
+    """
+
+    rows = []
+    for user_id in set(period_metrics) | set(baseline_metrics):
+        period_row = period_metrics.get(user_id)
+        if period_row is None:
+            rows.append({'status': 'Dropped'})
+            continue
+
+        rows.append({
+            'status': _status_for_user(
+                period_row,
+                baseline_metrics.get(user_id, {}),
+                period_days=period_days,
+                power_thresholds=power_thresholds,
+            ),
+        })
+    return rows
+
+
 def _metric_row_delta(current, previous, key):
     return _delta_pct_value(current.get(key), previous.get(key))
+
+
+# These two sections are triage callouts, not a second user directory: on the
+# demo project roughly three users in four qualify for attention. The list is
+# bounded so the payload stays small and the pages stay worth turning; the
+# Users table is where the complete, filterable set lives.
+ATTENTION_ROWS_LIMIT = 50
+MOMENTUM_ROWS_LIMIT = 50
 
 
 def _attention_rows(users, previous_metrics):
@@ -678,10 +819,10 @@ def _attention_rows(users, previous_metrics):
             'riskScore': score,
         })
 
-    return sorted(rows, key=lambda item: (-item['riskScore'], item['name'] or ''))[:5]
+    return sorted(rows, key=lambda item: (-item['riskScore'], item['name'] or ''))[:ATTENTION_ROWS_LIMIT]
 
 
-def _momentum_rows(users, previous_metrics, *, period_days=30):
+def _momentum_rows(users, previous_metrics, *, period_days=30, previous_power_thresholds=None):
     rows = []
     for user in users:
         previous = previous_metrics.get(user['userId'] or user['id'], {})
@@ -707,7 +848,11 @@ def _momentum_rows(users, previous_metrics, *, period_days=30):
             if not signal:
                 signal = f'+{current_areas - previous_areas} areas'
                 reason = 'Expanded usage'
-        if user.get('status') == 'Power' and _status_for_user(previous, period_days=period_days) != 'Power':
+        if user.get('status') == 'Power' and _status_for_user(
+            previous,
+            period_days=period_days,
+            power_thresholds=previous_power_thresholds,
+        ) != 'Power':
             score += 35
             if not signal:
                 signal = 'New power user'
@@ -732,11 +877,7 @@ def _momentum_rows(users, previous_metrics, *, period_days=30):
             'momentumScore': score,
         })
 
-    return sorted(rows, key=lambda item: (-item['momentumScore'], item['name'] or ''))[:5]
-
-
-def _status_mix_rows(status_mix_by_date):
-    return status_mix_by_date
+    return sorted(rows, key=lambda item: (-item['momentumScore'], item['name'] or ''))[:MOMENTUM_ROWS_LIMIT]
 
 
 def empty_users_overview_payload(project, range_key='last_30_days'):
@@ -765,15 +906,59 @@ def empty_users_overview_payload(project, range_key='last_30_days'):
         'pageFeatures': [],
         'featureProductAreas': {},
         'kpis': [
-            {'key': 'activeUsers', 'label': 'Active users', 'value': 0, 'delta': 0, 'deltaLabel': '0%', 'deltaType': 'neutral', 'sparkline': []},
-            {'key': 'engagedPerUser', 'label': 'Engaged / user', 'value': '0s', 'delta': 0, 'deltaLabel': '0%', 'deltaType': 'neutral', 'sparkline': []},
-            {'key': 'powerUsers', 'label': 'Power users', 'value': 0, 'delta': 0, 'deltaLabel': '0%', 'deltaType': 'neutral', 'sparkline': []},
-            {'key': 'lowEngagementUsers', 'label': 'Low-engagement users', 'value': 0, 'delta': 0, 'deltaLabel': '0%', 'deltaType': 'neutral', 'sparkline': []},
+            {
+                'key': 'activeUsers',
+                'label': 'Avg daily active users',
+                'value': 0,
+                'delta': 0,
+                'deltaLabel': '0%',
+                'deltaType': 'neutral',
+                'sparkline': [],
+                'sparklineScope': 'daily',
+                'sparklineLabel': 'Daily active users',
+            },
+            {
+                'key': 'engagedPerUser',
+                'label': 'Avg daily engaged / user',
+                'value': '0s',
+                'delta': 0,
+                'deltaLabel': '0%',
+                'deltaType': 'neutral',
+                'sparkline': [],
+                'sparklineScope': 'daily',
+                'sparklineLabel': 'Daily engaged / user',
+            },
+            {
+                'key': 'powerUsers',
+                'label': 'High-activity share',
+                'value': '0.0%',
+                'delta': 0,
+                'deltaLabel': '0.0 pp',
+                'deltaType': 'neutral',
+                'sparkline': [],
+                'sparklineScope': 'daily',
+                'sparklineValueType': 'percent',
+                'sparklineRender': 'line',
+                'sparklineLabel': 'Daily high-activity share',
+            },
+            {
+                'key': 'lowEngagementUsers',
+                'label': 'Light-activity share',
+                'value': '0.0%',
+                'delta': 0,
+                'deltaLabel': '0.0 pp',
+                'deltaType': 'neutral',
+                'sparkline': [],
+                'sparklineScope': 'daily',
+                'sparklineValueType': 'percent',
+                'sparklineRender': 'line',
+                'sparklineLabel': 'Daily light-activity share',
+            },
         ],
         'dailyActiveTrend': {'labels': labels, 'activeUsers': [], 'engagedSeconds': [], 'visits': [], 'features': []},
         'engagementBuckets': [],
         'statusDistribution': [],
-        'statusMixByDate': [],
+        'previousStatusDistribution': [],
         'users': [],
         'scatter': [],
         'usersNeedingAttention': [],
@@ -786,13 +971,31 @@ def empty_users_overview_payload(project, range_key='last_30_days'):
     }
 
 
-def build_users_overview_payload(project, *, range_key='last_30_days'):
+def build_users_overview_payload(
+    project,
+    *,
+    range_key='last_30_days',
+    company_attribute_filter_state=None,
+):
+    if company_attribute_filter_state is not None:
+        cohort = (
+            services.resolve_project_company_cohort(project.id, company_attribute_filter_state)
+            if company_attribute_filter_state.active
+            else None
+        )
+        with company_attribute_filter_scope(company_attribute_filter_state, cohort=cohort):
+            return build_users_overview_payload(project, range_key=range_key)
+
     start_date, end_date = services.resolve_period(project.timezone, range_key=range_key)
     previous_start, previous_end = services.previous_period(start_date, end_date)
     period_days = (end_date - start_date).days + 1
 
+    preceding_start, preceding_end = services.previous_period(previous_start, previous_end)
     current_all = _user_metrics(project.id, start_date, end_date)
     previous_all = _user_metrics(project.id, previous_start, previous_end)
+    # The status-mix card classifies the previous period too, which needs the
+    # window before it as that period's own baseline.
+    preceding_all = _user_metrics(project.id, preceding_start, preceding_end)
     current = {
         user_id: row
         for user_id, row in current_all.items()
@@ -803,6 +1006,14 @@ def build_users_overview_payload(project, *, range_key='last_30_days'):
         for user_id, row in previous_all.items()
         if _user_period_active(row)
     }
+    preceding = {
+        user_id: row
+        for user_id, row in preceding_all.items()
+        if _user_period_active(row)
+    }
+    comparison_available = bool(previous)
+    current_power_thresholds = services.power_user_thresholds(period_days, current.values())
+    previous_power_thresholds = services.power_user_thresholds(period_days, previous.values())
     identities = _visit_identity(project, start_date, end_date)
     previous_identities = _visit_identity(project, previous_start, previous_end)
     company_names = {
@@ -812,7 +1023,7 @@ def build_users_overview_payload(project, *, range_key='last_30_days'):
         **_company_names_from_visits(project, start_date, end_date),
     }
     company_engaged = _company_engaged_totals(project.id, start_date, end_date)
-    product_areas = _product_area_options(project.id, start_date, end_date)
+    product_areas = _product_area_options(project, start_date, end_date)
     product_area_catalog = services._project_product_area_options(
         project.id,
         product_areas,
@@ -850,7 +1061,12 @@ def build_users_overview_payload(project, *, range_key='last_30_days'):
         sessions_count_estimated = bool(visits and not identity_sessions)
         estimated_sessions_count = max(1, visits / 3) if sessions_count_estimated else identity_sessions
         sessions_count = identity_sessions if identity_sessions else (max(1, round(visits / 3)) if visits else 0)
-        status = 'Dropped' if not has_current_activity else _status_for_user(current_row, previous_row, period_days=period_days)
+        status = 'Dropped' if not has_current_activity else _status_for_user(
+            current_row,
+            previous_row,
+            period_days=period_days,
+            power_thresholds=current_power_thresholds,
+        )
         company_total = company_engaged.get(company_id) or 0
         top_features = feature_usage.get(user_id, [])[:8]
         top_feature = top_features[0]['feature'] if top_features else ''
@@ -870,6 +1086,8 @@ def build_users_overview_payload(project, *, range_key='last_30_days'):
             'segment': '',
             'status': status,
             'identified': True,
+            'comparisonAvailable': comparison_available,
+            'comparison_available': comparison_available,
             'engagedSeconds': engaged,
             'previousEngagedSeconds': previous_engaged,
             'activityDropSeconds': max(0, previous_engaged - engaged),
@@ -911,22 +1129,56 @@ def build_users_overview_payload(project, *, range_key='last_30_days'):
         f'{project.id}:{range_key}:{start_date.isoformat()}:{end_date.isoformat()}',
     )
 
-    daily = _daily_series(project.id, start_date, end_date, dropped_count=len(set(previous) - set(current)))
+    daily = _daily_series(
+        project,
+        start_date,
+        end_date,
+    )
+    previous_daily = _daily_series(
+        project,
+        previous_start,
+        previous_end,
+    )
     active_users = len(current)
-    previous_active_users = len(previous)
     total_engaged = sum(row.get('engaged_seconds', 0) for row in current.values())
     previous_total_engaged = sum(row.get('engaged_seconds', 0) for row in previous.values())
     total_visits = sum(row.get('visits', 0) for row in current.values())
-    power_users = sum(1 for row in users if row.get('status') == 'Power')
-    previous_power_users = sum(
-        1
-        for row in previous.values()
-        if _status_for_user({**row, 'selected_end_date': previous_end}, period_days=period_days) == 'Power'
+    average_daily_active_users = _average_daily_count(daily['activeUsers'])
+    previous_average_daily_active_users = _average_daily_count(
+        previous_daily['activeUsers'],
     )
-    low_users = sum(1 for row in current.values() if _low_engagement(row))
-    previous_low_users = sum(1 for row in previous.values() if _low_engagement(row))
-    engaged_per_user = round(total_engaged / active_users) if active_users else 0
-    previous_engaged_per_user = round(previous_total_engaged / previous_active_users) if previous_active_users else 0
+    active_user_days = sum(daily['activeUsers'])
+    previous_active_user_days = sum(previous_daily['activeUsers'])
+    # The headline share weights every active user-day equally, so it is one
+    # division over the period rather than an average of the daily shares.
+    high_activity_share = services._pct(sum(daily['powerUsers']), active_user_days)
+    previous_high_activity_share = services._pct(
+        sum(previous_daily['powerUsers']),
+        previous_active_user_days,
+    )
+    light_activity_share = services._pct(
+        sum(daily['lowEngagementUsers']),
+        active_user_days,
+    )
+    previous_light_activity_share = services._pct(
+        sum(previous_daily['lowEngagementUsers']),
+        previous_active_user_days,
+    )
+    high_activity_share_delta = _pp_delta_payload(
+        high_activity_share,
+        previous_high_activity_share,
+    )
+    light_activity_share_delta = _pp_delta_payload(
+        light_activity_share,
+        previous_light_activity_share,
+        lower_is_better=True,
+    )
+    engaged_per_user = round(total_engaged / active_user_days) if active_user_days else 0
+    previous_engaged_per_user = (
+        round(previous_total_engaged / previous_active_user_days)
+        if previous_active_user_days
+        else 0
+    )
     companies_counter = Counter(row['company'] for row in users if row.get('status') != 'Dropped')
 
     return {
@@ -946,41 +1198,66 @@ def build_users_overview_payload(project, *, range_key='last_30_days'):
         'kpis': [
             {
                 'key': 'activeUsers',
-                'label': 'Active users',
-                'value': active_users,
-                'delta': _delta_pct_value(active_users, previous_active_users),
-                'deltaLabel': _delta_payload(active_users, previous_active_users).get('label'),
-                'deltaType': _delta_payload(active_users, previous_active_users).get('direction'),
+                'label': 'Avg daily active users',
+                'value': average_daily_active_users,
+                'delta': _delta_pct_value(
+                    average_daily_active_users,
+                    previous_average_daily_active_users,
+                ),
+                'deltaLabel': _delta_payload(
+                    average_daily_active_users,
+                    previous_average_daily_active_users,
+                ).get('label'),
+                'deltaType': _delta_payload(
+                    average_daily_active_users,
+                    previous_average_daily_active_users,
+                ).get('direction'),
                 'sparkline': daily['activeUsers'],
+                'sparklineScope': 'daily',
+                'sparklineLabel': 'Daily active users',
             },
             {
                 'key': 'engagedPerUser',
-                'label': 'Engaged / user',
+                'label': 'Avg daily engaged / user',
                 'value': _format_duration(engaged_per_user),
                 'delta': _delta_pct_value(engaged_per_user, previous_engaged_per_user),
                 'deltaLabel': _delta_payload(engaged_per_user, previous_engaged_per_user).get('label'),
                 'deltaType': _delta_payload(engaged_per_user, previous_engaged_per_user).get('direction'),
                 'sparkline': daily['engagedPerUser'],
+                'sparklineScope': 'daily',
+                'sparklineLabel': 'Daily engaged / user',
             },
             {
                 'key': 'powerUsers',
-                'label': 'Power users',
-                'value': power_users,
-                'secondary': f'{services._pct(power_users, active_users)}% of active users',
-                'delta': _delta_pct_value(power_users, previous_power_users),
-                'deltaLabel': _delta_payload(power_users, previous_power_users).get('label'),
-                'deltaType': _delta_payload(power_users, previous_power_users).get('direction'),
-                'sparkline': daily['powerUsers'],
+                'label': 'High-activity share',
+                'value': f'{services._format_decimal_for_display(high_activity_share, 1)}%',
+                'delta': high_activity_share_delta['value'],
+                'deltaLabel': high_activity_share_delta['label'],
+                'deltaType': high_activity_share_delta['direction'],
+                'sparkline': _daily_share_series(
+                    daily['powerUsers'],
+                    daily['activeUsers'],
+                ),
+                'sparklineScope': 'daily',
+                'sparklineValueType': 'percent',
+                'sparklineRender': 'line',
+                'sparklineLabel': 'Daily high-activity share',
             },
             {
                 'key': 'lowEngagementUsers',
-                'label': 'Low-engagement users',
-                'value': low_users,
-                'secondary': f'{services._pct(low_users, active_users)}% of active users',
-                'delta': _delta_pct_value(low_users, previous_low_users),
-                'deltaLabel': _delta_payload(low_users, previous_low_users, lower_is_better=True).get('label'),
-                'deltaType': _delta_payload(low_users, previous_low_users, lower_is_better=True).get('direction'),
-                'sparkline': daily['lowEngagementUsers'],
+                'label': 'Light-activity share',
+                'value': f'{services._format_decimal_for_display(light_activity_share, 1)}%',
+                'delta': light_activity_share_delta['value'],
+                'deltaLabel': light_activity_share_delta['label'],
+                'deltaType': light_activity_share_delta['direction'],
+                'sparkline': _daily_share_series(
+                    daily['lowEngagementUsers'],
+                    daily['activeUsers'],
+                ),
+                'sparklineScope': 'daily',
+                'sparklineValueType': 'percent',
+                'sparklineRender': 'line',
+                'sparklineLabel': 'Daily light-activity share',
             },
         ],
         'dailyActiveTrend': {
@@ -992,7 +1269,14 @@ def build_users_overview_payload(project, *, range_key='last_30_days'):
         },
         'engagementBuckets': _engagement_buckets(users),
         'statusDistribution': _status_distribution(users),
-        'statusMixByDate': _status_mix_rows(daily['statusMixByDate']),
+        'previousStatusDistribution': _status_distribution(
+            _period_status_rows(
+                previous,
+                preceding,
+                period_days=period_days,
+                power_thresholds=previous_power_thresholds,
+            ),
+        ),
         'users': users,
         'scatter': scatter_users,
         'scatterMeta': {
@@ -1003,7 +1287,12 @@ def build_users_overview_payload(project, *, range_key='last_30_days'):
             'isLimited': len(users) > len(scatter_users),
         },
         'usersNeedingAttention': _attention_rows(users, previous),
-        'usersGainingMomentum': _momentum_rows(users, previous, period_days=period_days),
+        'usersGainingMomentum': _momentum_rows(
+            users,
+            previous,
+            period_days=period_days,
+            previous_power_thresholds=previous_power_thresholds,
+        ),
         'usersByCompany': [
             {'company': company, 'activeUsers': count}
             for company, count in companies_counter.most_common()
@@ -1016,60 +1305,354 @@ def build_users_overview_payload(project, *, range_key='last_30_days'):
 
 
 def get_cached_users_overview_payload(project_id, range_key='last_30_days', filters_hash=services.DEFAULT_FILTERS_HASH):
+    """
+    Read one Users overview variant row verbatim, users array included.
+
+    Whether the row may be served is decided by
+    ``filtered_overview.variant_is_usable``, which owns that rule for all three
+    surfaces. Deciding it here as well would mean two places to keep in step and
+    an extra project lookup per fetch.
+    """
+
     row = queries.fetch_one(queries.FETCH_USERS_OVERVIEW_CACHE_SQL, [project_id, range_key, filters_hash])
     if not row:
         return None
-    row['payload_json'] = services._coerce_json(row.get('payload_json'))
+    row['payload_json'] = json.loads(row.get('payload_json_text') or '{}')
     row['schema_version'] = row['payload_json'].get('schema_version') if isinstance(row['payload_json'], dict) else None
     return row
+
+
+def get_cached_users_overview_client_payload(
+    project_id,
+    range_key='last_30_days',
+    filters_hash=services.DEFAULT_FILTERS_HASH,
+):
+    """Read one Users overview variant with the server-only users array dropped in SQL."""
+
+    row = queries.fetch_one(
+        queries.FETCH_USERS_OVERVIEW_CLIENT_CACHE_SQL,
+        [project_id, range_key, filters_hash],
+    )
+    if not row:
+        return None
+    row['payload_json'] = json.loads(row.get('payload_json_text') or '{}')
+    row['schema_version'] = row['payload_json'].get('schema_version') if isinstance(row['payload_json'], dict) else None
+    return row
+
+
+def get_cached_users_overview_selector_rows(
+    project_id,
+    range_key='last_30_days',
+    filters_hash=services.DEFAULT_FILTERS_HASH,
+    *,
+    query='',
+    limit=20,
+    alphabetical=False,
+):
+    """
+    Selector rows for the user search box, matched and ordered in SQL.
+
+    Returns ``(rows, total)``, or ``None`` when the variant has no cache row.
+    """
+
+    row = queries.fetch_one(queries.FETCH_USERS_OVERVIEW_SELECTOR_SQL, {
+        'project_id': project_id,
+        'range_key': range_key,
+        'filters_hash': filters_hash,
+        'query': str(query or '').strip().lower(),
+        'limit': _positive_int(limit, 20, 50),
+        'alphabetical': bool(alphabetical),
+    })
+    if not row:
+        return None
+
+    rows = row.get('rows')
+    if isinstance(rows, str):
+        try:
+            rows = json.loads(rows)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            rows = []
+    if not isinstance(rows, list):
+        rows = []
+
+    def _number(value):
+        # The numeric casts come back as JSON numbers; keep whole values whole
+        # so the payload matches what the builder originally stored.
+        number = services._to_float(value)
+        return int(number) if number.is_integer() else number
+
+    return [
+        {
+            'id': item.get('user_id') or '',
+            'userId': item.get('user_id') or '',
+            'name': item.get('name') or '',
+            'email': item.get('email') or '',
+            'companyId': item.get('company_id') or '',
+            'companyName': item.get('company_name') or '',
+            'company': item.get('company_name') or '',
+            'role': item.get('role') or '',
+            'seatType': item.get('seat_type') or '',
+            'status': item.get('status') or '',
+            'engagedSeconds': _number(item.get('engaged_seconds')),
+            'visitsCount': _number(item.get('visits_count')),
+            'featuresCount': _number(item.get('features_count')),
+            'lastActive': item.get('last_active') or '',
+            'lastActiveSort': _number(item.get('last_active_sort')),
+        }
+        for item in rows
+    ], int(row.get('total') or 0)
+
+
+def get_cached_users_overview_metadata(
+    project_id,
+    range_key='last_30_days',
+    filters_hash=services.DEFAULT_FILTERS_HASH,
+):
+    """Freshness metadata for one Users variant, without its payload."""
+
+    from apps.pages import filtered_overview
+
+    return filtered_overview.metadata_row(
+        queries.FETCH_USERS_OVERVIEW_METADATA_SQL,
+        project_id,
+        range_key,
+        filters_hash,
+    )
+
+
+def _positive_int(value, default, maximum=None):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    parsed = max(1, parsed)
+    return min(parsed, maximum) if maximum else parsed
+
+
+def get_cached_users_overview_table_page(
+    project_id,
+    range_key='last_30_days',
+    filters_hash=services.DEFAULT_FILTERS_HASH,
+    *,
+    page=1,
+    page_size=USERS_TABLE_PAGE_SIZE,
+    sort_key=USERS_TABLE_DEFAULT_SORT_KEY,
+    sort_direction=USERS_TABLE_DEFAULT_SORT_DIRECTION,
+    company='',
+    status='',
+    query='',
+    role='',
+    identified_only=True,
+    feature='',
+):
+    page = _positive_int(page, 1)
+    page_size = _positive_int(page_size, USERS_TABLE_PAGE_SIZE, USERS_TABLE_MAX_PAGE_SIZE)
+    sort_key = sort_key if sort_key in USERS_TABLE_SORT_EXPRESSIONS else USERS_TABLE_DEFAULT_SORT_KEY
+    sort_direction = str(sort_direction or '').lower()
+    if sort_direction not in {'asc', 'desc'}:
+        sort_direction = USERS_TABLE_DEFAULT_SORT_DIRECTION
+
+    company = str(company or '').strip()
+    status = str(status or '').strip()
+    role = str(role or '').strip()
+    query = str(query or '').strip().lower()
+    feature = str(feature or '').strip()
+    identified_only = bool(identified_only)
+
+    sql = queries.FETCH_USERS_OVERVIEW_TABLE_PAGE_SQL.format(
+        sort_expression=USERS_TABLE_SORT_EXPRESSIONS[sort_key],
+        sort_direction=sort_direction.upper(),
+    )
+    row = queries.fetch_one(sql, [
+        project_id,
+        range_key,
+        filters_hash,
+        company,
+        company,
+        status,
+        status,
+        role,
+        role,
+        query,
+        query,
+        identified_only,
+        feature,
+        feature,
+        feature,
+        feature,
+        page,
+        page_size,
+    ])
+    if not row:
+        return None
+
+    rows = row.get('rows')
+    if isinstance(rows, str):
+        try:
+            rows = json.loads(rows)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            rows = []
+    if not isinstance(rows, list):
+        rows = []
+
+    filter_options = row.get('filter_options')
+    if isinstance(filter_options, str):
+        try:
+            filter_options = json.loads(filter_options)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            filter_options = {}
+    if not isinstance(filter_options, dict):
+        filter_options = {}
+
+    return {
+        'rows': rows,
+        'pagination': {
+            'page': int(row.get('page') or 1),
+            'pageSize': int(row.get('page_size') or page_size),
+            'totalRows': int(row.get('total_rows') or 0),
+            'totalPages': int(row.get('total_pages') or 1),
+            'sortKey': sort_key,
+            'sortDirection': sort_direction,
+        },
+        'filterOptions': {
+            'companies': filter_options.get('companies') or [],
+            'roles': filter_options.get('roles') or [],
+            'statuses': filter_options.get('statuses') or [],
+        },
+    }
 
 
 def get_cached_users_overview_payload_json(project_id, range_key='last_30_days', filters_hash=services.DEFAULT_FILTERS_HASH):
     return queries.fetch_one(queries.FETCH_USERS_OVERVIEW_CACHE_JSON_SQL, [project_id, range_key, filters_hash])
 
 
-def initial_users_overview_payload(payload, *, limit=INITIAL_USERS_PAYLOAD_LIMIT):
+def _initial_scatter_user(row):
+    if not isinstance(row, dict):
+        return {}
+
+    scatter_row = {
+        key: row.get(key)
+        for key in INITIAL_SCATTER_USER_FIELDS
+        if key in row
+    }
+    scatter_row['pageGroups'] = [
+        {
+            'name': group.get('name') or group.get('productArea') or 'Unassigned',
+            'color': (
+                group.get('color')
+                or group.get('productAreaColor')
+                or group.get('product_area_color')
+                or ''
+            ),
+            'engagedSeconds': int(group.get('engagedSeconds') or 0),
+            'visits': int(group.get('visits') or 0),
+            'clicks': int(group.get('clicks') or 0),
+        }
+        for group in (row.get('pageGroups') or [])
+        if isinstance(group, dict)
+    ]
+    scatter_row['topFeatures'] = [
+        {
+            'feature': feature.get('feature') or '',
+            'productArea': feature.get('productArea') or feature.get('product_area') or '',
+            'engagedSeconds': int(feature.get('engagedSeconds') or 0),
+            'visits': int(feature.get('visits') or 0),
+            'clicks': int(feature.get('clicks') or 0),
+        }
+        for feature in (row.get('topFeatures') or [])
+        if isinstance(feature, dict)
+    ]
+    return scatter_row
+
+
+def initial_users_overview_payload(payload, *, table_payload=None, limit=INITIAL_USERS_PAYLOAD_LIMIT):
     if not isinstance(payload, dict):
         return {}
 
-    users = payload.get('users') if isinstance(payload.get('users'), list) else []
     scatter = payload.get('scatter') if isinstance(payload.get('scatter'), list) else []
-    initial_users = users[:limit]
-    initial_scatter = scatter[:limit]
-    is_partial = len(users) > len(initial_users) or len(scatter) > len(initial_scatter)
+    sampled_users = scatter[:SCATTER_VISIBLE_LIMIT]
+    table_payload = table_payload if isinstance(table_payload, dict) else {}
+    table_rows = table_payload.get('rows') if isinstance(table_payload.get('rows'), list) else []
+    initial_users = table_rows[:limit]
+    initial_scatter = [
+        _initial_scatter_user(row)
+        for row in sampled_users
+    ]
+    pagination = table_payload.get('pagination') if isinstance(table_payload.get('pagination'), dict) else {
+        'page': 1,
+        'pageSize': limit,
+        'totalRows': len(initial_users),
+        'totalPages': 1,
+        'sortKey': USERS_TABLE_DEFAULT_SORT_KEY,
+        'sortDirection': USERS_TABLE_DEFAULT_SORT_DIRECTION,
+    }
+    total_users = int(
+        pagination.get('totalRows')
+        or (payload.get('scatterMeta') or {}).get('totalUsers')
+        or len(initial_users)
+        or len(sampled_users)
+    )
     initial_payload = {**payload}
     initial_payload['users'] = initial_users
     initial_payload['scatter'] = initial_scatter
+    table_data = initial_payload.get('tableData')
+    if not isinstance(table_data, dict):
+        table_data = {}
+    else:
+        table_data = {**table_data}
+    initial_payload['tableData'] = table_data
+    table_data['users'] = {
+        'rows': initial_users,
+        'pagination': pagination,
+        'filterOptions': table_payload.get('filterOptions') or {
+            'companies': [],
+            'roles': [],
+            'statuses': [],
+        },
+    }
     initial_payload['usersDeferred'] = {
-        'isPartial': is_partial,
+        'isPartial': False,
         'initialLimit': limit,
         'initialUsers': len(initial_users),
-        'totalUsers': len(users),
+        'initialScatter': len(initial_scatter),
+        'sampledUsers': len(sampled_users),
+        'totalUsers': total_users,
     }
     return initial_payload
 
 
-def initial_users_overview_payload_from_json_text(payload_json_text, *, limit=INITIAL_USERS_PAYLOAD_LIMIT):
+def initial_users_overview_payload_from_json_text(
+    payload_json_text,
+    *,
+    table_payload=None,
+    limit=INITIAL_USERS_PAYLOAD_LIMIT,
+):
     try:
         payload = json.loads(payload_json_text or '{}')
     except (TypeError, ValueError, json.JSONDecodeError):
         payload = {}
-    return initial_users_overview_payload(payload, limit=limit)
+    return initial_users_overview_payload(payload, table_payload=table_payload, limit=limit)
 
 
 def deferred_users_overview_payload(payload):
     if not isinstance(payload, dict):
         payload = {}
 
+    scatter = payload.get('scatter') if isinstance(payload.get('scatter'), list) else []
+    sampled_users = scatter[:SCATTER_VISIBLE_LIMIT]
+    scatter_meta = payload.get('scatterMeta') or {}
+
     return {
         'schema_version': payload.get('schema_version'),
         'period': payload.get('period') or {},
-        'users': payload.get('users') if isinstance(payload.get('users'), list) else [],
-        'scatter': payload.get('scatter') if isinstance(payload.get('scatter'), list) else [],
-        'scatterMeta': payload.get('scatterMeta') or {},
+        'scatter': [_initial_scatter_user(row) for row in sampled_users],
+        'scatterMeta': scatter_meta,
         'usersDeferred': {
             'isPartial': False,
             'initialLimit': INITIAL_USERS_PAYLOAD_LIMIT,
+            'sampleLimit': SCATTER_VISIBLE_LIMIT,
+            'sampledUsers': len(sampled_users),
+            'totalUsers': int(scatter_meta.get('totalUsers') or len(sampled_users)),
         },
     }
 
@@ -1211,6 +1794,7 @@ def build_users_overview_cache(
     *,
     range_key='last_30_days',
     include_user_details=False,
+    company_attribute_filter_state=None,
     use_lock=True,
 ):
     if use_lock:
@@ -1222,18 +1806,38 @@ def build_users_overview_cache(
                     'project_id': project_id,
                     'range_key': range_key,
                 }
+            if company_attribute_filter_state is not None and company_attribute_filter_state.active:
+                cached = get_cached_users_overview_payload(
+                    project_id,
+                    range_key=range_key,
+                    filters_hash=company_attribute_filter_state.filters_hash,
+                )
+                if cached and is_current_users_payload_schema(cached.get('schema_version')):
+                    return {
+                        'status': 'success',
+                        'reason': 'cache_hit',
+                        'project_id': project_id,
+                        'range_key': range_key,
+                    }
             return build_users_overview_cache(
                 project_id,
                 range_key=range_key,
                 include_user_details=include_user_details,
+                company_attribute_filter_state=company_attribute_filter_state,
                 use_lock=False,
             )
 
     project = Project.active.filter(pk=project_id).first()
     if project is None:
         raise ValueError(f'Project {project_id} does not exist.')
+    expected_filtered_revision = int(project.filtered_analytics_revision)
+    expected_facts_revision = int(project.analytics_facts_revision)
 
-    payload = build_users_overview_payload(project, range_key=range_key)
+    payload = build_users_overview_payload(
+        project,
+        range_key=range_key,
+        company_attribute_filter_state=company_attribute_filter_state,
+    )
     period = payload.get('period') or {}
     start_date = services._safe_date(period.get('start_date'))
     end_date = services._safe_date(period.get('end_date'))
@@ -1247,22 +1851,52 @@ def build_users_overview_cache(
         'is_stale': False,
         'pending_rebuild': False,
     }
+    if company_attribute_filter_state is not None and company_attribute_filter_state.active:
+        # Both revisions are stored so a reader can tell an attribute edit,
+        # which invalidates the cohort, from a fact rebuild, which only ages it.
+        payload['freshness']['filtered_analytics_revision'] = expected_filtered_revision
+        payload['freshness']['analytics_facts_revision'] = expected_facts_revision
 
-    queries.execute(
-        queries.UPSERT_USERS_OVERVIEW_CACHE_SQL,
-        [
-            project_id,
-            range_key,
-            start_date,
-            end_date,
-            services.DEFAULT_FILTERS_HASH,
-            json.dumps(payload, default=services._json_default),
-            source_max_event_ts,
-            generated_at,
-            expires_at,
-        ],
-    )
-    if include_user_details:
+    cache_params = [
+        project_id,
+        range_key,
+        start_date,
+        end_date,
+        (
+            company_attribute_filter_state.filters_hash
+            if company_attribute_filter_state is not None
+            else services.DEFAULT_FILTERS_HASH
+        ),
+        json.dumps(payload, default=services._json_default),
+        source_max_event_ts,
+        generated_at,
+        expires_at,
+    ]
+    if company_attribute_filter_state is not None and company_attribute_filter_state.active:
+        with transaction.atomic():
+            current_revision = int(
+                Project.objects.select_for_update()
+                .values_list('filtered_analytics_revision', flat=True)
+                .get(pk=project_id)
+            )
+            if current_revision != expected_filtered_revision:
+                return {
+                    'status': 'skipped',
+                    'reason': 'revision_changed',
+                    'project_id': project_id,
+                    'range_key': range_key,
+                }
+            queries.execute(queries.UPSERT_USERS_OVERVIEW_CACHE_SQL, cache_params)
+        services.purge_expired_filtered_overview_caches(project_id)
+    else:
+        queries.execute(queries.UPSERT_USERS_OVERVIEW_CACHE_SQL, cache_params)
+    if (
+        include_user_details
+        and not (
+            company_attribute_filter_state is not None
+            and company_attribute_filter_state.active
+        )
+    ):
         detail_cache_result = hydrate_users_detail_cache(
             project_id,
             range_key=range_key,

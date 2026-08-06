@@ -1,18 +1,14 @@
 (function mountHymetryCompanyDetail(globalScope) {
   const provider = globalScope.HymetryCompaniesDemoData;
-  const detailHelpers = globalScope.HymetryCompanyDetailHelpers;
   const metricDynamicsHelpers = globalScope.HymetryMetricDynamics || {};
+  const analyticsTooltips = globalScope.HymetryAnalyticsTooltips;
 
-  if (!provider || !detailHelpers) {
+  if (!provider || !analyticsTooltips) {
     return;
   }
 
-  /**
-   * @typedef {ReturnType<detailHelpers.buildCompanyDetailsData>} CompanyDetailsData
-   */
-
   const numberFormatter = new Intl.NumberFormat("en-US");
-  const recentCompaniesStorageKey = "hymetry:recent-companies";
+  const recentCompaniesStorageKey = `hymetry:recent-companies:${document.body?.dataset.projectId || "unknown-project"}`;
   const buildMetricDynamicsSeries = metricDynamicsHelpers.buildMetricDynamicsSeries || ((options = {}) => {
     const current = Array.isArray(options.currentSeries)
       ? options.currentSeries.map((point) => {
@@ -28,8 +24,8 @@
     return {
       actualSeries: current,
       current,
-      currentStraightTrendSeries: current,
-      currentTrend: current,
+      currentStraightTrendSeries: [],
+      currentTrend: [],
       benchmarkStraightTrendSeries: [],
       benchmark: [],
       benchmarkUnavailableReason: "Benchmark unavailable: not enough comparable data.",
@@ -38,6 +34,8 @@
       hiddenPeerTraceCount: 0
     };
   });
+  const getMetricDynamicsShape = metricDynamicsHelpers.getMetricDynamicsShape
+    || (() => ({ name: "cumulative_total", step: false, filled: true, selfTrend: false }));
   const setMetricDynamicsLoadingState = metricDynamicsHelpers.setMetricDynamicsLoadingState || (() => false);
   const getMetricDynamicsAxisBounds = metricDynamicsHelpers.getMetricDynamicsAxisBounds || (() => ({ min: "dataMin", max: "dataMax" }));
   const colorFallbacks = {
@@ -166,11 +164,11 @@
   };
 
   const topPageMetrics = [
-    { key: "users", label: "Users", valueType: "number", deltaKey: "usersDeltaPct", deltaUnit: "%" },
-    { key: "visits", label: "Visits", valueType: "number", deltaKey: "visitsDeltaPct", deltaUnit: "%" },
-    { key: "engagedSeconds", label: "Engaged", valueType: "duration", deltaKey: "engagedDeltaPct", deltaUnit: "%" },
-    { key: "avgVisitSeconds", label: "Avg / visit", valueType: "duration", deltaKey: "avgVisitDeltaPct", deltaUnit: "%" },
-    { key: "interactionPct", label: "Interaction", valueType: "percent", deltaKey: "interactionDeltaPp", deltaUnit: "pp", barMode: "percent" }
+    { key: "users", label: "Users", valueType: "number", deltaKey: "usersDeltaPct", deltaUnit: "%", previousKey: "previousUsers" },
+    { key: "visits", label: "Visits", valueType: "number", deltaKey: "visitsDeltaPct", deltaUnit: "%", previousKey: "previousVisits" },
+    { key: "engagedSeconds", label: "Engaged", valueType: "duration", deltaKey: "engagedDeltaPct", deltaUnit: "%", previousKey: "previousEngagedSeconds" },
+    { key: "avgVisitSeconds", label: "Avg / visit", valueType: "duration", deltaKey: "avgVisitDeltaPct", deltaUnit: "%", previousKey: "previousAvgVisitSeconds" },
+    { key: "interactionPct", label: "Interaction", valueType: "percent", deltaKey: "interactionDeltaPp", deltaUnit: "pp", previousKey: "previousInteractionPct", barMode: "percent" }
   ];
   const topPagesPageSize = 15;
   const topPagesDefaultSortDirections = {
@@ -183,11 +181,11 @@
     interactionPct: "desc"
   };
   const userTableMetrics = [
-    { key: "visits", label: "Visits", valueType: "number", deltaKey: "visitsDeltaPct", deltaUnit: "%" },
-    { key: "engagedSeconds", label: "Engaged", valueType: "duration", deltaKey: "engagedDeltaPct", deltaUnit: "%" }
+    { key: "visits", label: "Visits", valueType: "number", deltaKey: "visitsDeltaPct", deltaUnit: "%", previousKey: "previousVisits" },
+    { key: "engagedSeconds", label: "Engaged", valueType: "duration", deltaKey: "engagedDeltaPct", deltaUnit: "%", previousKey: "previousEngagedSeconds" }
   ];
   const peerComparisonMetrics = [
-    { key: "avgEngagedSecondsPerUser", label: "Engaged / user", valueType: "duration", deltaKey: "avgEngagedSecondsPerUserDeltaPct", deltaUnit: "%" }
+    { key: "avgEngagedSecondsPerUser", label: "Engaged / user", valueType: "duration", deltaKey: "avgEngagedSecondsPerUserDeltaPct", deltaUnit: "%", previousKey: "previousAvgEngagedSecondsPerUser" }
   ];
 
   const userNumericSortKeys = new Set(["lastActiveDays", "activeDays", "engagedSeconds", "visits", "interactionPct"]);
@@ -220,7 +218,6 @@
   let productAreaMixTooltipId = 0;
   let adoptionCellTooltipId = 0;
   let periodChangeTooltipId = 0;
-  let areaMixFloatingTooltipMounted = false;
   let companySelectorMounted = false;
   let companySelectorDebounceId = 0;
   let userSortMounted = false;
@@ -805,16 +802,6 @@
     return Math.max(percentile((rows || []).map(productAreaUsageTotal), 0.95), 1);
   }
 
-  function productAreaTooltipLabelWidthCh(usageItems) {
-    const maxLabelLength = (usageItems || []).reduce((max, item) => {
-      const label = String(item?.productArea || "Unknown");
-
-      return Math.max(max, label.length);
-    }, 0);
-
-    return Math.min(Math.max(maxLabelLength + 1, 14), 28);
-  }
-
   function productAreaUsageCell(row, scaleMax) {
     const usageItems = productAreaUsageItems(row);
     const totalUsageSeconds = usageItems.reduce((sum, item) => sum + item.engagedSeconds, 0);
@@ -822,34 +809,27 @@
     const barWidthPct = totalUsageSeconds ? Math.min((totalUsageSeconds / safeScaleMax) * 100, 100) : 0;
     const name = row.name || row.companyName || "Company";
     const tooltipId = `company-detail-area-mix-tooltip-${productAreaMixTooltipId}`;
-    const maxAreaEngagedSeconds = Math.max(...usageItems.map((item) => Number(item.engagedSeconds) || 0), 1);
-    const areaLabelWidthCh = productAreaTooltipLabelWidthCh(usageItems);
 
     productAreaMixTooltipId += 1;
 
-    const tooltipRows = usageItems
-      .map((item) => {
-        const area = item.productArea || "Unknown";
-        const share = totalUsageSeconds ? (item.engagedSeconds / totalUsageSeconds) * 100 : 0;
-        const visits = Math.max(0, Math.round(Number(item.visits) || 0));
-        const engagedBarWidth = item.engagedSeconds > 0
-          ? Math.max(4, Math.round((item.engagedSeconds / maxAreaEngagedSeconds) * 56))
-          : 0;
+    const tooltipRows = usageItems.map((item) => {
+      const area = item.productArea || "Unknown";
+      const share = totalUsageSeconds ? (item.engagedSeconds / totalUsageSeconds) * 100 : 0;
+      const visits = Math.max(0, Math.round(Number(item.visits) || 0));
 
-        return `
-          <span class="companies-area-mix-tooltip__row companies-area-mix-tooltip__row--usage" style="--area-color:${productAreaColor(area)}; --area-engaged-width:${engagedBarWidth}px;">
-            <span class="companies-area-mix-tooltip__dot"></span>
-            <span class="companies-area-mix-tooltip__label">${escapeHtml(area)}</span>
-            <span class="companies-area-mix-tooltip__metric companies-area-mix-tooltip__metric--engaged">
-              <span class="companies-area-mix-tooltip__engaged-bar" aria-hidden="true"></span>
-              <span>${escapeHtml(formatDurationShort(item.engagedSeconds))}</span>
-            </span>
-            <span class="companies-area-mix-tooltip__metric">${formatPercent(share)}</span>
-            <span class="companies-area-mix-tooltip__metric">${formatNumber(visits)} ${visits === 1 ? "visit" : "visits"}</span>
-          </span>
-        `;
-      })
-      .join("");
+      return {
+        label: area,
+        value: `${formatDurationShort(item.engagedSeconds)} · ${formatPercent(share)} · ${formatNumber(visits)} ${visits === 1 ? "visit" : "visits"}`,
+        marker: productAreaColor(area)
+      };
+    });
+    const summaryRows = [
+      { label: "Total", value: formatDurationShort(totalUsageSeconds) },
+      { label: "Areas used", value: formatNumber(usageItems.length) }
+    ];
+    const renderedTooltipRows = tooltipRows.length
+      ? tooltipRows
+      : [{ label: "Usage", value: "No usage" }];
     const segments = usageItems
       .map((item) => {
         const area = item.productArea || "Unknown";
@@ -858,21 +838,16 @@
         return `<span class="companies-area-mix__segment" style="--area-color:${productAreaColor(area)}; flex: 0 0 ${percent}%"></span>`;
       })
       .join("");
-    const ariaLabel = `${name} area usage. ${usageItems
-      .map((item) => `${item.productArea} ${formatDurationShort(item.engagedSeconds)} ${formatPercent(totalUsageSeconds ? (item.engagedSeconds / totalUsageSeconds) * 100 : 0)}`)
-      .join(", ")}. Total ${formatDurationShort(totalUsageSeconds)}. Areas used ${usageItems.length}.`;
+    const ariaLabel = `${name}. ${analyticsTooltips.text(renderedTooltipRows.concat(summaryRows))}`;
+    const tooltipHtml = analyticsTooltips.render({
+      title: name,
+      sections: [{ rows: renderedTooltipRows }, { rows: summaryRows }]
+    });
 
     return `
-      <div class="companies-area-mix companies-area-usage metric-header-tooltip" data-tooltip-kind="area-mix" data-has-usage="${totalUsageSeconds > 0}" style="--area-usage-width:${barWidthPct}%; --area-tooltip-label-width:${areaLabelWidthCh}ch;" tabindex="0" aria-label="${escapeHtml(ariaLabel)}" aria-describedby="${tooltipId}">
+      <div class="companies-area-mix companies-area-usage metric-header-tooltip" data-tooltip-kind="area-mix" data-has-usage="${totalUsageSeconds > 0}" style="--area-usage-width:${barWidthPct}%;" tabindex="0" aria-label="${escapeHtml(ariaLabel)}" aria-describedby="${tooltipId}">
         <span class="companies-area-usage__bar">${segments}</span>
-        <span id="${tooltipId}" class="metric-header-tooltip__content" role="tooltip">
-          <span class="companies-area-mix-tooltip__title">${escapeHtml(name)}</span>
-          ${tooltipRows || `<span class="companies-area-mix-tooltip__row"><span></span><span class="companies-area-mix-tooltip__label">No usage</span><span class="companies-area-mix-tooltip__value">0m</span></span>`}
-          <span class="companies-area-mix-tooltip__summary">
-            <span class="companies-area-mix-tooltip__summary-row"><span>Total</span><strong>${escapeHtml(formatDurationShort(totalUsageSeconds))}</strong></span>
-            <span class="companies-area-mix-tooltip__summary-row"><span>Areas used</span><strong>${formatNumber(usageItems.length)}</strong></span>
-          </span>
-        </span>
+        <span id="${tooltipId}" class="metric-header-tooltip__content" role="tooltip">${tooltipHtml}</span>
       </div>
     `;
   }
@@ -925,34 +900,19 @@
 
     adoptionCellTooltipId += 1;
 
-    if (!used) {
-      return {
-        tooltipId,
-        tooltipText: `${name}. ${areaName}. Not used yet. Relative activity ${relativeActivityLabel}. ${usageLabel}.`,
-        tooltipHtml: `
-          <span class="companies-adoption-cell-tooltip__title">${escapeHtml(name)}</span>
-          <span class="companies-adoption-cell-tooltip__row"><span>Area</span><strong>${escapeHtml(areaName)}</strong></span>
-          <span class="companies-adoption-cell-tooltip__row"><span>Relative activity</span><strong>${escapeHtml(relativeActivityLabel)}</strong></span>
-          <span class="companies-adoption-cell-tooltip__row"><span>Usage intensity</span><strong>${escapeHtml(usageLabel)}</strong></span>
-          <span class="companies-adoption-cell-tooltip__row"><span>Engaged time</span><strong>${escapeHtml(formatDurationShort(cell.engagedSeconds))}</strong></span>
-          <span class="companies-adoption-cell-tooltip__row"><span>Visits</span><strong>${formatNumber(cell.visits)}</strong></span>
-          <span class="companies-adoption-cell-tooltip__row"><span>Pages/features</span><strong>${formatNumber(cell.pagesUsed)}</strong></span>
-        `
-      };
-    }
+    const rows = [
+      { label: "Area", value: areaName },
+      { label: "Relative activity", value: relativeActivityLabel },
+      { label: "Usage intensity", value: usageLabel },
+      { label: "Engaged time", value: formatDurationShort(cell.engagedSeconds) },
+      { label: "Visits", value: formatNumber(cell.visits) },
+      { label: "Pages/features", value: formatNumber(cell.pagesUsed) }
+    ];
 
     return {
       tooltipId,
-      tooltipText: `${name}. ${areaName}. Used during selected period. Relative activity ${relativeActivityLabel}. ${usageLabel}.`,
-      tooltipHtml: `
-        <span class="companies-adoption-cell-tooltip__title">${escapeHtml(name)}</span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Area</span><strong>${escapeHtml(areaName)}</strong></span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Relative activity</span><strong>${escapeHtml(relativeActivityLabel)}</strong></span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Usage intensity</span><strong>${escapeHtml(usageLabel)}</strong></span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Engaged time</span><strong>${escapeHtml(formatDurationShort(cell.engagedSeconds))}</strong></span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Visits</span><strong>${formatNumber(cell.visits)}</strong></span>
-        <span class="companies-adoption-cell-tooltip__row"><span>Pages/features</span><strong>${formatNumber(cell.pagesUsed)}</strong></span>
-      `
+      tooltipText: `${name}. ${used ? "Used during selected period. " : "Not used yet. "}${analyticsTooltips.text(rows)}`,
+      tooltipHtml: analyticsTooltips.render({ title: name, rows })
     };
   }
 
@@ -1058,14 +1018,6 @@
     return Array.isArray(dailySeries) ? dailySeries.map((point) => point.date) : [];
   }
 
-  function metricTooltipLineSample(color, dashed = false) {
-    const background = dashed
-      ? `repeating-linear-gradient(to right, ${color} 0 6px, transparent 6px 10px)`
-      : color;
-
-    return `<span style="display:inline-block;width:22px;height:2px;border-radius:999px;background:${background};flex:0 0 22px;"></span>`;
-  }
-
   function formatDurationWithSeconds(totalSeconds) {
     const seconds = Math.max(0, Math.round(Number(totalSeconds) || 0));
 
@@ -1092,28 +1044,23 @@
   }
 
   function metricTooltipRow(label, value, valueType, options = {}) {
-    const lineSample = options.color
-      ? metricTooltipLineSample(options.color, Boolean(options.dashed))
-      : "";
     const displayValue = Number.isFinite(value) ? formatMetricTooltipValueByType(value, valueType) : "-";
 
-    return `
-      <div style="display:flex;gap:16px;justify-content:space-between;min-width:220px;">
-        <span style="display:inline-flex;align-items:center;gap:8px;min-width:0;">
-          ${lineSample}
-          <span>${escapeHtml(label)}</span>
-        </span>
-        <strong>${escapeHtml(displayValue)}</strong>
-      </div>
-    `;
+    return {
+      label,
+      value: displayValue,
+      marker: options.color
+        ? { color: options.color, type: "line", dashed: Boolean(options.dashed) }
+        : undefined
+    };
   }
 
   function metricTooltipPeerRows(peerSeriesList, index, valueType) {
     if (!peerSeriesList.length) {
-      return "";
+      return [];
     }
 
-    const peerRows = peerSeriesList
+    return peerSeriesList
       .map((peer) => ({
         name: peer.name,
         value: Number(peer.data?.[index])
@@ -1136,10 +1083,16 @@
 
         return String(a.name || "").localeCompare(String(b.name || ""));
       })
-      .map((peer) => metricTooltipRow(peer.name || "Peer", peer.value, valueType, { color: tailwindAlpha("slate-400", 0.55) }))
-      .join("");
+      .map((peer) => metricTooltipRow(peer.name || "Peer", peer.value, valueType, { color: tailwindAlpha("slate-400", 0.55) }));
+  }
 
-    return `<div style="margin-top:6px;padding-top:2px;">${peerRows}</div>`;
+  function metricPointLabel(metric) {
+    return metric?.key === "atRiskUsers" ? "As of date" : "Period to date";
+  }
+
+  function metricPointTitle(metric, date) {
+    const prefix = metric?.key === "atRiskUsers" ? "As of" : "Through";
+    return `${prefix} ${formatDateShort(date)}`;
   }
 
   function companyMetricDynamicsShowPeers() {
@@ -1163,10 +1116,16 @@
       selectedPeriodDays: options.selectedPeriodDays,
       showPeers: options.showPeers,
       currentEntityId: metric.companyId || metric.id,
-      minPeerCount: 3
+      minPeerCount: 5
     });
     const actualSeries = dynamics.actualSeries || dynamics.current || currentValues;
-    const currentTrendSeries = dynamics.currentStraightTrendSeries || dynamics.currentTrend || [];
+    const shape = dynamics.shape || getMetricDynamicsShape(metric.key || metric.valueType);
+    // A running total can only climb, so a fitted line through it restates the
+    // shape already on screen. Emptying the series here also keeps it out of the
+    // tooltip and the axis bounds.
+    const currentTrendSeries = shape.selfTrend
+      ? (dynamics.currentStraightTrendSeries || dynamics.currentTrend || [])
+      : [];
     const benchmarkTrendSeries = dynamics.benchmarkStraightTrendSeries || dynamics.benchmark || [];
     const peerSeriesList = dynamics.peerSeriesList || dynamics.peerTraces || [];
     const yAxisBounds = getMetricDynamicsAxisBounds([
@@ -1178,7 +1137,7 @@
 
     return {
       animation: false,
-      tooltip: {
+      tooltip: analyticsTooltips.echarts({
         trigger: "axis",
         appendTo: "body",
         confine: false,
@@ -1196,19 +1155,27 @@
           const actualValue = currentValues[index];
           const trendValue = currentTrendSeries[index];
           const benchmarkValue = benchmarkTrendSeries[index];
+          const primaryRows = [
+            metricTooltipRow(metricPointLabel(metric), actualValue, metric.valueType, { color: chartTheme.colors.primary }),
+            Number.isFinite(trendValue)
+              ? metricTooltipRow("Current trend", trendValue, metric.valueType, { color: chartTheme.colors.primary, dashed: true })
+              : null,
+            Number.isFinite(benchmarkValue)
+              ? metricTooltipRow("Other companies trend", benchmarkValue, metric.valueType, { color: chartTheme.colors.warning, dashed: true })
+              : null
+          ].filter(Boolean);
+          const peerRows = metricTooltipPeerRows(peerSeriesList, index, metric.valueType);
 
-          return `
-            <div>
-              <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(formatDateShort(dates[index]))}</div>
-              ${metricTooltipRow("Actual", actualValue, metric.valueType, { color: chartTheme.colors.primary })}
-              ${Number.isFinite(trendValue) ? metricTooltipRow("Current trend", trendValue, metric.valueType, { color: chartTheme.colors.primary, dashed: true }) : ""}
-              ${Number.isFinite(benchmarkValue) ? metricTooltipRow("Other companies trend", benchmarkValue, metric.valueType, { color: chartTheme.colors.warning, dashed: true }) : ""}
-              ${metricTooltipPeerRows(peerSeriesList, index, metric.valueType)}
-              ${!benchmarkTrendSeries.length && dynamics.benchmarkUnavailableReason ? `<div style="margin-top:6px;color:${chartTheme.colors.mutedText};">${escapeHtml(dynamics.benchmarkUnavailableReason)}</div>` : ""}
-            </div>
-          `;
+          if (!benchmarkTrendSeries.length && dynamics.benchmarkUnavailableReason) {
+            primaryRows.push({ label: "Benchmark", value: dynamics.benchmarkUnavailableReason });
+          }
+
+          return analyticsTooltips.render({
+            title: metricPointTitle(metric, dates[index]),
+            sections: [{ rows: primaryRows }, ...(peerRows.length ? [{ rows: peerRows }] : [])]
+          });
         }
-      },
+      }),
       grid: {
         left: 0,
         right: 0,
@@ -1280,18 +1247,17 @@
             z: 4
           } : null,
           {
-            name: "Actual",
+            name: metricPointLabel(metric),
             type: "line",
             data: actualSeries,
-            smooth: true,
+            step: shape.step ? "end" : false,
+            smooth: !shape.step,
             symbol: "none",
             lineStyle: {
               color: chartTheme.colors.primary,
               width: 2.5
             },
-            areaStyle: {
-              color: tailwindAlpha("c-blue", 0.08)
-            },
+            ...(shape.filled ? { areaStyle: { color: tailwindAlpha("c-blue", 0.08) } } : {}),
             emphasis: {
               disabled: true
             },
@@ -1302,14 +1268,14 @@
   }
 
   const companyMetricDynamicsDescriptions = {
-    activeUsers: "Number of users active in this company during the selected period",
-    newReactivatedUsers: "Users who are new or reactivated during the selected period",
-    visits: "Number of page visits by this company during the selected period",
-    engaged: "Total active time spent by this company's users",
-    avgPerUser: "Average active time per active user",
-    interaction: "Share of visits with at least one click",
-    adoptionBreadth: "Number of product areas and pages used by this company",
-    atRiskUsers: "Users showing reduced or at-risk engagement signals"
+    activeUsers: "Distinct active users from the selected period's start through each point",
+    newReactivatedUsers: "New or reactivated users from the selected period's start through each point",
+    visits: "Page visits from the selected period's start through each point",
+    engaged: "Active time from the selected period's start through each point",
+    avgPerUser: "Period-to-date active time per distinct active user at each point",
+    interaction: "Period-to-date share of visits with at least one click at each point",
+    adoptionBreadth: "Distinct recommendable product areas used through each point",
+    atRiskUsers: "Users classified as at risk as of each point"
   };
 
   function metricDynamicsTooltipId(scope, key, index) {
@@ -1331,12 +1297,16 @@
   }
 
   function metricPanelMarkup(metric, index) {
+    const valueLabel = metric.valueType === "duration"
+      ? formatDurationWithSeconds(metric.value)
+      : formatValueByType(metric.value, metric.valueType);
+
     return `
       <article class="min-h-[164px] bg-white px-5 py-4">
         <div class="flex items-center justify-between gap-3">
           <div class="min-w-0 text-sm font-medium uppercase text-slate-500">${metricDynamicsTitleMarkup(metric, "company", index)}</div>
           <div class="flex shrink-0 items-center gap-2 text-right font-medium">
-            <div class="whitespace-nowrap text-base font-semibold text-slate-900">${escapeHtml(formatValueByType(metric.value, metric.valueType))}</div>
+            <div class="whitespace-nowrap text-base font-semibold text-slate-900">${escapeHtml(valueLabel)}</div>
             <div class="whitespace-nowrap text-sm font-medium ${metricDeltaClass(metric.deltaDirection, metric.key === "atRiskUsers")}">${escapeHtml(metric.formattedDelta || "-")}</div>
           </div>
         </div>
@@ -1476,7 +1446,7 @@
     });
 
     return {
-      tooltip: {
+      tooltip: analyticsTooltips.echarts({
         trigger: "item",
         confine: true,
         formatter: (params) => {
@@ -1484,20 +1454,18 @@
           const isGroup = Boolean(node.isGroup || node.children?.length);
           const productArea = node.productArea || node.page_group || node.name || "Unassigned";
           const share = ((node.engagedSeconds || 0) / totalEngagedSeconds) * 100;
+          const rows = [
+            { label: "Product area", value: productArea },
+            ...(isGroup ? [{ label: "Pages", value: formatNumber(node.pageCount || node.children?.length || 0) }] : []),
+            { label: "Engaged time", value: formatDurationShort(node.engagedSeconds) },
+            { label: "Visits", value: formatNumber(node.visits || 0) },
+            { label: "Active users", value: formatNumber(node.activeUsers || 0) },
+            { label: "Share of company time", value: `${share.toFixed(1)}%` }
+          ];
 
-          return `
-            <div>
-              <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(node.name || params.name)}</div>
-              <div>Product area: <strong>${escapeHtml(productArea)}</strong></div>
-              ${isGroup ? `<div>Pages: <strong>${formatNumber(node.pageCount || node.children?.length || 0)}</strong></div>` : ""}
-              <div>Engaged time: <strong>${escapeHtml(formatDurationShort(node.engagedSeconds))}</strong></div>
-              <div>Visits: <strong>${formatNumber(node.visits || 0)}</strong></div>
-              <div>Active users: <strong>${formatNumber(node.activeUsers || 0)}</strong></div>
-              <div>Share of company time: <strong>${share.toFixed(1)}%</strong></div>
-            </div>
-          `;
+          return analyticsTooltips.render({ title: node.name || params.name, rows });
         }
-      },
+      }),
       series: [
         {
           type: "treemap",
@@ -1700,6 +1668,8 @@
       return {
         name: row.productArea,
         type: "line",
+        cursor: "default",
+        triggerLineEvent: true,
         smooth: true,
         showSymbol: false,
         symbol: "circle",
@@ -1714,7 +1684,8 @@
         emphasis: {
           focus: "series"
         },
-        data: values.concat(null)
+        data: values.concat(null),
+        z: 5
       };
     });
     const connectorSeries = seriesRows.map((row, index) => {
@@ -1730,7 +1701,9 @@
         name: `${row.productArea}${labelSeriesSuffix}`,
         type: "line",
         animation: false,
-        silent: true,
+        silent: false,
+        triggerLineEvent: true,
+        cursor: "default",
         showSymbol: false,
         connectNulls: false,
         data: connectorData,
@@ -1760,34 +1733,34 @@
         z: 6
       };
     });
-
     return {
       color: seriesRows.map((row) => productAreaColor(row.productArea, row.color)),
-      tooltip: {
+      tooltip: analyticsTooltips.echarts({
         trigger: "axis",
         confine: true,
         axisPointer: {
           type: "line"
         },
         formatter: (params) => {
-          const items = (Array.isArray(params) ? params : [params]).filter((item) => !String(item.seriesName || "").endsWith(labelSeriesSuffix));
+          const items = (Array.isArray(params) ? params : [params]).filter((item) => (
+            !String(item.seriesName || "").endsWith(labelSeriesSuffix)
+          ));
           const index = items[0]?.dataIndex || 0;
           const rows = items
             .filter((item) => Number(item.value) > 0)
             .sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0))
-            .map((item) => {
-              return `<div style="display:flex;gap:16px;justify-content:space-between;min-width:210px;"><span>${item.marker}${escapeHtml(item.seriesName)}</span><strong>${escapeHtml(formatDurationShort(item.value))}</strong></div>`;
-            })
-            .join("");
+            .map((item) => ({
+              label: item.seriesName,
+              value: formatDurationShort(item.value),
+              marker: productAreaColor(item.seriesName)
+            }));
 
-          return `
-            <div>
-              <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(formatDateShort(dates[index]))}</div>
-              ${rows || "<div>No engaged time yet</div>"}
-            </div>
-          `;
+          return analyticsTooltips.render({
+            title: formatDateShort(dates[index]),
+            rows: rows.length ? rows : [{ label: "Engaged time", value: "No engaged time yet" }]
+          });
         }
-      },
+      }),
       grid: {
         left: 56,
         right: 138,
@@ -1806,7 +1779,7 @@
       },
       yAxis: {
         type: "value",
-        name: "Total engaged time",
+        name: "Engaged time",
         min: valueExtent.min,
         max: valueExtent.max,
         nameTextStyle: { color: chartTheme.colors.mutedText },
@@ -1820,6 +1793,10 @@
       },
       series: lineSeries.concat(connectorSeries)
     };
+  }
+
+  function mountAdoptionBreadthChart(element, data) {
+    return mountChart(element, createAdoptionBreadthOption(data));
   }
 
   function renderProductAreaCharts(data) {
@@ -1838,7 +1815,7 @@
       if (!data.adoptionBreadthSeries?.series?.length) {
         adoptionElement.innerHTML = `<div class="company-detail-empty-chart">No product area usage in this period.</div>`;
       } else {
-        mountChart(adoptionElement, createAdoptionBreadthOption(data));
+        mountAdoptionBreadthChart(adoptionElement, data);
       }
     }
   }
@@ -1900,49 +1877,22 @@
 
     return {
       animation: false,
-      tooltip: {
+      tooltip: analyticsTooltips.echarts({
         trigger: "item",
         confine: true,
-        backgroundColor: chartTheme.colors.white,
-        borderColor: tailwindColor("slate-200"),
-        borderWidth: 1,
-        padding: [8, 12],
-        textStyle: {
-          color: chartTheme.colors.text,
-          fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
-          fontSize: 12
-        },
-        extraCssText: [
-          "border-radius:6px",
-          "box-shadow:0 4px 6px -1px rgba(15,23,42,0.10),0 2px 4px -1px rgba(15,23,42,0.06)"
-        ].join(";"),
         formatter: (params) => {
           const item = params.data || {};
 
-          return `
-            <table style="border-collapse:collapse;margin:0;font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-size:12px;line-height:1.35;">
-              <tbody>
-                <tr>
-                  <td style="padding:2px 6px 2px 0;text-align:right;color:${chartTheme.colors.mutedText};white-space:nowrap;">User status</td>
-                  <td style="padding:2px 0;color:${chartTheme.colors.text};font-weight:500;">${escapeHtml(item.label || "")}</td>
-                </tr>
-                <tr>
-                  <td style="padding:2px 6px 2px 0;text-align:right;color:${chartTheme.colors.mutedText};white-space:nowrap;">Users</td>
-                  <td style="padding:2px 0;color:${chartTheme.colors.text};font-weight:600;">${formatNumber(item.count || 0)}</td>
-                </tr>
-                <tr>
-                  <td style="padding:2px 6px 2px 0;text-align:right;color:${chartTheme.colors.mutedText};white-space:nowrap;">Share</td>
-                  <td style="padding:2px 0;color:${chartTheme.colors.text};font-weight:600;">${escapeHtml(item.pctLabel || "0%")}</td>
-                </tr>
-                <tr>
-                  <td style="padding:2px 6px 2px 0;text-align:right;color:${chartTheme.colors.mutedText};white-space:nowrap;vertical-align:top;">Definition</td>
-                  <td style="padding:2px 0;color:${chartTheme.colors.text};max-width:260px;white-space:normal;">${escapeHtml(item.definition || "")}</td>
-                </tr>
-              </tbody>
-            </table>
-          `;
+          return analyticsTooltips.render({
+            title: item.label,
+            rows: [
+              { label: "Users", value: formatNumber(item.count || 0) },
+              { label: "Share", value: item.pctLabel || "0%" },
+              { label: "Definition", value: item.definition || "—" }
+            ]
+          });
         }
-      },
+      }),
       grid: {
         left: 0,
         right: 0,
@@ -2450,23 +2400,78 @@
     return "text-slate-700";
   }
 
-  function renderSplitChangeDelta(deltaValue, unit, maxAbsDelta, label, invert = false) {
+  function previousPeriodValue(currentValue, deltaValue, unit) {
+    const current = Number(currentValue) || 0;
+    const delta = Number(deltaValue) || 0;
+
+    if (unit === "pp") {
+      return current - delta;
+    }
+
+    const divisor = 1 + delta / 100;
+    return divisor > 0 ? current / divisor : 0;
+  }
+
+  function formatPeriodMetricValue(value, valueType) {
+    const numericValue = Number(value) || 0;
+
+    if (valueType === "percent") {
+      return `${numericValue.toFixed(1)}%`;
+    }
+
+    if (valueType === "duration") {
+      return formatDurationShort(numericValue);
+    }
+
+    return formatNumber(Math.round(numericValue));
+  }
+
+  function formatPeriodDelta(deltaValue, unit) {
+    const numericValue = Number(deltaValue) || 0;
+    const prefix = numericValue > 0 ? "+" : "";
+
+    if (unit === "pp") {
+      return `${prefix}${numericValue.toFixed(1)} pp`;
+    }
+
+    const rounded = Math.round(numericValue * 10) / 10;
+    return `${prefix}${rounded}%`;
+  }
+
+  function renderSplitChangeDelta(currentValue, valueType, deltaValue, unit, maxAbsDelta, label, previousValue, comparisonAvailable = true, invert = false) {
     const direction = deltaDirection(deltaValue, invert);
     const trackWidth = direction === "negative" ? 17 : 36;
     const barWidth = Number(deltaValue) === 0 ? 6 : Math.max(4, Math.round((Math.abs(Number(deltaValue) || 0) / Math.max(maxAbsDelta, 1)) * trackWidth));
     const formattedDelta = unit === "pp" ? formatSignedPp(deltaValue) : formatSignedPercent(deltaValue);
     const tooltipId = `company-detail-period-change-tooltip-${periodChangeTooltipId}`;
+    const hasExplicitPrevious = previousValue !== null && previousValue !== undefined && Number.isFinite(Number(previousValue));
+    const resolvedPreviousValue = hasExplicitPrevious
+      ? Number(previousValue)
+      : previousPeriodValue(currentValue, deltaValue, unit);
+    const changeLabel = resolvedPreviousValue === 0 && Number(currentValue) > 0 ? "New" : formatPeriodDelta(deltaValue, unit);
+    const tooltipRows = comparisonAvailable === false
+      ? [
+        { label: "Current period", value: formatPeriodMetricValue(currentValue, valueType) },
+        { label: "Previous period", value: "No data" },
+        { label: "Change", value: "n/a" }
+      ]
+      : [
+        { label: "Current period", value: formatPeriodMetricValue(currentValue, valueType) },
+        { label: "Previous period", value: formatPeriodMetricValue(resolvedPreviousValue, valueType) },
+        { label: "Change", value: changeLabel }
+      ];
+    const tooltipText = analyticsTooltips.text(tooltipRows);
 
     periodChangeTooltipId += 1;
 
     return `
-      <div class="pages-change-delta metric-header-tooltip" data-change-direction="${direction}" style="--pages-change-bar-width: ${barWidth}px;" tabindex="0" aria-label="${escapeHtml(`${label}. Change ${formattedDelta}`)}" aria-describedby="${tooltipId}">
+      <div class="pages-change-delta metric-header-tooltip" data-change-direction="${direction}" style="--pages-change-bar-width: ${barWidth}px;" tabindex="0" aria-label="${escapeHtml(`${label}. ${tooltipText}`)}" aria-describedby="${tooltipId}">
         <span class="pages-change-delta__plot">
           <span class="pages-change-delta__bar pages-change-delta__bar--${direction}"></span>
         </span>
         <span class="pages-change-delta__label ${deltaTextClass(deltaValue, invert)}">${escapeHtml(formattedDelta)}</span>
         <span id="${tooltipId}" class="metric-header-tooltip__content" role="tooltip">
-          <span class="pages-change-delta__tooltip-row">Change vs previous period: ${escapeHtml(formattedDelta)}</span>
+          ${analyticsTooltips.render({ rows: tooltipRows })}
         </span>
       </div>
     `;
@@ -2483,7 +2488,7 @@
       <td class="pages-split-change-cell py-3.5 pr-6 align-middle" data-split-metric="${escapeHtml(metric.key)}">
         <div class="pages-split-change-group">
           <div class="pages-metric-value">${metricBarValue(valueLabel, barValue, metric.label)}</div>
-          ${renderSplitChangeDelta(deltaValue, metric.deltaUnit, maxAbsDelta, metric.label)}
+          ${renderSplitChangeDelta(value, metric.valueType, deltaValue, metric.deltaUnit, maxAbsDelta, metric.label, row[metric.previousKey], row.comparisonAvailable !== false && row.comparison_available !== false)}
         </div>
       </td>
     `;
@@ -2857,6 +2862,10 @@
     const companyId = String(row.id || row.companyId || row.company_id || "").trim();
     const company = { ...row, id: companyId, companyId };
     const name = row.name || row.companyName || companyId || "Unknown company";
+
+    if (row.rowType === "current") {
+      return `<div class="font-semibold text-slate-950">${escapeHtml(name)}</div>`;
+    }
 
     if (row.rowType === "median" || !companyId) {
       return `<div class="font-medium text-slate-900">${escapeHtml(name)}</div>`;
@@ -3342,38 +3351,6 @@
     renderMeta(data);
   }
 
-  function renderPeriodSelector(data) {
-    const container = document.getElementById("company-detail-period-selector");
-
-    if (!container) {
-      return;
-    }
-
-    container.innerHTML = detailHelpers.PERIOD_OPTIONS
-      .map((days) => {
-        const period = `${days}d`;
-        const isActive = period === data.period.key;
-
-        return `
-          <button
-            type="button"
-            data-company-detail-period="${period}"
-            aria-pressed="${String(isActive)}"
-            class="px-3 py-1.5 text-sm font-medium duration-150 ${isActive ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50"}">
-            ${period}
-          </button>
-        `;
-      })
-      .join("");
-
-    container.querySelectorAll("[data-company-detail-period]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const period = provider.coercePeriodKey(button.getAttribute("data-company-detail-period"));
-        loadCompanyDetail(data.company.id, period);
-      });
-    });
-  }
-
   function updateDetailQuery(companyId, period) {
     const params = new URLSearchParams(globalScope.location.search);
 
@@ -3398,7 +3375,12 @@
       const value = globalScope.localStorage?.getItem(recentCompaniesStorageKey);
       const parsed = JSON.parse(value || "[]");
 
-      return Array.isArray(parsed) ? parsed : [];
+      return Array.isArray(parsed)
+        ? parsed.filter((company) => {
+          const id = typeof company === "string" ? company : company?.id || company?.companyId || "";
+          return id && !/^(?:company_id|detail(?:\.html)?)$/i.test(String(id));
+        })
+        : [];
     } catch {
       return [];
     }
@@ -3484,6 +3466,23 @@
     };
   }
 
+  function dedupeCompanySelectorResults(companies) {
+    const seen = new Set();
+
+    return companies.filter((company) => {
+      const domain = normalizeCompanySelectorQuery(company?.domain);
+      const name = normalizeCompanySelectorQuery(company?.name || company?.companyName);
+      const key = domain ? `domain:${domain}` : `name:${name}`;
+
+      if (!name || seen.has(key)) {
+        return false;
+      }
+
+      seen.add(key);
+      return true;
+    });
+  }
+
   function readRecentCompanies() {
     const companies = (currentOverviewData?.companies || []).map(normalizeCompanySelectorCompany);
     const companiesById = new Map(companies.map((company) => [company.id, company]));
@@ -3504,7 +3503,15 @@
     try {
       globalScope.localStorage?.setItem(
         recentCompaniesStorageKey,
-        JSON.stringify(companies.map(normalizeCompanySelectorCompany).filter((company) => company.id).slice(0, 8))
+        JSON.stringify(companies
+          .map(normalizeCompanySelectorCompany)
+          .filter((company) => company.id)
+          .slice(0, 8)
+          .map((company) => ({
+            id: company.id,
+            name: company.name,
+            domain: company.domain
+          })))
       );
     } catch {
       // localStorage may be unavailable in private or embedded browsing contexts.
@@ -3531,24 +3538,33 @@
     const currentCompanyId = currentDetailData?.company?.id || "";
 
     if (usesRemoteOptions && !normalizedQuery) {
-      return readRecentCompanies()
-        .filter((company) => company.id !== currentCompanyId)
-        .slice(0, 8);
+      const recentAlternatives = dedupeCompanySelectorResults(readRecentCompanies()
+        .filter((company) => company.id !== currentCompanyId));
+      if (recentAlternatives.length) {
+        return recentAlternatives.slice(0, 8);
+      }
+
+      const fallbackAlternatives = dedupeCompanySelectorResults(remoteResults
+        .filter((company) => company.id !== currentCompanyId));
+      return (fallbackAlternatives.length
+        ? fallbackAlternatives
+        : dedupeCompanySelectorResults(remoteResults)
+      ).slice(0, 8);
     }
 
     if (usesRemoteOptions) {
-      return remoteResults
+      return dedupeCompanySelectorResults(remoteResults
         .filter((company) => company.id !== currentCompanyId)
-        .slice(0, 8);
+      ).slice(0, 8);
     }
 
     const companies = (currentOverviewData?.companies || []).map(normalizeCompanySelectorCompany);
 
     if (normalizedQuery) {
-      return companies
+      return dedupeCompanySelectorResults(companies
         .filter((company) => company.id !== currentCompanyId)
         .filter((company) => `${company.name || ""} ${company.domain || ""}`.toLowerCase().includes(normalizedQuery))
-        .slice(0, 8);
+      ).slice(0, 8);
     }
 
     const companiesById = new Map(companies.map((company) => [company.id, company]));
@@ -3560,7 +3576,7 @@
       .sort((a, b) => (a.lastSeenDays || 0) - (b.lastSeenDays || 0) || (b.activeUsers || 0) - (a.activeUsers || 0))
       .filter((company) => company.id !== currentCompanyId && !recentCompanies.some((recentCompany) => recentCompany.id === company.id));
 
-    return [...recentCompanies, ...fallbackCompanies].slice(0, 8);
+    return dedupeCompanySelectorResults([...recentCompanies, ...fallbackCompanies]).slice(0, 8);
   }
 
   function closeCompanySelectorDropdown() {
@@ -3695,12 +3711,17 @@
       input.focus();
     }
 
-    if (refresh && normalizedQuery && typeof provider.searchCompanies === "function") {
+    const visibleRecentCompanies = readRecentCompanies()
+      .filter((company) => company.id !== (currentDetailData?.company?.id || ""));
+    const shouldLoadFallback = !normalizedQuery && !visibleRecentCompanies.length;
+
+    if (refresh && (normalizedQuery || shouldLoadFallback) && typeof provider.searchCompanies === "function") {
       const requestToken = companySelectorState.requestToken + 1;
       companySelectorState.requestToken = requestToken;
       provider.searchCompanies(query, {
         period: currentDetailData?.period?.key || getRequestedPeriod(),
-        limit: 20
+        limit: 20,
+        alphabetical: shouldLoadFallback
       }).then((remoteCompanies) => {
         if (
           requestToken !== companySelectorState.requestToken ||
@@ -3710,11 +3731,10 @@
           return;
         }
 
-        const currentCompanyId = currentDetailData?.company?.id || "";
         companySelectorState.remoteQuery = normalizedQuery;
         companySelectorState.remoteResults = (remoteCompanies || [])
           .map(normalizeCompanySelectorCompany)
-          .filter((company) => company.id && company.id !== currentCompanyId);
+          .filter((company) => company.id);
         renderCompanySelectorDropdown({ refresh: false });
       });
     }
@@ -3938,160 +3958,6 @@
     }
   }
 
-  function mountAreaMixFloatingTooltip() {
-    if (areaMixFloatingTooltipMounted) {
-      return;
-    }
-
-    areaMixFloatingTooltipMounted = true;
-    document.documentElement.classList.add("metric-floating-tooltips-enabled");
-
-    const floatingTooltip = document.createElement("div");
-    let activeTrigger = null;
-    let positionAnimationFrame = 0;
-    const verticalGap = 8;
-    const viewportPadding = 8;
-
-    floatingTooltip.className = "metric-header-tooltip__content metric-floating-tooltip";
-    floatingTooltip.dataset.tooltipKind = "area-mix";
-    floatingTooltip.dataset.visible = "false";
-    floatingTooltip.setAttribute("aria-hidden", "true");
-    floatingTooltip.setAttribute("role", "tooltip");
-    document.body.appendChild(floatingTooltip);
-
-    const getTooltipTrigger = (target) => {
-      if (!target || typeof target.closest !== "function") {
-        return null;
-      }
-
-      return target.closest(".pages-change-delta.metric-header-tooltip, .companies-area-mix.metric-header-tooltip");
-    };
-    const setTooltipVisible = (isVisible) => {
-      floatingTooltip.dataset.visible = String(isVisible);
-      floatingTooltip.setAttribute("aria-hidden", String(!isVisible));
-    };
-    const hideTooltip = (trigger = activeTrigger) => {
-      if (trigger && activeTrigger && trigger !== activeTrigger) {
-        return;
-      }
-
-      activeTrigger = null;
-      setTooltipVisible(false);
-    };
-    const updateTooltipPosition = () => {
-      if (!activeTrigger) {
-        return;
-      }
-
-      if (!activeTrigger.isConnected) {
-        hideTooltip();
-        return;
-      }
-
-      const triggerRect = activeTrigger.getBoundingClientRect();
-      const viewportWidth = document.documentElement.clientWidth || globalScope.innerWidth || 0;
-      const viewportHeight = document.documentElement.clientHeight || globalScope.innerHeight || 0;
-
-      if (triggerRect.bottom < 0 || triggerRect.top > viewportHeight || triggerRect.right < 0 || triggerRect.left > viewportWidth) {
-        hideTooltip();
-        return;
-      }
-
-      const tooltipRect = floatingTooltip.getBoundingClientRect();
-      const shouldPlaceAbove =
-        triggerRect.bottom + verticalGap + tooltipRect.height > viewportHeight - viewportPadding &&
-        triggerRect.top - verticalGap - tooltipRect.height >= viewportPadding;
-      const desiredLeft = triggerRect.left + triggerRect.width / 2 - tooltipRect.width / 2;
-      const desiredTop = shouldPlaceAbove
-        ? triggerRect.top - verticalGap - tooltipRect.height
-        : triggerRect.bottom + verticalGap;
-      const maxLeft = Math.max(viewportPadding, viewportWidth - tooltipRect.width - viewportPadding);
-      const maxTop = Math.max(viewportPadding, viewportHeight - tooltipRect.height - viewportPadding);
-      const left = Math.min(Math.max(desiredLeft, viewportPadding), maxLeft);
-      const top = Math.min(Math.max(desiredTop, viewportPadding), maxTop);
-
-      floatingTooltip.dataset.placement = shouldPlaceAbove ? "top" : "bottom";
-      floatingTooltip.style.left = `${Math.round(left)}px`;
-      floatingTooltip.style.top = `${Math.round(top)}px`;
-    };
-    const schedulePositionUpdate = () => {
-      if (!activeTrigger || positionAnimationFrame) {
-        return;
-      }
-
-      positionAnimationFrame = globalScope.requestAnimationFrame(() => {
-        positionAnimationFrame = 0;
-        updateTooltipPosition();
-      });
-    };
-    const showTooltip = (trigger) => {
-      const sourceTooltip = trigger.querySelector(".metric-header-tooltip__content");
-
-      if (!sourceTooltip) {
-        return;
-      }
-
-      activeTrigger = trigger;
-      floatingTooltip.innerHTML = sourceTooltip.innerHTML;
-      floatingTooltip.dataset.tooltipKind = trigger.classList.contains("pages-change-delta") ? "delta" : "area-mix";
-      const areaTooltipLabelWidth = trigger.style.getPropertyValue("--area-tooltip-label-width");
-      if (areaTooltipLabelWidth) {
-        floatingTooltip.style.setProperty("--area-tooltip-label-width", areaTooltipLabelWidth);
-      } else {
-        floatingTooltip.style.removeProperty("--area-tooltip-label-width");
-      }
-      floatingTooltip.style.left = "0px";
-      floatingTooltip.style.top = "0px";
-      setTooltipVisible(false);
-      updateTooltipPosition();
-      setTooltipVisible(true);
-    };
-
-    document.addEventListener("pointerover", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-
-      if (!trigger || trigger === activeTrigger) {
-        return;
-      }
-
-      showTooltip(trigger);
-    });
-    document.addEventListener("pointerout", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-      const relatedTarget = event.relatedTarget;
-
-      if (!trigger || (relatedTarget && trigger.contains(relatedTarget))) {
-        return;
-      }
-
-      hideTooltip(trigger);
-    });
-    document.addEventListener("focusin", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-
-      if (trigger) {
-        showTooltip(trigger);
-      }
-    });
-    document.addEventListener("focusout", (event) => {
-      const trigger = getTooltipTrigger(event.target);
-      const relatedTarget = event.relatedTarget;
-
-      if (!trigger || (relatedTarget && trigger.contains(relatedTarget))) {
-        return;
-      }
-
-      hideTooltip(trigger);
-    });
-    document.addEventListener("scroll", schedulePositionUpdate, true);
-    globalScope.addEventListener("resize", schedulePositionUpdate);
-    globalScope.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        hideTooltip();
-      }
-    });
-  }
-
   function mountUserTableSort() {
     if (userSortMounted) {
       return;
@@ -4186,8 +4052,6 @@
     document.getElementById("company-detail-not-found-back")?.setAttribute("href", backHref(data.period.key));
 
     renderHeader(data);
-    renderPeriodSelector(data);
-    mountAreaMixFloatingTooltip();
     mountCompanySelector();
     mountUserTableSort();
     mountTopPagesSort();
@@ -4225,7 +4089,7 @@
     const overviewData = provider.getCompaniesDemoData(period);
     const detailData = typeof provider.getCompanyDetailsData === "function"
       ? provider.getCompanyDetailsData(companyId, period)
-      : detailHelpers.buildCompanyDetailsData(overviewData, companyId);
+      : null;
 
     currentOverviewData = overviewData;
 
@@ -4284,6 +4148,15 @@
     globalScope.addEventListener("resize", scheduleSplitChangeValueWidthSync);
     document.fonts?.ready?.then(scheduleSplitChangeValueWidthSync);
     loadCompanyDetail(getRequestedCompanyId(), getRequestedPeriod());
+  }
+
+  if (globalScope.__HymetryExposeTestHooks) {
+    globalScope.HymetryCompanyDetailTesting = {
+      createAdoptionBreadthOption,
+      createMiniMetricChartOption,
+      metricPanelMarkup,
+      mountAdoptionBreadthChart
+    };
   }
 
   document.addEventListener("DOMContentLoaded", initCompanyDetail);

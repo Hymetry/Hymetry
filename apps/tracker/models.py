@@ -60,8 +60,19 @@ class Session(models.Model):
     start_time = models.DateTimeField(default=timezone.now)
     last_activity = models.DateTimeField(default=timezone.now)
     ended_at = models.DateTimeField(null=True, blank=True)
+    identity_linkage_ready = models.BooleanField(
+        default=False,
+        help_text="Whether analytics identity fragments use the canonical session link.",
+    )
 
     class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['visitor'],
+                condition=models.Q(ended_at__isnull=True),
+                name='trk_session_one_open_per_visitor',
+            ),
+        ]
         indexes = [
             models.Index(fields=['start_time'], name='trk_session_start_idx'),
             models.Index(fields=['visitor', 'start_time'], name='trk_sess_visit_start_idx'),
@@ -80,15 +91,22 @@ class Session(models.Model):
     def is_active(self):
         """Check if a session is active.
 
-        We rely solely on `self.last_activity` which is now updated only by user
-        interactions (and not passive mutations).
+        Activity is bounded by both the inactivity timeout and the absolute
+        maximum session duration.
         """
         reference_time = self.last_activity
 
-        if not reference_time:
+        if not reference_time or not self.start_time:
             return False
 
-        return (timezone.now() - reference_time).total_seconds() < settings.SESSION_EXPIRATION_SECONDS
+        now = timezone.now()
+        inactivity_end = reference_time + timezone.timedelta(
+            seconds=settings.SESSION_EXPIRATION_SECONDS
+        )
+        maximum_end = self.start_time + timezone.timedelta(
+            seconds=max(1, int(getattr(settings, 'SESSION_MAX_DURATION_SECONDS', 43200)))
+        )
+        return now < min(inactivity_end, maximum_end)
 
     def check_and_close_if_expired(self):
         """Check if session has expired and close it if necessary.
@@ -97,7 +115,13 @@ class Session(models.Model):
         """
         if not self.ended_at and not self.is_active:
             reference_time = self.last_activity or timezone.now()
-            self.ended_at = reference_time + timezone.timedelta(seconds=settings.SESSION_EXPIRATION_SECONDS)
+            inactivity_end = reference_time + timezone.timedelta(
+                seconds=settings.SESSION_EXPIRATION_SECONDS
+            )
+            maximum_end = self.start_time + timezone.timedelta(
+                seconds=max(1, int(getattr(settings, 'SESSION_MAX_DURATION_SECONDS', 43200)))
+            )
+            self.ended_at = min(inactivity_end, maximum_end)
             self.save()
 
             # Clean up Redis data for this session
@@ -128,6 +152,17 @@ class Event(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=['session', 'timestamp'], name='trk_event_sess_ts_idx'),
+            models.Index(fields=['session', 'timestamp', 'id'], name='trk_event_sess_ts_id_idx'),
+            models.Index(
+                fields=['session', 'tab_id', 'timestamp', 'id'],
+                condition=models.Q(event_type=4),
+                name='trk_event_meta_ctx_idx',
+            ),
+            models.Index(
+                fields=['session', 'timestamp', 'id'],
+                condition=models.Q(event_type=2),
+                name='trk_event_snapshot_idx',
+            ),
             models.Index(fields=['session', 'url'], name='trk_event_sess_url_idx'),
         ]
 
@@ -138,6 +173,13 @@ class Event(models.Model):
 class AnalyticsSession(models.Model):
     session_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='analytics_sessions')
+    visit_session = models.ForeignKey(
+        Session,
+        on_delete=models.SET_NULL,
+        related_name='analytics_fragments',
+        null=True,
+        blank=True,
+    )
     visitor_guid = models.UUIDField(null=True, blank=True, help_text="Visitor ID from browser")
     user_id = models.CharField(max_length=255, null=True, blank=True)
     company_id = models.CharField(max_length=255, null=True, blank=True)
@@ -152,6 +194,7 @@ class AnalyticsSession(models.Model):
                 name='tracker_anas_lookup_idx'
             ),
             models.Index(fields=['project', 'last_activity'], name='tracker_anas_activity_idx'),
+            models.Index(fields=['visit_session', 'start_time'], name='trk_anas_visit_start_idx'),
         ]
 
     def __str__(self):
@@ -199,6 +242,11 @@ class AnalyticsEvent(models.Model):
             models.Index(fields=['visitor_guid', 'timestamp'], name='tracker_anae_visitor_ts_idx'),
             models.Index(fields=['timestamp'], name='tracker_anae_timestamp_idx'),
             models.Index(fields=['url', 'timestamp'], name='trk_anae_url_ts_idx'),
+            models.Index(
+                fields=['company_id', 'timestamp'],
+                condition=models.Q(event_type__iexact='click'),
+                name='trk_anae_click_comp_ts_idx',
+            ),
         ]
 
     def __str__(self):
@@ -394,6 +442,8 @@ class TitlePrompt(models.Model):
 
 
 class BubbleCache(models.Model):
+    """Deprecated OSS projection retained for upgrade and data compatibility."""
+
     session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name='bubbles', null=True)
     url = models.TextField(blank=True, default="")
     timestamp = models.DateTimeField(verbose_name="Hour and Minute")
@@ -414,7 +464,8 @@ class BubbleCache(models.Model):
 
 
 class ProjectNormalizationFactor(models.Model):
-    """Store normalization factors for projects to avoid recalculating them."""
+    """Deprecated OSS projection retained for upgrade and data compatibility."""
+
     project = models.ForeignKey('projects.Project', on_delete=models.CASCADE, related_name='normalization_factors')
     factor = models.FloatField(help_text="Normalization factor (k) for bubble size calculations")
     calculated_at = models.DateTimeField(auto_now_add=True)

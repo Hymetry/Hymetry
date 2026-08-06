@@ -22,8 +22,26 @@ class Command(BaseCommand):
             SELECT 'page_daily_metrics', COUNT(*) FROM pages_pagedailymetric WHERE project_id = %s
             UNION ALL
             SELECT 'overview_caches', COUNT(*) FROM pages_pagesoverviewcache WHERE project_id = %s
+            UNION ALL
+            SELECT 'company_fact_manifests', COUNT(*)
+            FROM pages_pagescompanyanalyticsmanifest
+            WHERE project_id = %s
+            UNION ALL
+            SELECT 'company_fact_fragments', COUNT(*)
+            FROM pages_pagescompanyanalyticsfragment fragment
+            JOIN pages_pagescompanyanalyticsmanifest manifest
+              ON manifest.id = fragment.manifest_id
+            WHERE manifest.project_id = %s
             """,
-            [project_id, project_id, project_id, project_id, project_id],
+            [
+                project_id,
+                project_id,
+                project_id,
+                project_id,
+                project_id,
+                project_id,
+                project_id,
+            ],
         )
         for row in rows:
             self.stdout.write(f"{row['name']}: {row['count']}")

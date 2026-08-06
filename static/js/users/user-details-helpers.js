@@ -281,10 +281,14 @@
       insights.push(`This user is below the engaged-time median for ${peerLabel}.`);
     }
 
+    // The Active days card's own delta is in percentage points, so the day
+    // difference this sentence reports comes from its dedicated field.
+    const activeDaysDelta = Number(activeDaysCard?.activeDaysDelta);
+
     if (engagedCard && engagedCard.deltaValue <= -25) {
       insights.push(`Usage dropped ${Math.abs(Math.round(engagedCard.deltaValue))}% versus the previous period.`);
-    } else if (activeDaysCard && activeDaysCard.deltaValue >= 4) {
-      insights.push(`Active days increased by ${Math.round(activeDaysCard.deltaValue)} days versus the previous period.`);
+    } else if (Number.isFinite(activeDaysDelta) && activeDaysDelta >= 4) {
+      insights.push(`Active days increased by ${Math.round(activeDaysDelta)} days versus the previous period.`);
     }
 
     if (largestMixDifference && Math.abs(largestMixDifference.deltaPp) >= 12) {

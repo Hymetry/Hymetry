@@ -4,7 +4,7 @@
 {% block title %}Page details - {{ project.name }}{% endblock %}
 
 {% block extra_js %}
-  <link rel="stylesheet" href="{% static 'css/pages/overview.css' %}" type="text/css" />
+  <link rel="stylesheet" href="{% static 'css/pages/overview.css' %}?v=20260801-1" type="text/css" />
 {% endblock %}
 
 {% block nav %}
@@ -29,7 +29,7 @@
             <p class="mt-2 max-w-3xl text-slate-600">See how this page is used over time and how it compares with related pages.</p>
           </div>
 
-          {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='page-period-selector' analytics_period_selector_class='pages-period-selector inline-flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white' analytics_range_options=pages_range_options analytics_range_key=pages_range_key %}
+          {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='page-period-selector' analytics_period_selector_class='pages-period-selector inline-flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white' analytics_range_options=pages_range_options analytics_range_key=pages_range_key analytics_query_suffix=pages_period_query_suffix %}
         </div>
       </header>
 
@@ -99,7 +99,7 @@
             <p id="detail-subtitle" class="mt-2 max-w-3xl text-slate-600"></p>
           </div>
 
-          <div id="page-period-selector" class="pages-period-selector inline-flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white" aria-label="Period"></div>
+          {% include 'partials/analytics_period_selector.html' with analytics_period_selector_id='page-period-selector' analytics_period_selector_class='pages-period-selector inline-flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white' analytics_period_selector_label='Period' analytics_range_options=pages_range_options analytics_range_key=pages_range_key analytics_query_suffix=pages_period_query_suffix %}
         </div>
       </header>
 
@@ -352,8 +352,9 @@
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <script id="pages-detail-data" type="application/json">{{ pages_detail_payload_json }}</script>
   <script src="{% static 'js/pages/page-details-helpers.js' %}"></script>
-  <script src="{% static 'js/shared/metric-dynamics.js' %}"></script>
+  <script src="{% static 'js/shared/metric-dynamics.js' %}?v=20260802-1"></script>
+  <script src="{% static 'js/shared/product-area-colors.js' %}"></script>
   <script src="{% static 'js/pages/django-pages-data.js' %}?v=20260709-3"></script>
-  <script src="{% static 'js/pages/pages-analytics.js' %}?v=20260709-3"></script>
+  <script src="{% static 'js/pages/pages-analytics.js' %}?v=20260801-2"></script>
   {% endif %}
 {% endblock %}
