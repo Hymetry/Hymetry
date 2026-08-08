@@ -876,6 +876,11 @@ def _render_recording(request, project, session, *, is_demo_view=False):
             'project': project,
             'project_id': project.id,
             'session_id': session.session_id,
+            'visits_url': (
+                reverse('demo_recordings')
+                if is_demo_view
+                else project_route(project, 'recordings')
+            ),
             'is_demo_view': is_demo_view,
             'demo_project_id': project.id if is_demo_view else None,
             'demo_project_display_name': DEMO_PROJECT_DISPLAY_NAME,

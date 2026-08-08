@@ -1067,6 +1067,23 @@ def demo_project_users_table_data(request):
     return _users_overview_table_response(request, get_demo_project())
 
 
+def _user_absent_from_users_overview(project, user_id, range_key):
+    """True only when the users overview can positively rule the user out.
+
+    An overview that is missing or stored under an older schema cannot answer,
+    and saying "not found" on that basis would bounce visitors off a user who
+    does exist, so an unusable overview reports nothing.
+    """
+    cache = user_analytics.get_cached_users_overview_payload(project.id, range_key=range_key)
+    if not cache or not user_analytics.is_current_users_payload_schema(cache.get('schema_version')):
+        return False
+    known_user_ids = {
+        str(row.get('id') or row.get('userId') or '').strip()
+        for row in (cache.get('payload_json') or {}).get('users') or []
+    }
+    return str(user_id or '').strip() not in known_user_ids
+
+
 def _user_detail_payload_bundle(project, user_id, range_key, *, is_demo_view=False):
     overview_url = reverse('demo_users') if is_demo_view else project_route(project, 'project_users')
     user_options_url = reverse('demo_user_options') if is_demo_view else project_route(project, 'project_user_options')
@@ -1093,18 +1110,15 @@ def _user_detail_payload_bundle(project, user_id, range_key, *, is_demo_view=Fal
         'pageDetailBaseUrl': page_detail_base_url,
     }
     cache = user_detail_analytics.get_cached_user_detail_payload(project.id, user_id, range_key=range_key)
-
-    build_result = None
-    if not cache or not user_detail_analytics.is_current_user_details_payload_schema(cache.get('schema_version')):
-        try:
-            build_result = user_detail_analytics.build_user_detail_cache(project.id, user_id, range_key=range_key)
-            if build_result.get('status') == 'success':
-                cache = user_detail_analytics.get_cached_user_detail_payload(project.id, user_id, range_key=range_key)
-        except Exception:
-            cache = None
+    if cache and not user_detail_analytics.is_current_user_details_payload_schema(cache.get('schema_version')):
+        cache = None
 
     if not cache:
-        if build_result and build_result.get('status') == 'not_found':
+        # Building the payload here would run an uncached rebuild inside the
+        # request. Without a bulk context that path costs tens of seconds and
+        # has already outrun the gunicorn worker timeout, so the miss is queued
+        # and the caller renders the preparing state instead.
+        if _user_absent_from_users_overview(project, user_id, range_key):
             return {
                 'status': 'not_found',
                 'payload': None,

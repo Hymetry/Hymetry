@@ -20,10 +20,10 @@
 
 {% block content %}
   <div class="flex h-screen pt-16">
-    <button id="backBtn" class="flex-shrink-0 w-16 rounded-r-md text-sky-800 duration-200 hover:bg-slate-100 p-4 mb-2 flex flex-col items-center justify-center font-bold tracking-wider text-lg space-y-2 cursor-pointer">
+    <a id="backBtn" href="{{ visits_url }}" class="flex-shrink-0 w-16 rounded-r-md text-sky-800 duration-200 hover:bg-slate-100 p-4 mb-2 flex flex-col items-center justify-center font-bold tracking-wider text-lg space-y-2 cursor-pointer">
       <svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 -960 960 960" width="24" fill="currentColor"><path d="M398.08-253.85 171.92-480l226.16-226.15 42.15 43.38L287.46-510h500.62v60H287.46l152.77 152.77-42.15 43.38Z"/></svg>
       <span class="text-xs">BACK</span>
-    </button>
+    </a>
 
     <div class="flex-1 flex flex-col">
       <header class="px-1 pt-2 pb-4">
@@ -193,12 +193,18 @@
         $('playBtn').setAttribute('aria-pressed', String(isPlaying));
       }
 
-      // Back button functionality - should work immediately
-      function safeGoBack() {
+      // Back is a real link to the visit list so it can be opened in a new tab
+      // or copied. A plain click still steps back through history, which keeps
+      // the filters, sorting and page the reader arrived from; anything else
+      // (modifier click, middle click) is left to the browser's own handling,
+      // and so is the plain click when there is no in-app page to return to.
+      function safeGoBack(event) {
+        if (event.defaultPrevented) return;
+        if (event.button !== 0) return;
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
         if (history.length > 1 && document.referrer.startsWith(window.location.origin)) {
+          event.preventDefault();
           history.back();
-        } else {
-          window.location.href = "{% if is_demo_view %}{% url 'demo_recordings' %}{% else %}{% url 'w:recordings' workspace_slug=project.workspace.slug project_id=project_id %}{% endif %}";
         }
       }
       
@@ -219,7 +225,7 @@
         $('timeDisplay').textContent = `${fmt(displayedTime)} / ${fmt(totalDuration)}`;
       }
 
-      // Set up back button immediately - should work during loading
+      // Set up back link immediately - should work during loading
       const backBtn = document.getElementById('backBtn');
       if (backBtn) {
         backBtn.addEventListener('click', safeGoBack);

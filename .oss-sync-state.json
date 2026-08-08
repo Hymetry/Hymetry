@@ -2,7 +2,7 @@
   "schema_version": 2,
   "policy_version": "oss-sync-v2",
   "source_ref": "refs/heads/main",
-  "completed_cloud_sha": "9cf06f734a4d9e1cd22ee60b11394c28bb2375d4",
+  "completed_cloud_sha": "e790a209369116654b27a18f5d94b762b06f45ae",
   "migration_mode": "incremental",
   "migration_baseline_oss_sha": "da90b398e6ed0069b1835d08314f7ac46c6ca8d8",
   "accepted_migrations": [
@@ -36,9 +36,9 @@
     }
   ],
   "last_sync": {
-    "audit_id": "2026-08-06-5cb44f8-9cf06f7",
-    "cloud_base": "5cb44f8e616c6653f2ec72309e7e11c803d0b929",
-    "cloud_head": "9cf06f734a4d9e1cd22ee60b11394c28bb2375d4",
-    "oss_base": "da90b398e6ed0069b1835d08314f7ac46c6ca8d8"
+    "audit_id": "2026-08-09-9cf06f7-e790a20",
+    "cloud_base": "9cf06f734a4d9e1cd22ee60b11394c28bb2375d4",
+    "cloud_head": "e790a209369116654b27a18f5d94b762b06f45ae",
+    "oss_base": "5b1add6c05b1bfbd76ce90c536ad5a46e7ae7c15"
   }
 }

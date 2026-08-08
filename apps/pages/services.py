@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.db import transaction
 from django.db.models import Count, F, Max, Q, Sum
+from django.db.models.fields.json import KeyTextTransform
 from django.utils.text import slugify
 from django.utils import timezone as django_timezone
 
@@ -440,6 +441,8 @@ def _safe_trait_email(value):
 
 
 def user_trait_email_lookup(project, start_date, end_date, *, user_ids=None):
+    """Return the latest usable trait email per prepared user."""
+
     from apps.tracker.models import AnalyticsEvent
 
     project_id = getattr(project, 'id', None)
@@ -463,19 +466,31 @@ def user_trait_email_lookup(project, start_date, end_date, *, user_ids=None):
         .exclude(user_id__isnull=True)
         .exclude(user_id='')
         .filter(user_traits__email__isnull=False)
-        .order_by('-timestamp')
+        .annotate(trait_email=KeyTextTransform('email', 'user_traits'))
+        # Narrowing to the rows _safe_trait_email would accept is what lets the
+        # newest row per user be the answer: a user whose latest trait email is
+        # malformed still resolves to the newest well-formed one behind it.
+        .filter(trait_email__contains='@')
     )
     if normalized_user_ids is not None:
         queryset = queryset.filter(user_id__in=normalized_user_ids)
 
+    # DISTINCT ON returns the one row per user this needs. Ordering by timestamp
+    # and walking every matching event in Python instead made the cost scale
+    # with the period's event count rather than with the number of users.
+    rows = (
+        queryset
+        .order_by('user_id', '-timestamp')
+        .distinct('user_id')
+        .values_list('user_id', 'trait_email')
+    )
+
     emails = {}
-    for row in queryset.values('user_id', 'user_traits').iterator(chunk_size=2000):
-        user_id = str(row.get('user_id') or '').strip()
-        if not user_id or user_id in emails:
-            continue
-        email = _safe_trait_email((row.get('user_traits') or {}).get('email'))
-        if email:
-            emails[user_id] = email
+    for row_user_id, trait_email in rows.iterator(chunk_size=2000):
+        row_user_id = str(row_user_id or '').strip()
+        email = _safe_trait_email(trait_email)
+        if row_user_id and email:
+            emails[row_user_id] = email
     return emails
 
 

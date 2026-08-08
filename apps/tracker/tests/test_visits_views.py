@@ -297,6 +297,25 @@ class VisitsViewTests(TestCase):
         self.assertNotContains(response, 'addTransitionLines')
         self.assertNotIn('session_bubbles_data', response.context)
 
+    def test_replay_back_control_is_a_link_to_the_visit_list(self):
+        visits_url = self._workspace_url('recordings')
+
+        response = self.client.get(
+            self._workspace_url(
+                'recording',
+                session_id=self.recording.session_id,
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['visits_url'], visits_url)
+        self.assertContains(response, f'<a id="backBtn" href="{visits_url}"')
+        self.assertNotContains(response, '<button id="backBtn"')
+        # A plain click keeps the reader's list state instead of following the
+        # canonical href, but the browser handles every other kind of click.
+        self.assertContains(response, 'history.back()')
+        self.assertNotContains(response, 'window.location.href = ')
+
     def test_row_links_to_recording_uuid_after_analytics_enrichment(self):
         response = self.client.get(
             self._workspace_url('recordings'),
