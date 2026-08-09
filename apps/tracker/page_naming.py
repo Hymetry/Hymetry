@@ -566,7 +566,12 @@ def _bootstrap_rule_versions_count_since_state_change(project):
         phase=ProjectPageNamingPhase.BOOTSTRAP,
     )
     if project.page_naming_state_changed_at:
-        queryset = queryset.filter(created_at__gte=project.page_naming_state_changed_at)
+        # Exclusive lower bound. A version written in the same clock tick as the
+        # state change belongs to the run that produced it, not to the new
+        # phase, and an inclusive bound counted the versions a reset was meant
+        # to leave behind. Undercounting here only costs one extra bootstrap
+        # run; overcounting ended bootstrap early and undid the reset.
+        queryset = queryset.filter(created_at__gt=project.page_naming_state_changed_at)
     return queryset.count()
 
 

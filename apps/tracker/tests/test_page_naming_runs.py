@@ -29,7 +29,11 @@ from apps.tracker.models import (
     ProjectPageRule,
     ProjectPageRuleVersion,
 )
-from apps.tracker.page_naming import reset_project_page_naming_to_bootstrap, run_page_naming_for_project
+from apps.tracker.page_naming import (
+    reset_project_page_naming_to_bootstrap,
+    resolve_hourly_unstable_page_naming_phase,
+    run_page_naming_for_project,
+)
 
 
 @contextmanager
@@ -333,6 +337,55 @@ class PageNamingRunBackfillTests(TestCase):
         self.assertEqual(run.phase, ProjectPageNamingPhase.INCREMENTAL)
         self.assertEqual(generate_mock.call_args.kwargs['phase'], ProjectPageNamingPhase.INCREMENTAL)
         self.assertEqual(ProjectPageRuleVersion.objects.get(run=run).phase, ProjectPageNamingPhase.INCREMENTAL)
+
+    def _seed_bootstrap_rule_versions(self, count, created_at):
+        for _ in range(count):
+            previous_run = ProjectPageNamingRun.objects.create(
+                project=self.project,
+                mode=ProjectPageNamingRunMode.HOURLY_UNSTABLE,
+                phase=ProjectPageNamingPhase.BOOTSTRAP,
+                status=ProjectPageNamingRunStatus.SUCCESS,
+            )
+            version = ProjectPageRuleVersion.objects.create(
+                project=self.project,
+                run=previous_run,
+                mode=ProjectPageNamingRunMode.HOURLY_UNSTABLE,
+                phase=ProjectPageNamingPhase.BOOTSTRAP,
+            )
+            # created_at is auto_now_add, so pin it explicitly instead of
+            # relying on the clock advancing between inserts.
+            ProjectPageRuleVersion.objects.filter(pk=version.pk).update(created_at=created_at)
+
+    def test_bootstrap_versions_sharing_the_state_change_timestamp_do_not_count(self):
+        """A tie on page_naming_state_changed_at must not end the bootstrap phase.
+
+        The seeded versions belong to the phase that ended at the state change.
+        When the clock does not advance between writing them and recording the
+        change, an inclusive lower bound counted them as post-change work and
+        resolved the phase to INCREMENTAL, undoing a just-performed reset.
+        """
+        changed_at = timezone.now()
+        self.project.page_naming_state = ProjectPageNamingState.NOT_STABLE
+        self.project.page_naming_state_changed_at = changed_at
+        self.project.save(update_fields=['page_naming_state', 'page_naming_state_changed_at'])
+        self._seed_bootstrap_rule_versions(2, changed_at)
+
+        self.assertEqual(
+            resolve_hourly_unstable_page_naming_phase(self.project),
+            ProjectPageNamingPhase.BOOTSTRAP,
+        )
+
+    def test_bootstrap_versions_created_after_the_state_change_still_count(self):
+        changed_at = timezone.now()
+        self.project.page_naming_state = ProjectPageNamingState.NOT_STABLE
+        self.project.page_naming_state_changed_at = changed_at
+        self.project.save(update_fields=['page_naming_state', 'page_naming_state_changed_at'])
+        self._seed_bootstrap_rule_versions(2, changed_at + timedelta(microseconds=1))
+
+        self.assertEqual(
+            resolve_hourly_unstable_page_naming_phase(self.project),
+            ProjectPageNamingPhase.INCREMENTAL,
+        )
 
     def test_hourly_unstable_bootstrap_count_resets_after_state_change(self):
         self.project.page_naming_state = ProjectPageNamingState.NOT_STABLE
