@@ -30,6 +30,10 @@ from apps.tracker.session_resolver import (
     resolve_visit_session_batch,
 )
 from apps.tracker.visitor_ids import normalize_project_visitor_uuid
+from apps.tracker.visits_scope import (
+    mark_meaningful_analytics_sessions,
+    record_analytics_event_bounds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -379,6 +383,7 @@ class AnalyticsTracker:
         event_objects = []
         first_event_time = None
         last_event_time = None
+        visit_session_bounds = {}
         event_type_counts = Counter()
         sample_event = None
 
@@ -408,6 +413,16 @@ class AnalyticsTracker:
                 first_event_time = event_time
             if last_event_time is None or event_time > last_event_time:
                 last_event_time = event_time
+            # The Visits row scope reads this interval off the recording
+            # session instead of aggregating linked events per request.
+            session_bounds = visit_session_bounds.get(visit_session.pk)
+            if session_bounds is None:
+                visit_session_bounds[visit_session.pk] = [event_time, event_time]
+            else:
+                if event_time < session_bounds[0]:
+                    session_bounds[0] = event_time
+                if event_time > session_bounds[1]:
+                    session_bounds[1] = event_time
             event_type_counts[normalized_event['event_type']] += 1
             if sample_event is None:
                 sample_event = normalized_event
@@ -434,6 +449,10 @@ class AnalyticsTracker:
 
         if event_objects:
             AnalyticsEvent.objects.bulk_create(event_objects, batch_size=100)
+            record_analytics_event_bounds(visit_session_bounds)
+            # bulk_create does not fire post_save, so the low-confidence flag
+            # is maintained here rather than by the receiver in visits_scope.
+            mark_meaningful_analytics_sessions(visit_session_bounds)
             ensure_project_first_event_at(self.project, first_event_time)
             record_project_production_event(self.project, first_event_time, last_event_time)
             self._log_ingested_batch(event_type_counts, sample_event)

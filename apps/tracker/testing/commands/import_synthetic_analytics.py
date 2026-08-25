@@ -67,6 +67,8 @@ ALLOWED_EVENT_TYPES = {
     "scroll",
     "mouse_move",
     "click",
+    "key_press",
+    "touch_move",
 }
 
 

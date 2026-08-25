@@ -194,14 +194,23 @@ class VisitsTableServiceTests(TestCase):
                 params.appendlist(key, str(value))
         return parse_company_attribute_filters(self.project, params, strict=True)
 
-    def test_replayability_exists_filters_are_not_selected_annotations(self):
-        queryset = _recorded_sessions_queryset(self.project)
-        select_sql = str(queryset.query).split(' FROM ', 1)[0]
+    def test_visits_scope_reads_stored_columns_without_aggregating(self):
+        """The row scope must stay proportional to the page, not the history.
 
-        self.assertNotIn('AS "has_replay_snapshot"', select_sql)
-        self.assertNotIn('AS "has_linked_analytics_event"', select_sql)
-        self.assertIn('AS "analytics_event_start"', select_sql)
-        self.assertIn('AS "analytics_event_end"', select_sql)
+        Replayability and the analytical clock are denormalized onto Session at
+        ingest.  Re-deriving either here would put the selected date range in a
+        HAVING clause over MIN(timestamp) and re-aggregate every analytics
+        event the project has ever recorded on every request.
+        """
+
+        sql = str(_recorded_sessions_queryset(self.project).query)
+
+        self.assertNotIn('MIN(', sql)
+        self.assertNotIn('MAX(', sql)
+        self.assertNotIn('GROUP BY', sql)
+        self.assertNotIn('EXISTS', sql)
+        self.assertIn('"analytics_event_start"', sql)
+        self.assertIn('"has_replay_snapshot"', sql)
 
     def test_analytics_events_are_the_only_visits_metric_source(self):
         session = self._recording(self.now - timedelta(hours=1))
@@ -739,11 +748,11 @@ class VisitsTableServiceTests(TestCase):
             },
         )
         self.assertEqual(
-            company_attribute_preview_counts(self.project, acme_request, state),
+            company_attribute_preview_counts(self.project, acme_request, state, now=self.now),
             {'matching_count': 1, 'eligible_count': 1},
         )
         self.assertEqual(
-            company_attribute_preview_counts(self.project, beta_request, state),
+            company_attribute_preview_counts(self.project, beta_request, state, now=self.now),
             {'matching_count': 0, 'eligible_count': 1},
         )
 
@@ -855,6 +864,7 @@ class VisitsTableServiceTests(TestCase):
                 self.project,
                 alice_request,
                 customer_state,
+                now=self.now,
             ),
             {'matching_count': 0, 'eligible_count': 1},
         )
@@ -863,6 +873,7 @@ class VisitsTableServiceTests(TestCase):
                 self.project,
                 bob_request,
                 customer_state,
+                now=self.now,
             ),
             {'matching_count': 1, 'eligible_count': 2},
         )
@@ -871,6 +882,7 @@ class VisitsTableServiceTests(TestCase):
                 self.project,
                 alice_request,
                 empty_state,
+                now=self.now,
             ),
             {'matching_count': 0, 'eligible_count': 1},
         )
@@ -879,6 +891,7 @@ class VisitsTableServiceTests(TestCase):
                 self.project,
                 bob_request,
                 empty_state,
+                now=self.now,
             ),
             {'matching_count': 1, 'eligible_count': 2},
         )
@@ -987,11 +1000,121 @@ class VisitsTableServiceTests(TestCase):
             now=self.now,
         )
 
+        # The total counts the filtered scope, not the unfiltered range.
         self.assertEqual(context['paginator'].count, 1)
+        self.assertFalse(context['page_obj'].has_next())
         self.assertEqual(
             [row['session_id'] for row in context['visits']],
             [older.session_id],
         )
+
+    def test_date_pages_report_both_a_next_page_and_the_range_total(self):
+        """The page window and the range total are answered separately.
+
+        Whether another page exists comes from one extra fetched row, so the
+        page never depends on the counted total, which the pagination bar
+        reports alongside it.
+        """
+
+        for index in range(1, 4):
+            session = self._recording(
+                self.now - timedelta(hours=index),
+                visitor_guid=uuid.uuid4(),
+            )
+            fragment = self._identity(session, start=session.start_time, end=session.ended_at)
+            # A second event puts the analytical span clear of the
+            # low-confidence rule, which this case is not about.  Without it
+            # these are one-click anonymous sessions and the scope is empty.
+            self._analytics_event(
+                fragment,
+                at=session.start_time + timedelta(minutes=1),
+                url='example.com/page',
+                page_name='Page',
+            )
+
+        first_page = build_visits_context(self.project, page_size=2, page_number=1, now=self.now)
+        second_page = build_visits_context(self.project, page_size=2, page_number=2, now=self.now)
+
+        self.assertEqual(first_page['paginator'].count, 3)
+        self.assertEqual(first_page['paginator'].num_pages, 2)
+        self.assertEqual(len(first_page['visits']), 2)
+        self.assertTrue(first_page['page_obj'].has_next())
+        self.assertFalse(first_page['page_obj'].has_previous())
+
+        self.assertEqual(len(second_page['visits']), 1)
+        self.assertFalse(second_page['page_obj'].has_next())
+        self.assertTrue(second_page['page_obj'].has_previous())
+
+    def test_duration_sort_is_paginated_in_the_database(self):
+        """Duration ranks by the stored analytical interval.
+
+        Ordering it in Python meant projecting every visit in the range before
+        the first page could be sliced.
+        """
+
+        expected_order = []
+        for index, active_seconds in enumerate((30, 300, 120), start=1):
+            session = self._recording(
+                self.now - timedelta(hours=index),
+                visitor_guid=uuid.uuid4(),
+            )
+            fragment = self._identity(
+                session,
+                start=session.start_time,
+                end=session.ended_at,
+            )
+            self._analytics_event(
+                fragment,
+                at=session.start_time + timedelta(seconds=active_seconds),
+                url='example.com/page',
+                page_name='Page',
+            )
+            expected_order.append((active_seconds, session.session_id))
+        expected_order.sort(reverse=True)
+
+        context = build_visits_context(
+            self.project,
+            sort_key='duration',
+            sort_direction='desc',
+            page_size=1,
+            page_number=1,
+            now=self.now,
+        )
+
+        self.assertEqual(context['paginator'].count, 3)
+        self.assertTrue(context['page_obj'].has_next())
+        self.assertEqual(
+            [row['session_id'] for row in context['visits']],
+            [expected_order[0][1]],
+        )
+
+    def test_identity_sorts_still_report_an_exact_total(self):
+        """Sorts that rank on projected facts already hold every row."""
+
+        for index in range(1, 4):
+            session = self._recording(
+                self.now - timedelta(hours=index),
+                visitor_guid=uuid.uuid4(),
+            )
+            self._identity(
+                session,
+                start=session.start_time,
+                end=session.ended_at,
+                user_id=f'user-{index}',
+                user_name=f'User {index}',
+            )
+
+        context = build_visits_context(
+            self.project,
+            sort_key='user',
+            page_size=2,
+            page_number=1,
+            now=self.now,
+        )
+
+        self.assertEqual(context['paginator'].count, 3)
+        self.assertEqual(context['paginator'].num_pages, 2)
+        self.assertTrue(context['page_obj'].has_next())
 
     def test_company_attribute_preview_uses_the_same_visits_scope(self):
         attribute = self._text_attribute()
@@ -1031,11 +1154,11 @@ class VisitsTableServiceTests(TestCase):
         empty_state = self._attribute_state(attribute, 'empty')
 
         self.assertEqual(
-            company_attribute_preview_counts(self.project, request, customer_state),
+            company_attribute_preview_counts(self.project, request, customer_state, now=self.now),
             {'matching_count': 1, 'eligible_count': 3},
         )
         self.assertEqual(
-            company_attribute_preview_counts(self.project, request, empty_state),
+            company_attribute_preview_counts(self.project, request, empty_state, now=self.now),
             {'matching_count': 1, 'eligible_count': 3},
         )
 
@@ -1069,6 +1192,7 @@ class VisitsTableServiceTests(TestCase):
                 self.project,
                 scoped_request,
                 customer_state,
+                now=self.now,
             ),
             {'matching_count': 1, 'eligible_count': 1},
         )

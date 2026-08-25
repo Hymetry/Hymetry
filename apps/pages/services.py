@@ -24,6 +24,12 @@ from apps.pages.product_area_colors import (
     product_area_color_from_lookup,
     resolve_product_area_colors,
 )
+from apps.tracker.analytics_eligibility import (
+    LOW_CONFIDENCE_MAX_DURATION_SECONDS,
+    MEANINGFUL_EVENT_MIN_OFFSET_SECONDS,
+    MEANINGFUL_EVENT_TYPES,
+    completion_cutoff,
+)
 from apps.tracker.models import ProjectPageRule
 
 
@@ -703,6 +709,7 @@ def rebuild_project_pages_analytics(
     range_keys=DEFAULT_OVERVIEW_RANGE_KEYS,
     session_timeout_seconds=DEFAULT_SESSION_TIMEOUT_SECONDS,
     include_user_details=False,
+    now=None,
 ):
     project = get_project_info(project_id)
     if not project:
@@ -748,6 +755,26 @@ def rebuild_project_pages_analytics(
                 window_start_utc,
                 window_end_utc,
                 session_timeout_seconds,
+                strict_start_utc,
+                strict_end_utc,
+            ],
+        )
+        # Between the visits insert and every consumer of them, so each rebuild
+        # recomputes eligibility from events instead of inheriting a stale flag.
+        # Facts come from the widened read window; only the strict window is
+        # marked, matching the rows this rebuild just wrote.
+        queries.execute(
+            queries.UPDATE_LOW_CONFIDENCE_VISITS_SQL,
+            [
+                project_id,
+                window_start_utc,
+                window_end_utc,
+                session_timeout_seconds,
+                list(MEANINGFUL_EVENT_TYPES),
+                MEANINGFUL_EVENT_MIN_OFFSET_SECONDS,
+                completion_cutoff(now),
+                LOW_CONFIDENCE_MAX_DURATION_SECONDS,
+                project_id,
                 strict_start_utc,
                 strict_end_utc,
             ],

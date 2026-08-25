@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as datetime_timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -17,11 +17,31 @@ def _state(*, active=True, filters_hash='hash-1', pairs=(('ca.7.op', 'in'), ('ca
     )
 
 
-# Derived rather than pinned: the window moves with the project's local day, so
-# a literal would only hold on the day it was written.
 RANGE_KEY = 'last_180_days'
-WINDOW = services.resolve_period('UTC', range_key=RANGE_KEY)
-STALE_WINDOW = tuple(day - timedelta(days=1) for day in WINDOW)
+
+# Every window here resolves relative to the current project-local day -- once in
+# these helpers and again inside the code under test. Left to the real clock the
+# two resolutions can land on either side of midnight, which made a variant built
+# for "today" look like one built for another day. Pinning the clock per test
+# makes them agree by construction instead of by timing, so the assertions hold
+# whatever hour the suite runs at.
+FROZEN_NOW = datetime(2026, 6, 15, 12, 0, tzinfo=datetime_timezone.utc)
+
+# Sentinel for "resolve the current window", distinct from the ``None`` that
+# tells ``variant_is_usable`` to skip the period check entirely.
+CURRENT_WINDOW = object()
+
+
+def _window(range_key=RANGE_KEY):
+    """The window a request for *range_key* means under the pinned clock."""
+
+    return services.resolve_period('UTC', range_key=range_key)
+
+
+def _stale_window(range_key=RANGE_KEY):
+    """The window the same request meant one day earlier."""
+
+    return tuple(day - timedelta(days=1) for day in _window(range_key))
 
 
 def _project(*, facts=5, attribute_writes=0):
@@ -36,7 +56,9 @@ def _project(*, facts=5, attribute_writes=0):
 
 
 def _row(*, facts=5, attribute_writes=0, schema=12, is_stale=False,
-         expires_in_seconds=3600, window=WINDOW):
+         expires_in_seconds=3600, window=CURRENT_WINDOW):
+    if window is CURRENT_WINDOW:
+        window = _window()
     expires_at = None
     if expires_in_seconds is not None:
         expires_at = django_timezone.now() + timedelta(seconds=expires_in_seconds)
@@ -57,8 +79,20 @@ def _schema_ok(schema_version):
     return schema_version == 12
 
 
-class VariantUsabilityTests(SimpleTestCase):
-    def _usable(self, row, project, *, filters_hash='hash-1', period=WINDOW):
+class PinnedClock:
+    """Resolve every window in a test against one fixed instant."""
+
+    def setUp(self):
+        super().setUp()
+        clock = patch('django.utils.timezone.now', return_value=FROZEN_NOW)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+
+class VariantUsabilityTests(PinnedClock, SimpleTestCase):
+    def _usable(self, row, project, *, filters_hash='hash-1', period=CURRENT_WINDOW):
+        if period is CURRENT_WINDOW:
+            period = _window()
         return filtered_overview.variant_is_usable(
             row,
             project=project,
@@ -93,7 +127,7 @@ class VariantUsabilityTests(SimpleTestCase):
     def test_a_variant_for_another_day_is_never_served(self):
         # The whole point of the window check: an untouched old variant
         # describes a period nobody asked for.
-        self.assertFalse(self._usable(_row(window=STALE_WINDOW), _project()))
+        self.assertFalse(self._usable(_row(window=_stale_window()), _project()))
 
     def test_an_old_schema_is_never_usable(self):
         self.assertFalse(self._usable(_row(schema=11), _project()))
@@ -109,8 +143,9 @@ class VariantUsabilityTests(SimpleTestCase):
         self.assertTrue(filtered_overview.variant_covers_period(_row(), None))
 
 
-class ReadVariantTests(SimpleTestCase):
+class ReadVariantTests(PinnedClock, SimpleTestCase):
     def setUp(self):
+        super().setUp()
         filtered_overview._dispatches.clear()
 
     @patch('apps.pages.filtered_overview.queue_variant_rebuild', return_value=True)

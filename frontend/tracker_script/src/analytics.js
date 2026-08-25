@@ -4,6 +4,26 @@ const TAB_ID_KEY = 'tracker_tab_id';
 const ANALYTICS_STORAGE_PREFIX = 'tracker_pending_analytics:';
 const ORPHANED_ANALYTICS_MAX_AGE_MS = 15000;
 
+// The sampled event types.  Only the newest observation of each survives to
+// the next flush, which is all the question they answer -- was the visitor
+// doing this at all -- needs.  Clicks are the exception and are kept one for
+// one, because each is a separate act on a separate target.
+//
+// `storageKey` is the field the persisted snapshot uses.  A snapshot outlives
+// the bundle that wrote it -- a tab persists one, the page reloads, a newer
+// bundle reads it back -- so those names are part of a stored format and are
+// spelled out here rather than derived from the type.
+//
+// Every site that has to touch all of them reads this list, so a type added
+// here cannot be forgotten in one of them.  Dropping a pending event on a
+// failed flush would be silent, which is exactly the bug worth designing out.
+const PASSIVE_EVENTS = [
+  { type: 'scroll', storageKey: 'scrollEvent' },
+  { type: 'mouse_move', storageKey: 'mouseMoveEvent' },
+  { type: 'key_press', storageKey: 'keyPressEvent' },
+  { type: 'touch_move', storageKey: 'touchMoveEvent' },
+];
+
 export function hasPendingAnalyticsStorage() {
   try {
     const storage = window.localStorage;
@@ -590,11 +610,14 @@ export function startAnalytics(runtime, bootstrapEvent) {
   const tabId = getAnalyticsTabId();
   const ownStorageKey = `${ANALYTICS_STORAGE_PREFIX}${tabId}`;
   let flushTimerId = null;
-  let pendingScrollEvent = null;
-  let pendingMouseMoveEvent = null;
-  let lastScrollCaptureAt = 0;
-  let lastMouseMoveCaptureAt = 0;
   let isSendingPending = false;
+  const pendingPassiveEvents = {};
+  const lastPassiveCaptureAt = {};
+
+  for (let i = 0; i < PASSIVE_EVENTS.length; i++) {
+    pendingPassiveEvents[PASSIVE_EVENTS[i].type] = null;
+    lastPassiveCaptureAt[PASSIVE_EVENTS[i].type] = 0;
+  }
 
   function getEventTimestampMs(eventData) {
     if (!eventData) return 0;
@@ -621,15 +644,30 @@ export function startAnalytics(runtime, bootstrapEvent) {
       return null;
     }
 
-    return {
+    const normalized = {
       clickEvents: Array.isArray(rawSnapshot.clickEvents) ? rawSnapshot.clickEvents : [],
-      scrollEvent: rawSnapshot.scrollEvent || null,
-      mouseMoveEvent: rawSnapshot.mouseMoveEvent || null,
       updatedAt:
         typeof rawSnapshot.updatedAt === 'number' && Number.isFinite(rawSnapshot.updatedAt)
           ? rawSnapshot.updatedAt
           : 0,
     };
+
+    // A snapshot written before one of these types existed carries no field
+    // for it, which reads as no observation rather than as a parse failure.
+    for (let i = 0; i < PASSIVE_EVENTS.length; i++) {
+      const storageKey = PASSIVE_EVENTS[i].storageKey;
+      normalized[storageKey] = rawSnapshot[storageKey] || null;
+    }
+
+    return normalized;
+  }
+
+  function hasPassiveEvent(snapshot) {
+    for (let i = 0; i < PASSIVE_EVENTS.length; i++) {
+      if (snapshot[PASSIVE_EVENTS[i].storageKey]) return true;
+    }
+
+    return false;
   }
 
   function readStoredSnapshot(storageKey) {
@@ -648,11 +686,7 @@ export function startAnalytics(runtime, bootstrapEvent) {
     const normalized = normalizeStoredSnapshot(snapshot);
     if (!normalized) return false;
 
-    if (
-      !normalized.clickEvents.length &&
-      !normalized.scrollEvent &&
-      !normalized.mouseMoveEvent
-    ) {
+    if (!normalized.clickEvents.length && !hasPassiveEvent(normalized)) {
       safeRemove(window.localStorage, storageKey);
       return true;
     }
@@ -661,25 +695,19 @@ export function startAnalytics(runtime, bootstrapEvent) {
   }
 
   function mergeStoredSnapshots(currentSnapshot, nextSnapshot) {
-    const current = normalizeStoredSnapshot(currentSnapshot) || {
-      clickEvents: [],
-      scrollEvent: null,
-      mouseMoveEvent: null,
-      updatedAt: 0,
-    };
-    const next = normalizeStoredSnapshot(nextSnapshot) || {
-      clickEvents: [],
-      scrollEvent: null,
-      mouseMoveEvent: null,
-      updatedAt: 0,
-    };
-
-    return {
+    const current = normalizeStoredSnapshot(currentSnapshot) || normalizeStoredSnapshot({});
+    const next = normalizeStoredSnapshot(nextSnapshot) || normalizeStoredSnapshot({});
+    const merged = {
       clickEvents: current.clickEvents.concat(next.clickEvents),
-      scrollEvent: pickNewestEvent(current.scrollEvent, next.scrollEvent),
-      mouseMoveEvent: pickNewestEvent(current.mouseMoveEvent, next.mouseMoveEvent),
       updatedAt: Date.now(),
     };
+
+    for (let i = 0; i < PASSIVE_EVENTS.length; i++) {
+      const storageKey = PASSIVE_EVENTS[i].storageKey;
+      merged[storageKey] = pickNewestEvent(current[storageKey], next[storageKey]);
+    }
+
+    return merged;
   }
 
   function listPendingStorageKeys() {
@@ -756,20 +784,26 @@ export function startAnalytics(runtime, bootstrapEvent) {
 
   function buildQueueSnapshot() {
     const clickEvents = clickQueue.slice();
-    const scrollEvent = pendingScrollEvent;
-    const mouseMoveEvent = pendingMouseMoveEvent;
-    if (!clickEvents.length && !scrollEvent && !mouseMoveEvent) return null;
-
-    clickQueue.length = 0;
-    pendingScrollEvent = null;
-    pendingMouseMoveEvent = null;
-
-    return {
+    const snapshot = {
       clickEvents,
-      scrollEvent,
-      mouseMoveEvent,
       updatedAt: Date.now(),
     };
+    let carriesPassiveEvent = false;
+
+    for (let i = 0; i < PASSIVE_EVENTS.length; i++) {
+      const pending = pendingPassiveEvents[PASSIVE_EVENTS[i].type];
+      snapshot[PASSIVE_EVENTS[i].storageKey] = pending;
+      if (pending) carriesPassiveEvent = true;
+    }
+
+    if (!clickEvents.length && !carriesPassiveEvent) return null;
+
+    clickQueue.length = 0;
+    for (let i = 0; i < PASSIVE_EVENTS.length; i++) {
+      pendingPassiveEvents[PASSIVE_EVENTS[i].type] = null;
+    }
+
+    return snapshot;
   }
 
   function restoreFlushSnapshot(snapshot) {
@@ -779,8 +813,13 @@ export function startAnalytics(runtime, bootstrapEvent) {
       clickQueue.unshift(snapshot.clickEvents[i]);
     }
 
-    pendingScrollEvent = pickNewestEvent(pendingScrollEvent, snapshot.scrollEvent);
-    pendingMouseMoveEvent = pickNewestEvent(pendingMouseMoveEvent, snapshot.mouseMoveEvent);
+    for (let i = 0; i < PASSIVE_EVENTS.length; i++) {
+      const type = PASSIVE_EVENTS[i].type;
+      pendingPassiveEvents[type] = pickNewestEvent(
+        pendingPassiveEvents[type],
+        snapshot[PASSIVE_EVENTS[i].storageKey],
+      );
+    }
   }
 
   function persistSnapshotToStorage(snapshot, storageKey) {
@@ -809,8 +848,10 @@ export function startAnalytics(runtime, bootstrapEvent) {
     if (!normalized) return [];
 
     const batchToSend = normalized.clickEvents.slice();
-    if (normalized.scrollEvent) batchToSend.push(normalized.scrollEvent);
-    if (normalized.mouseMoveEvent) batchToSend.push(normalized.mouseMoveEvent);
+    for (let i = 0; i < PASSIVE_EVENTS.length; i++) {
+      const passiveRecord = normalized[PASSIVE_EVENTS[i].storageKey];
+      if (passiveRecord) batchToSend.push(passiveRecord);
+    }
     batchToSend.sort((first, second) => getEventTimestampMs(first) - getEventTimestampMs(second));
     return batchToSend;
   }
@@ -915,30 +956,39 @@ export function startAnalytics(runtime, bootstrapEvent) {
   }
 
   function capturePassiveEvent(type) {
-    if (type === 'scroll') {
-      pendingScrollEvent = createPassiveEvent('scroll');
-      return;
-    }
+    const now = Date.now();
+    if (now - lastPassiveCaptureAt[type] < passiveThrottleMs) return;
 
-    if (type === 'mouse_move') {
-      pendingMouseMoveEvent = createPassiveEvent('mouse_move');
-    }
+    lastPassiveCaptureAt[type] = now;
+    pendingPassiveEvents[type] = createPassiveEvent(type);
   }
 
   function handleScroll() {
-    const now = Date.now();
-    if (now - lastScrollCaptureAt < passiveThrottleMs) return;
-
-    lastScrollCaptureAt = now;
     capturePassiveEvent('scroll');
   }
 
   function handleMouseMove() {
-    const now = Date.now();
-    if (now - lastMouseMoveCaptureAt < passiveThrottleMs) return;
-
-    lastMouseMoveCaptureAt = now;
     capturePassiveEvent('mouse_move');
+  }
+
+  // Records that a key went down and nothing else: no key identity, no
+  // modifier state, no target, no value.  Typing is the one signal a visitor
+  // working through a long form produces, and it produces neither a click nor
+  // a scroll, so without this such a visitor reads as idle.
+  function handleKeyPress() {
+    capturePassiveEvent('key_press');
+  }
+
+  // The touch counterpart of pointer movement, and the reason `touchstart` is
+  // not recorded: a touch device synthesizes a click after a tap, so taps
+  // already arrive as clicks and a start-of-touch record would store every one
+  // of them twice for nothing.  Movement is different.  A drag that neither
+  // clicks nor scrolls -- panning a map, drawing on a canvas, working a custom
+  // slider -- leaves no event at all today and so reads as idle time.  A
+  // drag that does scroll is already covered by `scroll`; this adds nothing
+  // there and costs nothing either, being capped at one record per flush.
+  function handleTouchMove() {
+    capturePassiveEvent('touch_move');
   }
 
   function handleClick(event) {
@@ -964,9 +1014,18 @@ export function startAnalytics(runtime, bootstrapEvent) {
       return;
     }
 
+    if (event.type === 'keydown') {
+      handleKeyPress();
+      return;
+    }
+
     if (event.type === 'mousemove') {
       handleMouseMove();
     }
+
+    // A bootstrapping `touchstart` records nothing, deliberately: see
+    // handleTouchMove.  The `touchmove` that follows a real gesture reaches
+    // the live listener below.
   }
 
   function scheduleFlush() {
@@ -977,6 +1036,8 @@ export function startAnalytics(runtime, bootstrapEvent) {
   document.addEventListener('click', handleClick, true);
   document.addEventListener('scroll', handleScroll, true);
   document.addEventListener('mousemove', handleMouseMove, { passive: true });
+  document.addEventListener('keydown', handleKeyPress, { passive: true, capture: true });
+  document.addEventListener('touchmove', handleTouchMove, { passive: true, capture: true });
   window.addEventListener('scroll', handleScroll, { passive: true });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {

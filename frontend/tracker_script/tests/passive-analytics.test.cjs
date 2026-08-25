@@ -374,6 +374,30 @@ function run() {
       target: new env.FakeButtonElement('Open dashboard'),
     });
 
+    env.setNow(2700);
+    env.setHref('https://app.example.com/dashboard?key=first');
+    env.document.dispatchEvent({ type: 'keydown' });
+
+    env.setNow(2900);
+    env.setHref('https://app.example.com/dashboard?key=ignored');
+    env.document.dispatchEvent({ type: 'keydown' });
+
+    env.setNow(3300);
+    env.setHref('https://app.example.com/dashboard?key=latest');
+    env.document.dispatchEvent({ type: 'keydown' });
+
+    env.setNow(3400);
+    env.setHref('https://app.example.com/dashboard?drag=first');
+    env.document.dispatchEvent({ type: 'touchmove' });
+
+    env.setNow(3500);
+    env.setHref('https://app.example.com/dashboard?drag=ignored');
+    env.document.dispatchEvent({ type: 'touchmove' });
+
+    env.setNow(4000);
+    env.setHref('https://app.example.com/dashboard?drag=latest');
+    env.document.dispatchEvent({ type: 'touchmove' });
+
     assert.equal(env.fetchCalls.length, 0);
     assert.equal(env.intervals.length, 1);
 
@@ -388,8 +412,17 @@ function run() {
     assert.equal(eventTypes.filter((type) => type === 'click').length, 1);
     assert.equal(eventTypes.filter((type) => type === 'scroll').length, 1);
     assert.equal(eventTypes.filter((type) => type === 'mouse_move').length, 1);
+    // Typing and dragging are sampled like pointer movement: three of each
+    // across the batch leave one record, carrying the page the last was on.
+    assert.equal(eventTypes.filter((type) => type === 'key_press').length, 1);
+    assert.equal(eventTypes.filter((type) => type === 'touch_move').length, 1);
     assert.equal(batch.find((event) => event.type === 'scroll').page.url, 'https://app.example.com/dashboard?scroll=latest');
     assert.equal(batch.find((event) => event.type === 'mouse_move').page.url, 'https://app.example.com/dashboard?move=latest');
+    assert.equal(batch.find((event) => event.type === 'key_press').page.url, 'https://app.example.com/dashboard?key=latest');
+    assert.equal(batch.find((event) => event.type === 'touch_move').page.url, 'https://app.example.com/dashboard?drag=latest');
+    // Neither names a target, so neither carries an element key.
+    assert.equal(batch.find((event) => event.type === 'key_press').elementKey, undefined);
+    assert.equal(batch.find((event) => event.type === 'touch_move').elementKey, undefined);
     assert.equal(batch.find((event) => event.type === 'click').page.url, 'https://app.example.com/dashboard?click=final');
     assert.equal(batch.find((event) => event.type === 'click').elementKey, 'Button: Open dashboard');
 
@@ -539,6 +572,8 @@ function runOrphanedStoragePickupScenario() {
     ],
     scrollEvent: null,
     mouseMoveEvent: null,
+    // No keyPressEvent or touchMoveEvent key at all: the shape a bundle from
+    // before those types existed would have left behind.
     updatedAt: 1,
   };
   const env = installBrowserStubs({
@@ -562,6 +597,99 @@ function runOrphanedStoragePickupScenario() {
     assert.equal(payload.batch.length, 1);
     assert.equal(payload.batch[0].elementKey, 'Link: Apply');
     assert.equal(env.storage.getItem('tracker_pending_analytics:orphaned-tab'), null);
+  } finally {
+    env.restore();
+  }
+}
+
+function runKeyPressBootstrapScenario() {
+  const env = installBrowserStubs();
+
+  try {
+    delete require.cache[require.resolve(env.bundlePath)];
+    require(env.bundlePath);
+
+    env.setNow(1000);
+    env.setHref('https://app.example.com/signup');
+    env.document.dispatchEvent({ type: 'keydown' });
+
+    assert.equal(env.intervals.length, 1);
+    env.intervals[0].callback();
+
+    assert.equal(env.fetchCalls.length, 1);
+    const payload = JSON.parse(env.fetchCalls[0].options.body);
+    assert.equal(payload.batch.length, 1);
+    assert.equal(payload.batch[0].type, 'key_press');
+    assert.equal(payload.batch[0].page.url, 'https://app.example.com/signup');
+    // Nothing about the key, the field, or the value it went into.
+    assert.equal(payload.batch[0].elementKey, undefined);
+  } finally {
+    env.restore();
+  }
+}
+
+function runTouchStartIsNotAnEventTypeScenario() {
+  const env = installBrowserStubs();
+
+  try {
+    delete require.cache[require.resolve(env.bundlePath)];
+    require(env.bundlePath);
+
+    // A tap: the touch start starts capture but records nothing, because the
+    // click the device synthesizes from it is the record of that tap.
+    // Dispatched on the window, which is where a non-recorded bootstrap
+    // trigger is bound; the stub has no propagation of its own.
+    env.setNow(1000);
+    env.setHref('https://app.example.com/pricing');
+    env.window.dispatchEvent({
+      type: 'touchstart',
+      target: new env.FakeButtonElement('Start trial'),
+    });
+
+    env.setNow(1050);
+    env.document.dispatchEvent({
+      type: 'click',
+      target: new env.FakeButtonElement('Start trial'),
+    });
+
+    env.intervals[0].callback();
+
+    assert.equal(env.fetchCalls.length, 1);
+    const payload = JSON.parse(env.fetchCalls[0].options.body);
+    assert.deepEqual(payload.batch.map((event) => event.type), ['click']);
+    assert.equal(payload.batch[0].elementKey, 'Button: Start trial');
+  } finally {
+    env.restore();
+  }
+}
+
+function runTouchDragScenario() {
+  const env = installBrowserStubs();
+
+  try {
+    delete require.cache[require.resolve(env.bundlePath)];
+    require(env.bundlePath);
+
+    // A drag that never becomes a click: the case touch_move exists for.
+    env.setNow(1000);
+    env.setHref('https://app.example.com/map');
+    env.window.dispatchEvent({
+      type: 'touchstart',
+      target: new env.FakeButtonElement('Map'),
+    });
+
+    for (let elapsed = 1100; elapsed <= 2600; elapsed += 100) {
+      env.setNow(elapsed);
+      env.document.dispatchEvent({ type: 'touchmove' });
+    }
+
+    env.intervals[0].callback();
+
+    assert.equal(env.fetchCalls.length, 1);
+    const payload = JSON.parse(env.fetchCalls[0].options.body);
+    // Sixteen dispatches, one record: throttled, newest kept per flush.
+    assert.deepEqual(payload.batch.map((event) => event.type), ['touch_move']);
+    assert.equal(payload.batch[0].page.url, 'https://app.example.com/map');
   } finally {
     env.restore();
   }
@@ -753,6 +881,9 @@ try {
   runBootstrapNavigationClickScenario();
   runNavigationFlushesPassiveEventsScenario();
   runOrphanedStoragePickupScenario();
+  runKeyPressBootstrapScenario();
+  runTouchStartIsNotAnEventTypeScenario();
+  runTouchDragScenario();
   runSettingsIdentifyScenario();
   runSettingsIdentifyEmailFallbackScenario();
   runSettingsIdentifyUserIdFallbackScenario();

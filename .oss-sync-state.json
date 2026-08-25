@@ -2,7 +2,7 @@
   "schema_version": 2,
   "policy_version": "oss-sync-v2",
   "source_ref": "refs/heads/main",
-  "completed_cloud_sha": "e790a209369116654b27a18f5d94b762b06f45ae",
+  "completed_cloud_sha": "40e9f092b01adbb296d20634990dabaf80813b56",
   "migration_mode": "incremental",
   "migration_baseline_oss_sha": "da90b398e6ed0069b1835d08314f7ac46c6ca8d8",
   "accepted_migrations": [
@@ -19,6 +19,10 @@
       "git_blob": "0fe85ecc33e50f346a3cfd7249bb4de6af552196"
     },
     {
+      "path": "apps/pages/migrations/0003_analytics_eligibility_and_input_counts.py",
+      "git_blob": "03188da6c6d0f9361412e81ae3a6a822d8c3cca7"
+    },
+    {
       "path": "apps/projects/migrations/0001_initial.py",
       "git_blob": "a8db7a244c6145ce5786d196e7dc2028899fba3e"
     },
@@ -33,12 +37,20 @@
     {
       "path": "apps/tracker/migrations/0002_analyticssession_visit_session_and_more.py",
       "git_blob": "fc0aaa96805faef32fa93340cab645360df8a132"
+    },
+    {
+      "path": "apps/tracker/migrations/0003_visits_scope_denormalization.py",
+      "git_blob": "1d2814b9ebc6a6d738525d3d6fbf7062fcdb83c5"
+    },
+    {
+      "path": "apps/tracker/migrations/0004_backfill_visits_scope.py",
+      "git_blob": "9ebcc215ffb551ae504edcc3745d183fdc67dace"
     }
   ],
   "last_sync": {
-    "audit_id": "2026-08-09-9cf06f7-e790a20",
-    "cloud_base": "9cf06f734a4d9e1cd22ee60b11394c28bb2375d4",
-    "cloud_head": "e790a209369116654b27a18f5d94b762b06f45ae",
-    "oss_base": "5b1add6c05b1bfbd76ce90c536ad5a46e7ae7c15"
+    "audit_id": "2026-08-25-e790a20-40e9f09",
+    "cloud_base": "e790a209369116654b27a18f5d94b762b06f45ae",
+    "cloud_head": "40e9f092b01adbb296d20634990dabaf80813b56",
+    "oss_base": "7f5fde403d8b52bfcef6f3647461bf04b0ae5dcc"
   }
 }

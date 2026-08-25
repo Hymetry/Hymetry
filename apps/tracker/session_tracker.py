@@ -18,9 +18,11 @@ from apps.tracker.page_naming import (
     ensure_project_first_event_at,
     normalize_page_url,
 )
+from apps.tracker.replayability import is_replayable_full_snapshot
 from apps.tracker.rrweb_text_filter import mask_rrweb_event
 from apps.tracker.session_resolver import SessionResolutionPoint, resolve_visit_session_batch
 from apps.tracker.visitor_ids import normalize_project_visitor_uuid
+from apps.tracker.visits_scope import mark_replay_snapshot_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +208,7 @@ class SessionTracker:
         # Prepare all events for bulk insertion
         event_objects = []
         used_sessions = {}
+        snapshot_session_ids = set()
         for index, event in enumerate(events):
             event_session = self.event_sessions.get(index, self.session)
             used_sessions[event_session.pk] = event_session
@@ -228,6 +231,12 @@ class SessionTracker:
                 page_url=self.masking_page_url(event_page_url)
             )
 
+            # Replayability is decided on the stored form of the event, which
+            # is what the Visits row scope used to re-derive per request with a
+            # JSONB probe over every rrweb event the project had recorded.
+            if is_replayable_full_snapshot(filtered_event):
+                snapshot_session_ids.add(event_session.pk)
+
             # Create Event object but don't save to database yet
             event_obj = Event(
                 session=event_session,
@@ -242,6 +251,7 @@ class SessionTracker:
         # Bulk insert all events in a single database operation
         if event_objects:
             Event.objects.bulk_create(event_objects, batch_size=100)
+            mark_replay_snapshot_sessions(snapshot_session_ids)
             first_event_time = min((event.timestamp for event in event_objects), default=None)
             last_event_time = max((event.timestamp for event in event_objects), default=first_event_time)
             ensure_project_first_event_at(self.project, first_event_time)

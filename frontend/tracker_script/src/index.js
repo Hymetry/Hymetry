@@ -13,8 +13,19 @@ import { hasPendingAnalyticsStorage, startAnalytics } from './analytics';
     analytics: null,
   };
 
+  // Bound on the document in the capture phase rather than on the window in
+  // the bubble phase, because analytics records the bootstrapping event itself
+  // for these types and a page that stops propagation would otherwise hide it.
+  // Scroll needs it for a second reason: it does not bubble out of a
+  // scrollable element at all.
+  const CAPTURED_BOOTSTRAP_EVENTS = ['click', 'scroll', 'keydown'];
+
+  function isCapturedBootstrapEvent(eventName) {
+    return CAPTURED_BOOTSTRAP_EVENTS.indexOf(eventName) !== -1;
+  }
+
   function getBootstrapTarget(eventName) {
-    if (eventName === 'scroll' || eventName === 'click') {
+    if (isCapturedBootstrapEvent(eventName)) {
       return document;
     }
 
@@ -22,8 +33,10 @@ import { hasPendingAnalyticsStorage, startAnalytics } from './analytics';
   }
 
   function getBootstrapListenerOptions(eventName) {
-    if (eventName === 'scroll' || eventName === 'click') {
-      return { once: true, capture: true };
+    if (isCapturedBootstrapEvent(eventName)) {
+      // Passive because this handler only starts the capture modules and never
+      // cancels the gesture it observed.
+      return { once: true, capture: true, passive: true };
     }
 
     return { once: true };
@@ -31,7 +44,7 @@ import { hasPendingAnalyticsStorage, startAnalytics } from './analytics';
 
   function removeBootstrapListener(eventName, handler) {
     const target = getBootstrapTarget(eventName);
-    const options = eventName === 'scroll' || eventName === 'click' ? true : undefined;
+    const options = isCapturedBootstrapEvent(eventName) ? true : undefined;
     target.removeEventListener(eventName, handler, options);
   }
 

@@ -29,6 +29,7 @@ from apps.tracker.models import (
     ProjectPageRuleVersion,
     TitlePrompt,
 )
+from apps.tracker.visits_scope import refresh_meaningful_analytics_flags
 
 logger = logging.getLogger(__name__)
 llm_usage_logger = logging.getLogger('llm_usage')
@@ -1019,6 +1020,19 @@ def apply_rules_to_analytics_events(project, rules, since, batch_size=500):
             batch_size=batch_size,
         )
         updated_count += len(updates)
+
+    # Both halves of the low-confidence page key were just rewritten, so the
+    # distinct-page count that qualified a session can have fallen.  That flag
+    # is widen-only at ingest and cannot lower itself; recompute it here or
+    # Visits keeps listing sessions the Pages rollup has already dropped.
+    if updated_count:
+        refresh_meaningful_analytics_flags(
+            AnalyticsEvent.objects
+            .filter(session__project=project, timestamp__gte=since)
+            .exclude(session__visit_session_id=None)
+            .values_list('session__visit_session_id', flat=True)
+            .distinct()
+        )
 
     return updated_count
 
