@@ -76,7 +76,7 @@ class AnalyticsEndpointTests(TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {'error': 'Internal server error.'})
 
-    def test_record_analytics_accepts_scroll_and_mouse_move_events(self):
+    def test_record_analytics_accepts_every_passive_event_type(self):
         visitor_id = str(uuid4())
         payload = {
             'api_key': self.project.api_key,
@@ -99,8 +99,24 @@ class AnalyticsEndpointTests(TestCase):
                     },
                 },
                 {
-                    'type': 'click',
+                    'type': 'key_press',
                     'ts': '2026-04-23T12:00:03Z',
+                    'page': {
+                        'url': 'https://example.com/dashboard',
+                        'title': 'Dashboard',
+                    },
+                },
+                {
+                    'type': 'touch_move',
+                    'ts': '2026-04-23T12:00:04Z',
+                    'page': {
+                        'url': 'https://example.com/dashboard',
+                        'title': 'Dashboard',
+                    },
+                },
+                {
+                    'type': 'click',
+                    'ts': '2026-04-23T12:00:05Z',
                     'page': {
                         'url': 'https://example.com/dashboard',
                         'title': 'Dashboard',
@@ -121,7 +137,7 @@ class AnalyticsEndpointTests(TestCase):
             response.json(),
             {
                 'status': 'success',
-                'accepted_events': 3,
+                'accepted_events': 5,
                 'skipped_events': 0,
                 'sessions_touched': 1,
             },
@@ -131,20 +147,27 @@ class AnalyticsEndpointTests(TestCase):
         session = AnalyticsSession.objects.get()
         self.assertEqual(
             session.last_activity,
-            datetime(2026, 4, 23, 12, 0, 3, tzinfo=timezone.utc),
+            datetime(2026, 4, 23, 12, 0, 5, tzinfo=timezone.utc),
         )
 
         events = list(AnalyticsEvent.objects.order_by('timestamp'))
-        self.assertEqual([event.event_type for event in events], ['scroll', 'mouse_move', 'click'])
+        self.assertEqual(
+            [event.event_type for event in events],
+            ['scroll', 'mouse_move', 'key_press', 'touch_move', 'click'],
+        )
         self.assertEqual(events[0].visitor_guid, UUID(visitor_id))
         self.assertIsNone(events[0].element_key)
         self.assertIsNone(events[1].element_key)
-        self.assertEqual(events[2].element_key, 'Button: Open dashboard')
+        # Neither a key press nor a touch drag names a target, so neither
+        # carries an element key.
+        self.assertIsNone(events[2].element_key)
+        self.assertIsNone(events[3].element_key)
+        self.assertEqual(events[4].element_key, 'Button: Open dashboard')
         self.project.refresh_from_db()
         self.workspace.refresh_from_db()
         self.assertEqual(self.project.status, 'active')
         self.assertEqual(self.project.first_production_event_at, datetime(2026, 4, 23, 12, 0, 0, tzinfo=timezone.utc))
-        self.assertEqual(self.project.last_event_at, datetime(2026, 4, 23, 12, 0, 3, tzinfo=timezone.utc))
+        self.assertEqual(self.project.last_event_at, datetime(2026, 4, 23, 12, 0, 5, tzinfo=timezone.utc))
 
     def test_record_analytics_writes_ingestion_log(self):
         payload = {

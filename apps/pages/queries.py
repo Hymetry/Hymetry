@@ -490,6 +490,8 @@ rolled AS (
         COUNT(*) FILTER (WHERE event_type = 'click') AS click_count,
         COUNT(*) FILTER (WHERE event_type = 'scroll') AS scroll_count,
         COUNT(*) FILTER (WHERE event_type = 'mouse_move') AS mouse_move_count,
+        COUNT(*) FILTER (WHERE event_type = 'key_press') AS key_press_count,
+        COUNT(*) FILTER (WHERE event_type = 'touch_move') AS touch_move_count,
         MIN(event_id) AS first_event_id,
         MAX(event_id) AS last_event_id
     FROM with_next
@@ -515,11 +517,16 @@ INSERT INTO pages_pagevisit (
     click_count,
     scroll_count,
     mouse_move_count,
+    key_press_count,
+    touch_move_count,
     had_click,
     had_scroll,
     had_mouse_move,
+    had_key_press,
+    had_touch_move,
     first_event_id,
     last_event_id,
+    is_analytics_eligible,
     created_at,
     updated_at
 )
@@ -543,11 +550,18 @@ SELECT
     rolled.click_count,
     rolled.scroll_count,
     rolled.mouse_move_count,
+    rolled.key_press_count,
+    rolled.touch_move_count,
     rolled.click_count > 0,
     rolled.scroll_count > 0,
     rolled.mouse_move_count > 0,
+    rolled.key_press_count > 0,
+    rolled.touch_move_count > 0,
     rolled.first_event_id,
     rolled.last_event_id,
+    -- Every visit starts eligible; UPDATE_LOW_CONFIDENCE_VISITS_SQL runs next
+    -- and demotes the ones belonging to a completed low-confidence session.
+    TRUE,
     NOW(),
     NOW()
 FROM rolled
@@ -556,6 +570,126 @@ LEFT JOIN pages_productarea pa
    AND pa.slug = rolled.product_area_key
 WHERE rolled.visit_start_ts >= %s
   AND rolled.visit_start_ts < %s
+"""
+
+
+
+# Marks the visits of completed low-confidence anonymous sessions ineligible.
+# Runs between INSERT_PAGE_VISITS_SQL and every consumer of pages_pagevisit, so
+# a rebuild always recomputes the flag from events rather than inheriting it.
+#
+# Scopes are rebuilt here as visitor runs split on the session timeout, which is
+# how the tracker defines a recording session in the first place.  The obvious
+# alternative, grouping by COALESCE(visit_session_id, session_id), is wrong over
+# history: recording retention deletes Session rows after 30 days and
+# AnalyticsSession.visit_session is SET_NULL, so every fragment of an older
+# visit becomes its own scope.  The nightly job rebuilds 180 days, so it would
+# re-judge months of already-unlinked data and drop the anonymous opening of
+# visits that did identify themselves.  A visitor GUID is never nulled, so this
+# grouping keeps meaning the same thing for as long as the events exist.
+#
+# Facts are read from the widened event window the rebuild passes, not from the
+# strict window it writes.  Only sessions under
+# analytics_eligibility.LOW_CONFIDENCE_MAX_DURATION_SECONDS can be marked, and a
+# window widened by a day on each side contains such a session whole, so a
+# session straddling a local midnight cannot be mistaken for a single-page one.
+#
+# The page count uses distinct (url, rule) pairs rather than a count of visit
+# rows, because those rows exist only for the strict window.  The two agree at
+# the boundary that matters here; see analytics_eligibility.is_meaningful.
+#
+# Interaction is the latest click or scroll rather than a count of them, because
+# the rule asks whether one landed clear of the session's opening second and the
+# latest is the only one that can.  That keeps this a grouped aggregate; ranking
+# each event against its own scope would need a third window pass over the same
+# rows.
+#
+# A scope that qualifies holds at most one page and spans under ten seconds, so
+# matching its visit by visitor and start time is unambiguous.  A visit whose
+# visitor GUID is null joins nothing and stays eligible.
+UPDATE_LOW_CONFIDENCE_VISITS_SQL = """
+WITH visitor_events AS (
+    SELECT
+        COALESCE(e.visitor_guid, s.visitor_guid) AS visitor_guid,
+        e.id AS event_id,
+        e.timestamp,
+        e.event_type,
+        CASE
+            WHEN COALESCE(NULLIF(e.url_normalized, ''), NULLIF(e.url, '')) IS NULL THEN NULL
+            ELSE COALESCE(NULLIF(e.url_normalized, ''), NULLIF(e.url, ''))
+                 || CHR(31)
+                 || COALESCE(e.page_rule_id::text, '')
+        END AS page_key,
+        NULLIF(COALESCE(NULLIF(e.user_id, ''), NULLIF(s.user_id, '')), '') AS user_id,
+        NULLIF(COALESCE(NULLIF(e.company_id, ''), NULLIF(s.company_id, '')), '') AS company_id
+    FROM tracker_analyticsevent e
+    JOIN tracker_analyticssession s ON s.session_id = e.session_id
+    WHERE s.project_id = %s
+      AND e.timestamp >= %s
+      AND e.timestamp < %s
+      AND COALESCE(e.visitor_guid, s.visitor_guid) IS NOT NULL
+),
+ordered AS (
+    SELECT
+        visitor_events.*,
+        LAG(timestamp) OVER (
+            PARTITION BY visitor_guid ORDER BY timestamp, event_id
+        ) AS prev_timestamp
+    FROM visitor_events
+),
+marked AS (
+    SELECT
+        ordered.*,
+        CASE
+            WHEN prev_timestamp IS NULL THEN 1
+            WHEN timestamp - prev_timestamp > (%s::int * INTERVAL '1 second') THEN 1
+            ELSE 0
+        END AS starts_new_scope
+    FROM ordered
+),
+scoped AS (
+    SELECT
+        marked.*,
+        SUM(starts_new_scope) OVER (
+            PARTITION BY visitor_guid
+            ORDER BY timestamp, event_id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS scope_ordinal
+    FROM marked
+),
+scope_facts AS (
+    SELECT
+        visitor_guid,
+        scope_ordinal,
+        MIN(timestamp) AS first_ts,
+        MAX(timestamp) AS last_ts,
+        MAX(timestamp) FILTER (WHERE event_type = ANY(%s)) AS last_meaningful_ts,
+        COUNT(*) FILTER (WHERE user_id IS NOT NULL OR company_id IS NOT NULL) AS identified_events,
+        COUNT(DISTINCT page_key) AS page_keys
+    FROM scoped
+    GROUP BY visitor_guid, scope_ordinal
+),
+low_confidence AS (
+    SELECT visitor_guid, first_ts, last_ts
+    FROM scope_facts
+    WHERE identified_events = 0
+      AND (
+        last_meaningful_ts IS NULL
+        OR EXTRACT(EPOCH FROM (last_meaningful_ts - first_ts)) < %s
+      )
+      AND page_keys <= 1
+      AND last_ts < %s
+      AND EXTRACT(EPOCH FROM (last_ts - first_ts)) < %s
+)
+UPDATE pages_pagevisit pv
+SET is_analytics_eligible = FALSE
+FROM low_confidence lc
+WHERE pv.project_id = %s
+  AND pv.visit_start_ts >= %s
+  AND pv.visit_start_ts < %s
+  AND pv.visitor_guid = lc.visitor_guid
+  AND pv.visit_start_ts >= lc.first_ts
+  AND pv.visit_start_ts <= lc.last_ts
 """
 
 
@@ -574,6 +708,7 @@ WITH ordered AS (
     WHERE pv.project_id = %s
       AND pv.visit_start_ts >= %s
       AND pv.visit_start_ts < %s
+      AND pv.is_analytics_eligible
 )
 INSERT INTO pages_pagetransition (
     project_id,
@@ -642,10 +777,12 @@ WITH visits AS (
     WHERE project_id = %s
       AND (visit_start_ts AT TIME ZONE %s)::date >= %s
       AND (visit_start_ts AT TIME ZONE %s)::date <= %s
+      AND is_analytics_eligible
 )
 INSERT INTO pages_pagedailymetric (
     project_id, date, page_rule_id, product_area_id, product_area_key, product_area_name,
     visits_count, engaged_seconds, click_count, scroll_count, mouse_move_count,
+    key_press_count, touch_move_count,
     visits_with_click_count, companies_count_daily, users_count_daily
 )
 SELECT
@@ -660,6 +797,8 @@ SELECT
     COALESCE(SUM(click_count), 0),
     COALESCE(SUM(scroll_count), 0),
     COALESCE(SUM(mouse_move_count), 0),
+    COALESCE(SUM(key_press_count), 0),
+    COALESCE(SUM(touch_move_count), 0),
     COUNT(*) FILTER (WHERE had_click),
     COUNT(DISTINCT company_id) FILTER (WHERE company_id IS NOT NULL AND company_id <> ''),
     COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '')
@@ -668,6 +807,12 @@ GROUP BY project_id, metric_date, page_rule_id, product_area_key
 """
 
 
+# Deliberately carries no is_analytics_eligible predicate.  A low-confidence
+# session is anonymous by definition, and this statement already drops every
+# visit without a company ID, so the predicate would be a no-op here.  Leaving
+# it out keeps Companies provably unaffected by the rule rather than affected
+# in a way that happens to cancel.  Guarded by
+# apps.pages.tests.test_low_confidence_sessions.CompaniesAndUsersUnchangedTests.
 INSERT_PAGE_COMPANY_DAILY_METRICS_SQL = """
 WITH visits AS (
     SELECT
@@ -704,6 +849,8 @@ GROUP BY project_id, metric_date, page_rule_id, product_area_key, company_id
 """
 
 
+# No is_analytics_eligible predicate, for the reason given above the company
+# rollup: this statement already drops every visit without a user ID.
 INSERT_PAGE_USER_DAILY_METRICS_SQL = """
 WITH visits AS (
     SELECT
@@ -747,6 +894,7 @@ WITH visits AS (
     WHERE project_id = %s
       AND (visit_start_ts AT TIME ZONE %s)::date >= %s
       AND (visit_start_ts AT TIME ZONE %s)::date <= %s
+      AND is_analytics_eligible
 )
 INSERT INTO pages_rawpagedailymetric (
     project_id, date, url_normalized, page_rule_id, product_area_id, product_area_key,
@@ -774,6 +922,16 @@ GROUP BY project_id, metric_date, url_normalized
 """
 
 
+# This one needs the eligibility predicate spelled out.  It used to be able to
+# skip it: the rule excluded only sessions with no click at all, so an excluded
+# session could not reach a statement that counts clicks.  Once a click inside
+# the session's opening second stopped qualifying a session, that stopped being
+# true — an excluded bounce can now hold exactly one click, the load-time one,
+# and it must not turn up in top actions.
+#
+# The statement reads events rather than prepared visits, so it filters through
+# the visit each click already LEFT JOINs: a click whose visit was marked
+# ineligible is dropped, while a click matching no visit row is kept as before.
 INSERT_RAW_PAGE_ACTION_DAILY_METRICS_SQL = """
 WITH events AS (
     SELECT
@@ -809,6 +967,8 @@ WITH events AS (
       AND (e.timestamp AT TIME ZONE %s)::date <= %s
       AND COALESCE(NULLIF(e.url_normalized, ''), NULLIF(e.url, '')) IS NOT NULL
       AND COALESCE(NULLIF(e.url_normalized, ''), NULLIF(e.url, '')) <> ''
+      -- Drop a click whose visit was excluded; an unmatched click stays.
+      AND (pv.id IS NULL OR pv.is_analytics_eligible)
 )
 INSERT INTO pages_rawpageactiondailymetric (
     project_id, date, url_normalized, page_rule_id, product_area_id, product_area_key,
@@ -845,6 +1005,7 @@ WITH visits AS (
     WHERE project_id = %s
       AND (visit_start_ts AT TIME ZONE %s)::date >= %s
       AND (visit_start_ts AT TIME ZONE %s)::date <= %s
+      AND is_analytics_eligible
 )
 INSERT INTO pages_projectdailymetric (
     project_id, date, active_companies_count, active_users_count, visits_count, engaged_seconds, click_count

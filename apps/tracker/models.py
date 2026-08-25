@@ -64,6 +64,38 @@ class Session(models.Model):
         default=False,
         help_text="Whether analytics identity fragments use the canonical session link.",
     )
+    # Denormalized Visits scope.  Deriving these at read time meant aggregating
+    # every analytics event the project had ever recorded before the selected
+    # date range could be applied, because a range over MIN(timestamp) can only
+    # be a HAVING clause.  Maintaining them at ingest keeps the Visits row
+    # scope an indexed range scan whose cost tracks the page, not the history.
+    analytics_event_start = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="First linked analytics event timestamp; null when unlinked.",
+    )
+    analytics_event_end = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Last linked analytics event timestamp; null when unlinked.",
+    )
+    has_replay_snapshot = models.BooleanField(
+        default=False,
+        help_text="Whether a stored rrweb full snapshot makes this session replayable.",
+    )
+    # Denormalized low-confidence rule input.  Deriving it per request would
+    # cost a distinct-page aggregate over every linked analytics event before
+    # the selected range could be applied, which is the cost the columns above
+    # exist to avoid.  Widen-only at ingest like they are: evidence of a real
+    # visit only accumulates, so a set flag is never cleared by a later batch.
+    # See apps.tracker.analytics_eligibility for the rule this feeds.
+    has_meaningful_analytics = models.BooleanField(
+        default=False,
+        help_text=(
+            "Whether linked analytics show an identity, more than one page visit, "
+            "a click or scroll, or a span of at least ten seconds."
+        ),
+    )
 
     class Meta:
         constraints = [
@@ -76,6 +108,13 @@ class Session(models.Model):
         indexes = [
             models.Index(fields=['start_time'], name='trk_session_start_idx'),
             models.Index(fields=['visitor', 'start_time'], name='trk_sess_visit_start_idx'),
+            # Serves the Visits row scope: a replayable, analytics-linked
+            # session ordered by the analytical clock start.
+            models.Index(
+                fields=['analytics_event_start', 'session_id'],
+                condition=models.Q(has_replay_snapshot=True),
+                name='trk_sess_visits_scope_idx',
+            ),
         ]
 
     def __str__(self):

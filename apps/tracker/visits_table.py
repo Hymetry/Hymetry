@@ -14,24 +14,34 @@ the same implementation.
 
 from __future__ import annotations
 
-import hashlib
 import unicodedata
 from collections import defaultdict
 from datetime import datetime, time, timedelta, timezone as datetime_timezone
 from functools import cmp_to_key
+from math import ceil
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
-from django.core.paginator import Paginator
-from django.db.models import CharField, Exists, Max, Min, OuterRef, Q, Subquery, Sum
+from django.db.models import (
+    CharField,
+    DurationField,
+    Exists,
+    ExpressionWrapper,
+    F,
+    Max,
+    Min,
+    OuterRef,
+    Q,
+    Subquery,
+)
 from django.db.models.fields.json import KeyTextTransform
 from django.db.models.functions import Length
 from django.utils import timezone
 
-from apps.pages.models import PageVisit, ProductArea
-from apps.pages.product_area_colors import SAFE_PRODUCT_AREA_COLOR_RE
+from apps.pages.models import ProductArea
 from apps.projects.company_attribute_filters import apply_company_attribute_filters
+from apps.tracker.analytics_eligibility import exclude_low_confidence_sessions
 from apps.tracker.analytics_visit_projection import build_analytics_visit_projections
 from apps.tracker.models import (
     AnalyticsEvent,
@@ -39,12 +49,6 @@ from apps.tracker.models import (
     Event,
     ProjectPageRule,
     Session,
-)
-from apps.tracker.replayability import replayable_full_snapshot_events
-from apps.tracker.page_naming import (
-    compile_page_rules,
-    normalize_page_url_key,
-    resolve_page_rule_match,
 )
 
 
@@ -96,20 +100,6 @@ SORT_OPTIONS = (
     {'value': 'unique_pages', 'label': 'Unique pages'},
 )
 
-# This palette intentionally excludes the neutral tenth color used by the
-# shared palette.  A neutral gray has semantic meaning on Visits: unclassified.
-CLASSIFIED_COLOR_PALETTE = (
-    '#4269D0',
-    '#EFB118',
-    '#FF725C',
-    '#6CC5B0',
-    '#3CA951',
-    '#FF8AB7',
-    '#A463F2',
-    '#97BBF5',
-    '#9C6B4E',
-)
-
 
 def _clean(value):
     return str(value or '').strip()
@@ -144,11 +134,6 @@ def _normalized_area_key(area_key, area_name=''):
         return normalized_key
     normalized_key = _product_area_name_key(area_key)
     return normalized_key or 'product-area'
-
-
-def _classified_page_key(page_name):
-    normalized_name = _normalized_identity_text(page_name) or 'unknown page'
-    return f'name:{normalized_name}'
 
 
 def _entry_identity(entry):
@@ -385,120 +370,6 @@ def match_recording_sessions(project, recordings, *, max_gap_seconds=None):
     return matches
 
 
-def _is_chromatic_color(color):
-    color = _clean(color)
-    if not SAFE_PRODUCT_AREA_COLOR_RE.fullmatch(color):
-        return False
-    red, green, blue = (int(color[index:index + 2], 16) for index in (1, 3, 5))
-    # Neutral and near-neutral colors are deliberately rejected.  Their stored
-    # value is preserved elsewhere in the product, but Visits reserves gray.
-    return max(red, green, blue) - min(red, green, blue) >= 45
-
-
-def _stable_classified_color(area_key, area_name, explicit_color=''):
-    if _is_chromatic_color(explicit_color):
-        return explicit_color
-    identity = ' '.join((_clean(area_key) or _clean(area_name)).lower().split()) or 'classified'
-    digest = hashlib.sha256(identity.encode('utf-8')).digest()
-    return CLASSIFIED_COLOR_PALETTE[int.from_bytes(digest[:4], 'big') % len(CLASSIFIED_COLOR_PALETTE)]
-
-
-def _area_indexes(project):
-    by_id = {}
-    by_key = {}
-    by_name = {}
-    rows = ProductArea.objects.filter(project=project).values('id', 'slug', 'name', 'short_name', 'color')
-    for raw in rows:
-        item = {
-            'id': raw['id'],
-            'key': _clean(raw['slug']),
-            'name': _clean(raw['name']),
-            'short_name': _clean(raw['short_name']),
-            'color': _clean(raw['color']),
-        }
-        by_id[item['id']] = item
-        if item['key']:
-            by_key[item['key'].casefold()] = item
-        if item['name']:
-            by_name[item['name'].casefold()] = item
-    return by_id, by_key, by_name
-
-
-def _active_rule_metadata(project, historical_rule_ids=()):
-    historical_rule_ids = {
-        rule_id
-        for rule_id in historical_rule_ids
-        if rule_id is not None
-    }
-    rule_filter = Q(is_active=True)
-    if historical_rule_ids:
-        rule_filter |= Q(id__in=historical_rule_ids)
-    relevant_rules = list(
-        ProjectPageRule.objects
-        .filter(project=project)
-        .filter(rule_filter)
-        .order_by('-priority', '-updated_at', 'id')
-    )
-    active_rules = [rule for rule in relevant_rules if rule.is_active]
-    # PageVisit stores the rule id as historical metadata. Keep inactive rules
-    # referenced by this result page available for its canonical label, while
-    # URL fallback matching continues to use only the active rule set.
-    return active_rules, {rule.id: rule for rule in relevant_rules}, compile_page_rules(active_rules)
-
-
-def _product_area_for_rule(rule, area_by_key, area_by_name):
-    area_name = _clean(rule.product_area) or _clean(rule.page_name) or UNCLASSIFIED_AREA_NAME
-    normalized_key = _normalized_area_key('', area_name)
-    area = area_by_key.get(normalized_key.casefold()) or area_by_name.get(area_name.casefold())
-    if area:
-        return {
-            **area,
-            'key': normalized_key,
-            'name': area_name,
-        }
-    return {
-        'id': None,
-        'key': normalized_key,
-        'name': area_name,
-        'short_name': '',
-        'color': '',
-    }
-
-
-def _page_entry(
-    *,
-    logical_key,
-    page_name,
-    active_seconds,
-    classified,
-    area_key='',
-    area_name='',
-    area_color='',
-    page_rule_id=None,
-):
-    normalized_page_name = _clean(page_name) or 'Unknown page'
-    if classified:
-        normalized_area_name = _clean(area_name) or 'Product area'
-        normalized_area_key = _normalized_area_key(area_key, normalized_area_name)
-        logical_key = _classified_page_key(normalized_page_name)
-        color = _stable_classified_color(normalized_area_key, normalized_area_name, area_color)
-    else:
-        normalized_area_name = UNCLASSIFIED_AREA_NAME
-        normalized_area_key = UNCLASSIFIED_AREA_KEY
-        color = UNCLASSIFIED_COLOR
-
-    return {
-        'logical_key': logical_key,
-        'page': normalized_page_name,
-        'seconds': max(0, int(active_seconds or 0)),
-        'classified': bool(classified),
-        'product_area': normalized_area_name,
-        'product_area_key': normalized_area_key,
-        'color': color,
-        'page_rule_ids': {page_rule_id} if page_rule_id is not None else set(),
-    }
-
-
 def _build_segments(entries):
     combined = {}
     for entry in entries or ():
@@ -581,214 +452,22 @@ def _build_segments(entries):
     return segments, public_groups
 
 
-def _clipped_page_visit_seconds(project, analytics_windows):
-    if not analytics_windows:
-        return {}
-    rows = (
-        PageVisit.objects
-        .filter(project=project, session_id__in=analytics_windows)
-        .values('id', 'session_id', 'visit_start_ts', 'visit_end_ts', 'engaged_seconds')
-    )
-    clipped = {}
-    for row in rows:
-        window_start, window_end = analytics_windows[row['session_id']]
-        if window_end <= window_start:
-            window_end = window_start + timedelta(seconds=1)
-        visit_start = row['visit_start_ts']
-        visit_end = max(row.get('visit_end_ts') or visit_start, visit_start)
-        overlap_start = max(visit_start, window_start)
-        overlap_end = min(visit_end, window_end)
-        is_point_visit = visit_end == visit_start
-        if is_point_visit:
-            if not (window_start <= visit_start < window_end):
-                continue
-        elif overlap_end <= overlap_start:
-            continue
-
-        engaged_seconds = max(0, int(row.get('engaged_seconds') or 0))
-        visit_seconds = max(0.0, (visit_end - visit_start).total_seconds())
-        overlap_seconds = max(0.0, (overlap_end - overlap_start).total_seconds())
-        if visit_seconds <= 0:
-            adjusted_seconds = engaged_seconds
-        elif overlap_seconds >= visit_seconds:
-            adjusted_seconds = engaged_seconds
-        else:
-            # PageVisit stores only a rolled-up engaged total, so a boundary
-            # crossing has no event-level slices left to sum exactly. Prorating
-            # by its overlap keeps the total bounded to the replay interval.
-            adjusted_seconds = min(
-                engaged_seconds,
-                max(0, int(round(engaged_seconds * overlap_seconds / visit_seconds))),
-            )
-        clipped[row['id']] = {
-            'session_id': row['session_id'],
-            'seconds': adjusted_seconds,
-        }
-    return clipped
+# Sorts the database can order from stored columns, so only the requested page
+# has to be read.  User, company and unique-page counts rank rows by facts the
+# per-visit projection derives, and still need the whole range in memory.
+DATABASE_PAGINATED_SORT_FIELDS = {
+    'date_time': 'analytics_event_start',
+    'duration': 'analytics_duration',
+}
 
 
-def _page_visit_entry(row, rules_by_id, active_seconds):
-    rule_id = row.get('page_rule_id')
-    rule = rules_by_id.get(rule_id)
-    classified = rule_id is not None
-    normalized_url = normalize_page_url_key(row.get('url_normalized')) or _clean(row.get('url_normalized'))
-    page_name = (
-        _clean(getattr(rule, 'page_name', ''))
-        or _clean(row.get('page_name_original'))
-        or _clean(row.get('representative_page_name'))
-        or normalized_url
-    )
-    return _page_entry(
-        logical_key='' if classified else f'url:{normalized_url}',
-        page_name=page_name,
-        active_seconds=active_seconds,
-        classified=classified,
-        area_key=row.get('product_area__slug') or row.get('product_area_key'),
-        area_name=(
-            _clean(getattr(rule, 'product_area', ''))
-            or row.get('product_area__name')
-            or row.get('product_area_name')
-        ),
-        area_color=row.get('product_area__color'),
-        page_rule_id=rule_id,
-    )
+def _database_page_order(sort_key, sort_direction):
+    """Return the stored-column ordering for a database-paginated sort."""
 
-
-def _page_visit_metrics(project, analytics_ids, rules_by_id, *, page_visit_seconds=None):
-    if not analytics_ids or page_visit_seconds == {}:
-        return {}
-    page_visits = PageVisit.objects.filter(project=project, session_id__in=analytics_ids)
-    if page_visit_seconds is not None:
-        page_visits = page_visits.filter(id__in=page_visit_seconds)
-    rows = (
-        page_visits
-        .values('session_id')
-        .annotate(
-            duration_seconds=Sum('engaged_seconds'),
-            user_id_sample=Min('user_id', filter=~Q(user_id__isnull=True) & ~Q(user_id='')),
-            user_name_sample_value=Min('user_name_sample', filter=~Q(user_name_sample='')),
-            company_id_sample=Min('company_id', filter=~Q(company_id__isnull=True) & ~Q(company_id='')),
-            company_name_sample_value=Min('company_name_sample', filter=~Q(company_name_sample='')),
-        )
-        .order_by()
-    )
-    metrics = {
-        row['session_id']: {
-            **row,
-            'duration_seconds': int(row.get('duration_seconds') or 0),
-            'unique_pages': 0,
-            'logical_pages': set(),
-        }
-        for row in rows
-    }
-    if page_visit_seconds is not None:
-        duration_by_session = defaultdict(int)
-        for item in page_visit_seconds.values():
-            duration_by_session[item['session_id']] += item['seconds']
-        for session_id, payload in metrics.items():
-            payload['duration_seconds'] = duration_by_session[session_id]
-    classified_page_rows = (
-        page_visits
-        .filter(page_rule_id__isnull=False)
-        .values(
-            'session_id',
-            'page_rule_id',
-            'product_area_key',
-            'product_area_name',
-            'product_area__slug',
-            'product_area__name',
-        )
-        .annotate(representative_page_name=Min('page_name_original'))
-        .order_by()
-    )
-    for row in classified_page_rows:
-        entry = _page_visit_entry(row, rules_by_id, active_seconds=0)
-        metrics[row['session_id']]['logical_pages'].add(_entry_identity(entry))
-    unclassified_page_rows = (
-        page_visits
-        .filter(page_rule_id__isnull=True)
-        .values('session_id', 'url_normalized')
-        .distinct()
-    )
-    for row in unclassified_page_rows:
-        normalized_url = normalize_page_url_key(row.get('url_normalized')) or _clean(row.get('url_normalized'))
-        metrics[row['session_id']]['logical_pages'].add((
-            UNCLASSIFIED_AREA_KEY,
-            f'url:{normalized_url}',
-        ))
-    for payload in metrics.values():
-        payload['unique_pages'] = len(payload['logical_pages'])
-    return metrics
-
-
-def _page_visit_segments(project, analytics_ids, rules_by_id, *, page_visit_seconds=None):
-    segments_by_session = defaultdict(list)
-    if not analytics_ids or page_visit_seconds == {}:
-        return segments_by_session
-    page_visits = PageVisit.objects.filter(project=project, session_id__in=analytics_ids)
-    if page_visit_seconds is not None:
-        page_visits = page_visits.filter(id__in=page_visit_seconds)
-    rows = (
-        page_visits
-        .values(
-            'id',
-            'session_id',
-            'page_rule_id',
-            'url_normalized',
-            'page_name_original',
-            'product_area_id',
-            'product_area_key',
-            'product_area_name',
-            'product_area__slug',
-            'product_area__name',
-            'product_area__color',
-            'engaged_seconds',
-        )
-    )
-    for row in rows:
-        segments_by_session[row['session_id']].append(
-            _page_visit_entry(
-                row,
-                rules_by_id,
-                active_seconds=(
-                    page_visit_seconds[row['id']]['seconds']
-                    if page_visit_seconds is not None
-                    else row.get('engaged_seconds')
-                ),
-            )
-        )
-    return segments_by_session
-
-
-def _display_name(sample_name, entity_id):
-    return _clean(sample_name) or _clean(entity_id) or 'Unknown'
-
-
-def _representative_identity(analytics_sessions, metrics_by_analytics):
-    candidates = []
-    for analytics in analytics_sessions:
-        metrics = metrics_by_analytics.get(analytics.session_id) or {}
-        user_id = _clean(metrics.get('user_id_sample')) or _clean(analytics.user_id)
-        company_id = _clean(metrics.get('company_id_sample')) or _clean(analytics.company_id)
-        if not user_id and not company_id:
-            continue
-        user_name = _clean(metrics.get('user_name_sample_value'))
-        company_name = _clean(metrics.get('company_name_sample_value'))
-        candidates.append((
-            int(metrics.get('duration_seconds') or 0),
-            bool(user_id) + bool(company_id),
-            bool(user_name) + bool(company_name),
-            analytics.start_time,
-            str(analytics.session_id),
-            user_id,
-            user_name,
-            company_id,
-            company_name,
-        ))
-    if not candidates:
-        return '', '', '', ''
-    winner = max(candidates)
-    return winner[-4], winner[-3], winner[-2], winner[-1]
+    field = DATABASE_PAGINATED_SORT_FIELDS.get(sort_key)
+    if field is None:
+        return None
+    return (field if sort_direction == 'asc' else f'-{field}', 'session_id')
 
 
 def _normalize_sort(sort_key, sort_direction):
@@ -835,6 +514,76 @@ def _compare_rows(left, right, sort_key, direction):
     return -1 if left_id < right_id else (1 if left_id > right_id else 0)
 
 
+class _VisitsPaginator:
+    """Paginator surface for the Visits table.
+
+    ``count`` is the exact number of visits in the selected range, which the
+    pagination bar spends on ``num_pages`` to report ``Page N/M`` like the
+    other paginated tables.  Sorts that already materialize every row in
+    memory get it for free; the database-paginated sorts pay one extra
+    ``COUNT`` whose cost tracks the range instead of the page.  "Is there a
+    next page?" stays an extra fetched row either way, so a page never depends
+    on the count query agreeing with it.
+    """
+
+    def __init__(self, per_page, *, count=None):
+        self.per_page = per_page
+        self.count = count
+
+    @property
+    def num_pages(self):
+        if self.count is None:
+            return None
+        return max(1, ceil(self.count / self.per_page))
+
+
+class _VisitsPage:
+    """The Django ``Page`` surface the Visits view and template rely on."""
+
+    def __init__(self, object_list, number, *, has_next, paginator):
+        self.object_list = object_list
+        self.number = number
+        self.paginator = paginator
+        self._has_next = has_next
+
+    def __iter__(self):
+        return iter(self.object_list)
+
+    def __len__(self):
+        return len(self.object_list)
+
+    def has_previous(self):
+        return self.number > 1
+
+    def has_next(self):
+        return self._has_next
+
+    def has_other_pages(self):
+        return self.has_previous() or self.has_next()
+
+    def previous_page_number(self):
+        return self.number - 1
+
+    def next_page_number(self):
+        return self.number + 1
+
+
+def _paginate_rows(rows, page_number, page_size):
+    """Page an in-memory row list, where the exact total is already known."""
+
+    paginator = _VisitsPaginator(page_size, count=len(rows))
+    last_page = paginator.num_pages
+    page_number = min(page_number, last_page)
+    offset = (page_number - 1) * page_size
+    window = rows[offset:offset + page_size]
+    return _VisitsPage(
+        window,
+        page_number,
+        has_next=offset + page_size < len(rows),
+        paginator=paginator,
+    )
+
+
 def _positive_int(value, default, maximum=None):
     try:
         parsed = int(value)
@@ -848,32 +597,24 @@ def _positive_int(value, default, maximum=None):
 
 
 def _recorded_sessions_queryset(project):
-    linked_analytics_events = AnalyticsEvent.objects.filter(
-        session__project=project,
-        session__visit_session_id=OuterRef('session_id'),
-    )
-    replay_snapshots = replayable_full_snapshot_events(
-        session_id=OuterRef('session_id'),
-    )
+    """Return this project's replayable, analytics-linked recordings.
+
+    Both qualifiers and the analytical clock are denormalized onto ``Session``
+    at ingest (see :mod:`apps.tracker.visits_scope`).  Deriving them here meant
+    a ``MIN(timestamp)`` over every linked analytics event before the selected
+    range could be applied as ``HAVING``, plus a JSONB probe of stored rrweb
+    payloads for the replay check — both proportional to the project's whole
+    history rather than to the requested page.  A non-null clock start is
+    exactly the old "has a linked analytics event" test.
+    """
+
     return (
         Session.objects
-        .filter(visitor__project=project)
-        .alias(
-            has_replay_snapshot=Exists(replay_snapshots),
-            has_linked_analytics_event=Exists(linked_analytics_events),
+        .filter(
+            visitor__project=project,
+            has_replay_snapshot=True,
+            analytics_event_start__isnull=False,
         )
-        .annotate(
-            analytics_event_start=Min(
-                'analytics_fragments__events__timestamp',
-                filter=Q(analytics_fragments__project=project),
-            ),
-            analytics_event_end=Max(
-                'analytics_fragments__events__timestamp',
-                filter=Q(analytics_fragments__project=project),
-            ),
-        )
-        .filter(has_replay_snapshot=True)
-        .filter(has_linked_analytics_event=True)
         .select_related('visitor')
     )
 
@@ -886,12 +627,22 @@ def _base_visits_recordings_queryset(
     entity_id='',
     page_filter_type='',
     page_filter_id='',
+    now=None,
 ):
-    """Return the replayable recording scope before company attributes."""
+    """Return the replayable recording scope before company attributes.
 
-    recordings_queryset = _recorded_sessions_queryset(project).filter(
-        analytics_event_start__gte=period['start_ts'],
-        analytics_event_start__lt=period['end_ts'],
+    Low-confidence anonymous sessions are dropped here rather than while rows
+    are assembled, so the range total the pagination bar reports counts the
+    same scope the table lists.  See
+    :mod:`apps.tracker.analytics_eligibility`.
+    """
+
+    recordings_queryset = exclude_low_confidence_sessions(
+        _recorded_sessions_queryset(project).filter(
+            analytics_event_start__gte=period['start_ts'],
+            analytics_event_start__lt=period['end_ts'],
+        ),
+        now=now,
     )
     if entity_type and entity_id:
         identity_filter = {
@@ -996,10 +747,10 @@ def _apply_recording_company_attribute_filters(
     return recordings_queryset.filter(matches_company_attribute_filter=True)
 
 
-def company_attribute_preview_counts(project, request, state):
+def company_attribute_preview_counts(project, request, state, *, now=None):
     """Count the Visits company scope before and after draft attributes."""
 
-    known_identities = _visits_known_identities(project, request)
+    known_identities = _visits_known_identities(project, request, now=now)
     eligible_count = (
         known_identities
         .order_by()
@@ -1042,7 +793,15 @@ def company_attribute_scope_company_ids(project, request):
     )
 
 
-def _visits_known_identities(project, request):
+def _visits_known_identities(project, request, *, now=None):
+    """Identified companies the current Visits scope observes.
+
+    ``now`` mirrors :func:`build_visits_context` so a caller can pin the same
+    clock the table used.  Without it a test that asserts these two agree
+    compares them against different windows and starts failing on the calendar
+    day its fixtures fall out of the default range.
+    """
+
     from apps.tracker.visits_filters import (
         resolve_visits_page_filter,
         visits_page_filter_groups,
@@ -1059,7 +818,7 @@ def _visits_known_identities(project, request):
         query.get('page_filter_type'),
         query.get('page_filter_id'),
     )
-    period = resolve_visits_period(project.timezone, query.get('range'))
+    period = resolve_visits_period(project.timezone, query.get('range'), now=now)
     recordings_queryset = _base_visits_recordings_queryset(
         project,
         period=period,
@@ -1067,6 +826,7 @@ def _visits_known_identities(project, request):
         entity_id=entity_id,
         page_filter_type=page_selection['type'],
         page_filter_id=page_selection['id'],
+        now=now,
     )
     recording_ids = recordings_queryset.order_by().values('session_id')
     known_identities = (
@@ -1084,34 +844,6 @@ def _visits_known_identities(project, request):
     elif selected_user_id:
         known_identities = known_identities.filter(user_id=selected_user_id)
     return known_identities
-
-
-def _correlation_neighborhood(project, target_recordings):
-    target_recordings = list(target_recordings or ())
-    if not target_recordings:
-        return []
-    buffer_seconds = max(
-        int(getattr(settings, 'SESSION_EXPIRATION_SECONDS', 1800)),
-        int(getattr(settings, 'ANALYTICS_SESSION_EXPIRATION_SECONDS', 1800)),
-    ) + 60
-    lower = min(recording.start_time for recording in target_recordings) - timedelta(seconds=buffer_seconds)
-    upper = max(_effective_end(recording) for recording in target_recordings) + timedelta(seconds=buffer_seconds)
-    queryset = (
-        _recorded_sessions_queryset(project)
-        .filter(start_time__lt=upper)
-        .filter(Q(ended_at__gte=lower) | Q(last_activity__gte=lower))
-    )
-    visitor_guids = {
-        recording.visitor.visitor_guid
-        for recording in target_recordings
-        if recording.visitor_id and recording.visitor.visitor_guid
-    }
-    queryset = queryset.filter(visitor__visitor_guid__in=visitor_guids)
-    neighborhood = list(queryset.order_by('start_time', 'session_id'))
-    by_id = {recording.session_id: recording for recording in neighborhood}
-    for recording in target_recordings:
-        by_id.setdefault(recording.session_id, recording)
-    return _attach_recording_event_bounds(by_id.values())
 
 
 def _analytics_projection_data(project, recordings):
@@ -1396,6 +1128,7 @@ def build_visits_context(
         entity_id=entity_id,
         page_filter_type=page_filter_type,
         page_filter_id=page_filter_id,
+        now=now,
     )
     recordings_queryset = _apply_recording_company_attribute_filters(
         recordings_queryset,
@@ -1405,13 +1138,36 @@ def build_visits_context(
         entity_id=entity_id,
     )
 
-    date_sort_is_database_paginated = sort_key == 'date_time'
-    if date_sort_is_database_paginated:
-        date_order = 'analytics_event_start' if sort_direction == 'asc' else '-analytics_event_start'
-        paginator = Paginator(recordings_queryset.order_by(date_order, 'session_id'), page_size)
-        page_obj = paginator.get_page(page_number)
-        recordings = list(page_obj.object_list)
+    # Date and duration both order by stored columns, so the database can
+    # return just the requested page.  The remaining sorts rank rows by facts
+    # that only the per-visit projection knows, so they still project the whole
+    # range in memory before paginating.
+    page_number = _positive_int(page_number, 1)
+    database_order = _database_page_order(sort_key, sort_direction)
+    if database_order is not None:
+        # The pagination bar reports the range total, so the scope is counted
+        # once before the ordering annotation narrows the query to a page.
+        # Since the qualifiers and the analytical clock are denormalized onto
+        # ``Session``, this is an indexed range scan rather than the old
+        # aggregate over every linked analytics event.
+        range_total = recordings_queryset.count()
+        if sort_key == 'duration':
+            recordings_queryset = recordings_queryset.annotate(
+                analytics_duration=ExpressionWrapper(
+                    F('analytics_event_end') - F('analytics_event_start'),
+                    output_field=DurationField(),
+                ),
+            )
+        offset = (page_number - 1) * page_size
+        # One extra row answers "is there a next page?" without counting the
+        # whole range.
+        window = list(
+            recordings_queryset.order_by(*database_order)[offset:offset + page_size + 1]
+        )
+        database_page_has_next = len(window) > page_size
+        recordings = window[:page_size]
     else:
+        database_page_has_next = False
         recordings = list(recordings_queryset.order_by('analytics_event_start', 'session_id'))
     recordings = _attach_recording_event_bounds(recordings)
 
@@ -1520,11 +1276,16 @@ def build_visits_context(
         })
 
     rows.sort(key=cmp_to_key(lambda left, right: _compare_rows(left, right, sort_key, sort_direction)))
-    if date_sort_is_database_paginated:
-        page_obj.object_list = rows
+    if database_order is not None:
+        page_obj = _VisitsPage(
+            rows,
+            page_number,
+            has_next=database_page_has_next,
+            paginator=_VisitsPaginator(page_size, count=range_total),
+        )
     else:
-        paginator = Paginator(rows, page_size)
-        page_obj = paginator.get_page(page_number)
+        page_obj = _paginate_rows(rows, page_number, page_size)
+    paginator = page_obj.paginator
 
     query_values = [
         ('range', period['range_key']),

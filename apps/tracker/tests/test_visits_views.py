@@ -560,7 +560,7 @@ class VisitsViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context['paginator'].count, 1)
+        self.assertEqual(len(response.context['visit_rows']), 1)
         self.assertEqual(response.context['visits_entity_type'], 'user')
         self.assertEqual(response.context['visits_entity_id'], 'alice')
         self.assertContains(response, 'User: Alice Example')
@@ -574,7 +574,7 @@ class VisitsViewTests(TestCase):
             {'entity_type': 'company', 'entity_id': 'not-acme'},
         )
         self.assertEqual(empty_response.status_code, 200)
-        self.assertEqual(empty_response.context['paginator'].count, 0)
+        self.assertEqual(list(empty_response.context['visit_rows']), [])
         empty_root = _parse_html_tree(empty_response.content.decode())
         empty_state = _single_node(empty_root, class_name='visits-empty-state')
         self.assertIn('No visits found', empty_state.text)
@@ -637,7 +637,7 @@ class VisitsViewTests(TestCase):
             },
         )
         self.assertEqual(page_response.status_code, 200)
-        self.assertEqual(page_response.context['paginator'].count, 1)
+        self.assertEqual(len(page_response.context['visit_rows']), 1)
         self.assertContains(page_response, 'Page: Dashboard')
         self.assertEqual(
             [segment['page'] for segment in page_response.context['visit_rows'][0]['segments']],
@@ -652,7 +652,7 @@ class VisitsViewTests(TestCase):
             },
         )
         self.assertEqual(area_response.status_code, 200)
-        self.assertEqual(area_response.context['paginator'].count, 1)
+        self.assertEqual(len(area_response.context['visit_rows']), 1)
         self.assertContains(area_response, 'Area: Core product')
         self.assertEqual(
             [segment['page'] for segment in area_response.context['visit_rows'][0]['segments']],
@@ -1172,7 +1172,9 @@ class VisitsViewTests(TestCase):
             pagination.attrs.get('class'),
         )
         pagination_meta = _single_node(pagination, class_name='visits-pagination-meta')
-        self.assertIn('2', pagination_meta.text)
+        # The range total is reported as ``Page N/M`` beside the page links,
+        # like the other paginated tables, so the refresh control stands alone.
+        self.assertEqual(pagination_meta.text.strip(), '')
         refresh = _single_node(
             pagination_meta,
             tag='button',

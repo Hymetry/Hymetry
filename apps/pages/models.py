@@ -74,11 +74,21 @@ class PageVisit(models.Model):
     click_count = models.PositiveIntegerField(default=0)
     scroll_count = models.PositiveIntegerField(default=0)
     mouse_move_count = models.PositiveIntegerField(default=0)
+    key_press_count = models.PositiveIntegerField(default=0)
+    touch_move_count = models.PositiveIntegerField(default=0)
     had_click = models.BooleanField(default=False)
     had_scroll = models.BooleanField(default=False)
     had_mouse_move = models.BooleanField(default=False)
+    had_key_press = models.BooleanField(default=False)
+    had_touch_move = models.BooleanField(default=False)
     first_event_id = models.BigIntegerField(null=True, blank=True)
     last_event_id = models.BigIntegerField(null=True, blank=True)
+    # Set false for a visit belonging to a completed low-confidence anonymous
+    # session, which the daily rollups then skip.  The row itself is kept, so
+    # changing the rule is a rebuild rather than a re-collection.  See
+    # apps.tracker.analytics_eligibility for the rule and
+    # apps.pages.queries.UPDATE_LOW_CONFIDENCE_VISITS_SQL for how it is set.
+    is_analytics_eligible = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -135,6 +145,8 @@ class PageDailyMetric(models.Model):
     click_count = models.PositiveBigIntegerField(default=0)
     scroll_count = models.PositiveBigIntegerField(default=0)
     mouse_move_count = models.PositiveBigIntegerField(default=0)
+    key_press_count = models.PositiveBigIntegerField(default=0)
+    touch_move_count = models.PositiveBigIntegerField(default=0)
     visits_with_click_count = models.PositiveBigIntegerField(default=0)
     companies_count_daily = models.PositiveBigIntegerField(default=0)
     users_count_daily = models.PositiveBigIntegerField(default=0)
