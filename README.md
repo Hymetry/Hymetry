@@ -232,8 +232,6 @@ Screen recording can capture sensitive DOM content. Password fields receive rrwe
 
 New installations run the complete migration chain automatically.
 
-Incremental upgrade migrations support an existing OSS database whose application version is exactly commit [`da90b398`](https://github.com/Hymetry/Hymetry/commit/da90b398e6ed0069b1835d08314f7ac46c6ca8d8).
-
 Before upgrading:
 
 1. Back up PostgreSQL.
