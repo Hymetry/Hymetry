@@ -21,11 +21,11 @@
           <section class="overflow-hidden bg-white border border-slate-200 rounded-xl shadow-sm mb-6">
             <div class="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h2 class="text-lg font-semibold text-slate-600 uppercase">TEAM MEMBERS</h2>
+                <h2 class="text-lg font-semibold uppercase text-gray-600">TEAM MEMBERS</h2>
                 <p class="mt-1 text-sm text-gray-950">Members can access all projects in this workspace.</p>
               </div>
               {% if can_add_owner or can_add_admin or can_add_member or can_add_viewer %}
-                <button type="button" data-modal-trigger aria-controls="add-team-members" class="inline-flex items-center gap-2 font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                <button type="button" data-modal-trigger aria-controls="add-team-members" class="inline-flex items-center gap-2 font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
                   <svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor">
                     <path d="M450-450H200v-60h250v-250h60v250h250v60H510v250h-60v-250Z" />
                   </svg>
@@ -59,7 +59,7 @@
                       </div>
                       <div class="col-span-1 relative">
                         {% if member.kind == 'member' and member.has_actions %}
-                          <button type="button" class="font-medium text-slate-600 duration-150 hover:bg-slate-100 rounded px-2 py-1.5" data-dropdown-toggle="#team-{{ member.kind }}-{{ member.id }}-menu" aria-label="Open member actions">
+                          <button type="button" class="font-medium text-gray-950 duration-150 hover:bg-slate-100 rounded px-2 py-1.5" data-dropdown-toggle="#team-{{ member.kind }}-{{ member.id }}-menu" aria-label="Open member actions">
                             &hellip;
                           </button>
                           <div id="team-{{ member.kind }}-{{ member.id }}-menu" data-dropdown-menu class="hidden absolute z-10 mt-2 w-40 right-0 rounded-md bg-white shadow-lg ring-1 ring-black/5 focus:outline-none duration-200" role="menu" tabindex="-1">

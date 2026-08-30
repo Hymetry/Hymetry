@@ -94,7 +94,7 @@
                 </header>
 
                 <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
-                    <h2 class="text-lg font-semibold text-slate-600 uppercase">Name</h2>
+                    <h2 class="text-lg font-semibold uppercase text-gray-600">Name</h2>
 
                     <div class="flex justify-between items-center mt-2">
                         <p>
@@ -107,21 +107,21 @@
                         <button
                             data-modal-trigger
                             aria-controls="change-user-name"
-                            class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                            class="font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
                             {% if user.first_name or user.last_name %}Change name{% else %}Set my name{% endif %}
                         </button>
                     </div>
                 </section>
 
                 <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-12">
-                    <h2 class="text-lg font-semibold text-slate-600 uppercase">Credentials</h2>
+                    <h2 class="text-lg font-semibold uppercase text-gray-600">Credentials</h2>
                     <div class="mt-4"><p>Email: {{ user.email }}</p></div>
                     <div class="flex justify-between items-center mt-2">
                         <p>Password: *******</p>
                         <button
                             data-modal-trigger
                             aria-controls="change-password"
-                            class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                            class="font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
                             Change password
                         </button>
                     </div>
@@ -131,7 +131,7 @@
                     <form method="post" action="{% url 'sign_out' %}">
                         {% csrf_token %}
                         <button type="submit"
-                            class="flex items-center gap-2 font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                            class="flex items-center gap-2 font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
                         <svg
                             xmlns="http://www.w3.org/2000/svg"
                             height="24px"

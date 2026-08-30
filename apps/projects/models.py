@@ -10,6 +10,7 @@ from django.db.models.functions import Lower
 from django.utils.text import slugify
 
 from .domain_utils import normalize_workspace_website_url
+from .statuses import project_effective_status
 
 
 WORKSPACE_SLUG_MAX_LENGTH = 40
@@ -274,6 +275,10 @@ class Project(models.Model):
         constraints = [
             models.UniqueConstraint(fields=['workspace', 'slug'], name='projects_workspace_slug_unique'),
         ]
+
+    @property
+    def effective_status(self):
+        return project_effective_status(self)
 
     def save(self, *args, **kwargs):
         if not self.id:

@@ -19,13 +19,13 @@
           </header>
 
           <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
-            <h2 class="text-lg font-semibold text-slate-600 uppercase">GENERAL</h2>
+            <h2 class="text-lg font-semibold uppercase text-gray-600">GENERAL</h2>
 
             <div class="mt-4 space-y-4">
               <div class="flex flex-wrap items-center justify-between gap-4">
                 <p>Workspace name: {{ workspace.name }}</p>
                 {% if can_edit_workspace %}
-                  <button data-modal-trigger aria-controls="change-workspace-name" class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                  <button data-modal-trigger aria-controls="change-workspace-name" class="font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
                     Change name
                   </button>
                 {% endif %}
@@ -33,7 +33,7 @@
               <div class="flex flex-wrap items-center justify-between gap-4">
                 <p>Workspace URL slug: {{ workspace.slug }}</p>
                 {% if can_edit_workspace %}
-                  <button data-modal-trigger aria-controls="change-workspace-slug" class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                  <button data-modal-trigger aria-controls="change-workspace-slug" class="font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
                     Change URL slug
                   </button>
                 {% endif %}
@@ -41,7 +41,7 @@
               <div class="flex flex-wrap items-center justify-between gap-4">
                 <p>Website: {{ workspace.website_url|default:'-' }}</p>
                 {% if can_edit_workspace %}
-                  <button data-modal-trigger aria-controls="change-workspace-website" class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+                  <button data-modal-trigger aria-controls="change-workspace-website" class="font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
                     Change website
                   </button>
                 {% endif %}
@@ -83,7 +83,7 @@
           </section>
 
           <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
-            <h2 class="text-lg font-semibold text-slate-600 uppercase">OPENAI</h2>
+            <h2 class="text-lg font-semibold uppercase text-gray-600">OPENAI</h2>
             <p class="mt-3 text-slate-600 leading-relaxed">
               This optional API key is shared by every project in the workspace. The key is encrypted and never shown again after saving.
             </p>
@@ -97,7 +97,7 @@
                   <div class="flex flex-wrap gap-2">
                     <form method="post" action="{% url 'w:validate_workspace_openai_key' workspace_slug=workspace.slug %}">
                       {% csrf_token %}
-                      <button type="submit" class="font-medium text-slate-600 border border-slate-200 hover:bg-slate-100 rounded px-3 py-1.5">Validate</button>
+                      <button type="submit" class="font-medium text-gray-950 border border-slate-200 hover:bg-slate-100 rounded px-3 py-1.5">Validate</button>
                     </form>
                     <form method="post" action="{% url 'w:remove_workspace_openai_key' workspace_slug=workspace.slug %}">
                       {% csrf_token %}
@@ -129,7 +129,7 @@
           </section>
 
           <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
-            <h2 class="text-lg font-semibold text-slate-600 uppercase">WORKSPACE ACTIONS</h2>
+            <h2 class="text-lg font-semibold uppercase text-gray-600">WORKSPACE ACTIONS</h2>
             <p class="mt-4 text-slate-600 leading-relaxed">
               Manage your access to this workspace. You'll be asked to confirm before {% if can_delete_workspace %}either action runs{% else %}leaving{% endif %}.
             </p>

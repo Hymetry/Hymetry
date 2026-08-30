@@ -1,5 +1,5 @@
 <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
-  <h2 class="text-lg font-semibold text-slate-600 uppercase">GENERAL</h2>
+  <h2 class="text-lg font-semibold uppercase text-gray-600">GENERAL</h2>
 
   <div class="mt-4 space-y-4">
     <div class="flex flex-wrap items-center justify-between gap-4">
@@ -8,7 +8,7 @@
         <button
           data-modal-trigger
           aria-controls="change-project-name"
-          class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+          class="font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
           Change name
         </button>
       {% endif %}
@@ -25,7 +25,7 @@
           type="button"
           data-modal-trigger
           aria-controls="change-project-timezone"
-          class="font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
+          class="font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-1.5">
           Change time zone
         </button>
       {% endif %}
@@ -34,7 +34,7 @@
 </section>
 
 <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
-  <h2 class="text-lg font-semibold text-gray-950">DATA COLLECTION</h2>
+  <h2 class="text-lg font-semibold uppercase text-gray-600">DATA COLLECTION</h2>
 
   <div class="mt-6 space-y-3">
     <div class="flex flex-col gap-4 rounded-lg border border-slate-200 bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -213,7 +213,7 @@
 
 {% if can_delete_project %}
   <section class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-6">
-    <h2 class="text-lg font-semibold text-slate-600 uppercase">DELETE PROJECT</h2>
+    <h2 class="text-lg font-semibold uppercase text-gray-600">DELETE PROJECT</h2>
     <p class="mt-4 text-slate-600 leading-relaxed">
       Delete this project from the workspace.
     </p>

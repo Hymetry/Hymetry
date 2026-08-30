@@ -45,7 +45,7 @@
                       type="button"
                       data-modal-trigger
                       aria-controls="create-project-{{ card.workspace.public_id }}"
-                      class="inline-flex items-center justify-center gap-2 font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-2">
+                      class="inline-flex items-center justify-center gap-2 font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-2">
                       <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor">
                         <path d="M450-450H220v-60h230v-230h60v230h230v60H510v230h-60v-230Z" />
                       </svg>
@@ -53,12 +53,12 @@
                     </button>
                   {% endif %}
                   {% if card.can_invite_members %}
-                    <a href="{% url 'w:workspace_team' workspace_slug=card.workspace.slug %}" class="inline-flex items-center justify-center font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-2">
+                    <a href="{% url 'w:workspace_team' workspace_slug=card.workspace.slug %}" class="inline-flex items-center justify-center font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-2">
                       Manage members
                     </a>
                   {% endif %}
                   {% if card.can_view_workspace_details %}
-                    <a href="{% url 'w:workspace_details' workspace_slug=card.workspace.slug %}" class="inline-flex items-center justify-center font-medium text-slate-600 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-2">
+                    <a href="{% url 'w:workspace_details' workspace_slug=card.workspace.slug %}" class="inline-flex items-center justify-center font-medium text-gray-950 border border-slate-200 duration-150 hover:bg-slate-100 rounded px-3 py-2">
                       Workspace details
                     </a>
                   {% endif %}
