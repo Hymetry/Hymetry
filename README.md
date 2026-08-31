@@ -86,7 +86,7 @@ Hymetry's attention, risk, and opportunity signals are transparent usage heurist
 
 <a href="https://www.hymetry.com/product/visits/">
   <img
-    src="https://www.hymetry.com/product/visits/visits-overview.png"
+    src="https://www.hymetry.com/product/visits/visits-overview1.png"
     alt="Visits overview with session rows and product-area activity timelines"
   >
 </a>
